@@ -4,10 +4,13 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "./testUtils.js";
-import { ApiRequestError, apiFetch, authApiFetch } from "../src/api.js";
+import { ApiRequestError, apiFetch, authApiFetch, configureApiBaseUrl } from "../src/api.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    // apiBaseUrl is module-level state - reset to the default so a test that calls configureApiBaseUrl()
+    // never leaks into a later test in this file (or another file sharing this module instance).
+    configureApiBaseUrl("");
 });
 
 describe("ApiRequestError", () => {
@@ -85,6 +88,42 @@ describe("apiFetch", () => {
     it("falls back to a generic message when there is no body and no statusText", async () => {
         mockFetch(() => new Response(null, { status: 500, statusText: "" }));
         await expect(apiFetch("/whatever")).rejects.toMatchObject({ message: "Request failed." });
+    });
+
+    it("uses a plain relative path and default credentials mode by default", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        await apiFetch("/status");
+        const init = fetchMock.mock.calls[0][1] as RequestInit;
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/status");
+        expect(init.credentials).toBeUndefined();
+    });
+
+    it("targets the configured base URL and switches to credentials: include once configureApiBaseUrl() is set", async () => {
+        configureApiBaseUrl("https://mail.example.com");
+        const fetchMock = mockFetch(() => jsonResponse(200, { ok: true }));
+        const result = await apiFetch("/mail/mailboxes");
+        expect(fetchMock).toHaveBeenCalledWith(
+            "https://mail.example.com/api/mail/mailboxes",
+            expect.objectContaining({ credentials: "include" }),
+        );
+        expect(result).toEqual({ ok: true });
+    });
+
+    it("strips a trailing slash from the configured base URL", async () => {
+        configureApiBaseUrl("https://mail.example.com/");
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        await apiFetch("/status");
+        expect(fetchMock).toHaveBeenCalledWith("https://mail.example.com/api/status", expect.anything());
+    });
+
+    it("reverts to the default relative behavior once reconfigured back to an empty base URL", async () => {
+        configureApiBaseUrl("https://mail.example.com");
+        configureApiBaseUrl("");
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        await apiFetch("/status");
+        const init = fetchMock.mock.calls[0][1] as RequestInit;
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/status");
+        expect(init.credentials).toBeUndefined();
     });
 });
 

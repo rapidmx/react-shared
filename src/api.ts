@@ -29,15 +29,43 @@ export class ApiRequestError extends Error {
 }
 
 /**
- * `fetch()` against the same-origin API, decoding RapidMX-shaped errors. `path` is the route as
- * declared by `@ApiRoute` (e.g. `/mail/mailboxes`) — the `/api` prefix that decorator always adds is
- * applied here, in one place, rather than repeated at every call site.
+ * Absolute origin `apiFetch()` targets instead of a same-origin relative path - unset (`""`, the
+ * default) everywhere this library has run until now (the SSR web/admin apps, always served from the
+ * same origin as the API they call). Set once via `configureApiBaseUrl()` by a consumer that genuinely
+ * runs on a *different* origin than the API - e.g. the Electron desktop client, whose renderer has no
+ * "same origin as the server" to rely on the way a browser tab loaded from that server does.
+ */
+let apiBaseUrl = "";
+
+/**
+ * Points `apiFetch()` at `baseUrl` (e.g. `"https://mail.example.com"`) instead of the default
+ * same-origin relative path. Only needed by a consumer whose own origin genuinely differs from the
+ * RapidMX server's - see `apiBaseUrl`'s own doc comment. Requires that server's `cors:origins` config
+ * include this consumer's own origin (see `@rapidrest/service-core`'s `Server.js` CORS middleware,
+ * which only reflects `access-control-allow-credentials` for an explicitly allow-listed origin - the
+ * default "allow every origin" behavior when `cors:origins` is unset does NOT carry credentials) and
+ * that whatever sets the `jwt` cookie issues it with `SameSite=None; Secure` - a same-origin deployment
+ * never needed either, and this function alone does not make a cross-origin deployment secure or
+ * functional on its own.
+ */
+export function configureApiBaseUrl(baseUrl: string): void {
+    apiBaseUrl = baseUrl.replace(/\/$/, "");
+}
+
+/**
+ * `fetch()` against the RapidMX server's API - same-origin unless `configureApiBaseUrl()` has been
+ * called, in which case this also switches to `credentials: "include"` so the configured cross-origin
+ * call still carries the `jwt` cookie (a plain relative fetch never needs this - `credentials:
+ * "same-origin"`, fetch's own default, already attaches it). `path` is the route as declared by
+ * `@ApiRoute` (e.g. `/mail/mailboxes`) — the `/api` prefix that decorator always adds is applied here,
+ * in one place, rather than repeated at every call site.
  */
 export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set("Content-Type", "application/json");
+    const credentials = apiBaseUrl ? "include" : init.credentials;
 
-    const res = await fetch(`/api${path}`, { ...init, headers });
+    const res = await fetch(`${apiBaseUrl}/api${path}`, { ...init, headers, credentials });
     return decodeApiResponse<T>(res);
 }
 
