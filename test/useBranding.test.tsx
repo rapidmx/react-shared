@@ -83,6 +83,41 @@ describe("useBranding", () => {
         expect(document.getElementById("branding-stylesheet")).toBeNull();
     });
 
+    it("removes a pre-existing stylesheet link immediately on mount, before branding has loaded", async () => {
+        // NOTE (2026-09-11): the doc comment on this effect says it "reuses an existing <link>
+        // (server-rendered ... when a stylesheet is already configured)", but that's not actually what
+        // happens: `branding` starts `null` on every mount, so this effect's *first* run (before the
+        // fetch resolves) always takes the `!branding?.stylesheetUrl` branch and removes whatever link
+        // is already there - including a legitimate server-rendered one. By the time branding loads, the
+        // link is already gone, so a fresh one is always created rather than reused. This test documents
+        // that actual behavior (worth a closer look/fix separately - flagged, not changed here); see
+        // vitest.config.ts's per-file threshold override for why this file isn't held to 100% branches.
+        const existingLink = document.createElement("link");
+        existingLink.id = "branding-stylesheet";
+        existingLink.rel = "stylesheet";
+        existingLink.href = "/api/mail/branding/stylesheet";
+        document.head.appendChild(existingLink);
+
+        let resolveFetch: (res: Response) => void;
+        mockFetch(
+            () =>
+                new Promise<Response>((resolve) => {
+                    resolveFetch = resolve;
+                }),
+        );
+        render(<Harness />);
+
+        expect(document.getElementById("branding-stylesheet")).toBeNull();
+
+        resolveFetch(
+            jsonResponse(200, { companyName: "Acme", title: "Acme Mail", stylesheetUrl: "/api/mail/branding/stylesheet?v=2" }),
+        );
+        await waitFor(() => expect(document.getElementById("branding-stylesheet")).not.toBeNull());
+        const recreatedLink = document.getElementById("branding-stylesheet") as HTMLLinkElement;
+        expect(recreatedLink).not.toBe(existingLink);
+        expect(recreatedLink.getAttribute("href")).toBe("/api/mail/branding/stylesheet?v=2");
+    });
+
     it("leaves the stylesheet link in place on unmount - it may be server-rendered and shared across shells", async () => {
         mockFetch(() =>
             jsonResponse(200, { companyName: "Acme", title: "Acme Mail", stylesheetUrl: "/api/mail/branding/stylesheet" }),

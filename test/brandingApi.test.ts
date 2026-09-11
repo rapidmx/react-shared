@@ -6,10 +6,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "./testUtils.js";
 import {
     Branding,
+    deleteBrandingIcon,
     deleteBrandingLogo,
     deleteBrandingStylesheet,
     getBranding,
     updateBranding,
+    uploadBrandingIcon,
     uploadBrandingLogo,
     uploadBrandingStylesheet,
 } from "../src/brandingApi.js";
@@ -103,6 +105,19 @@ describe("uploadBrandingLogo", () => {
     });
 });
 
+describe("uploadBrandingIcon", () => {
+    it("posts the file's raw bytes", async () => {
+        const file = new File(["png-bytes"], "icon.png", { type: "image/png" });
+        const updated: Branding = { ...branding, iconUrl: "/api/mail/branding/icon" };
+        const fetchMock = mockFetch(() => jsonResponse(200, updated));
+
+        const result = await uploadBrandingIcon(file);
+
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/branding/icon", expect.objectContaining({ method: "POST", body: file }));
+        expect(result).toEqual(updated);
+    });
+});
+
 describe("uploadBrandingStylesheet", () => {
     it("posts the file's raw bytes", async () => {
         const file = new File(["body{}"], "theme.css", { type: "text/css" });
@@ -124,6 +139,14 @@ describe("deleteBrandingLogo", () => {
         const fetchMock = mockFetch(() => emptyResponse(204));
         await deleteBrandingLogo();
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/branding/logo", expect.objectContaining({ method: "DELETE" }));
+    });
+});
+
+describe("deleteBrandingIcon", () => {
+    it("DELETEs the icon", async () => {
+        const fetchMock = mockFetch(() => emptyResponse(204));
+        await deleteBrandingIcon();
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/branding/icon", expect.objectContaining({ method: "DELETE" }));
     });
 });
 

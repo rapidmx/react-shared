@@ -8,6 +8,7 @@ import {
     approveReceipt,
     assembleDraft,
     attachmentContentUrl,
+    autoProvisionMailbox,
     cancelScheduledSend,
     classifyMessage,
     createDraft,
@@ -23,6 +24,7 @@ import {
     listAttachments,
     listFolders,
     listIngestQueue,
+    listMailboxDomains,
     listMailboxes,
     listMessages,
     listResourceMailboxes,
@@ -132,6 +134,46 @@ describe("createMailbox", () => {
         });
         const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
         expect(body.ownerUserUid).toBeUndefined();
+    });
+});
+
+describe("listMailboxDomains", () => {
+    it("fetches the configured domain list", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, ["example.com", "example.org"]));
+        const result = await listMailboxDomains();
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/domains", expect.anything());
+        expect(result).toEqual(["example.com", "example.org"]);
+    });
+});
+
+describe("autoProvisionMailbox", () => {
+    it("posts an empty body when called with no selection", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { status: "created", mailbox }));
+        const result = await autoProvisionMailbox();
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/mailboxes/auto-provision",
+            expect.objectContaining({ method: "POST", body: JSON.stringify({}) }),
+        );
+        expect(result).toEqual({ status: "created", mailbox });
+    });
+
+    it("posts the given alias/domain selection", async () => {
+        const fetchMock = mockFetch(() =>
+            jsonResponse(200, { status: "existing", mailbox }),
+        );
+        const result = await autoProvisionMailbox({ alias: "support", domain: "example.com" });
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/mailboxes/auto-provision",
+            expect.objectContaining({ method: "POST", body: JSON.stringify({ alias: "support", domain: "example.com" }) }),
+        );
+        expect(result).toEqual({ status: "existing", mailbox });
+    });
+
+    it("resolves needs_selection with the alias options to choose from", async () => {
+        const options = [{ alias: "jane", domain: "example.com", primarySmtpAddress: "jane@example.com" }];
+        mockFetch(() => jsonResponse(200, { status: "needs_selection", options }));
+        const result = await autoProvisionMailbox();
+        expect(result).toEqual({ status: "needs_selection", options });
     });
 });
 
