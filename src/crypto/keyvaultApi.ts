@@ -1,0 +1,178 @@
+///////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2026 Jean-Philippe Steinmetz
+// SPDX-License-Identifier: MPL-2.0
+///////////////////////////////////////////////////////////////////////////////
+/**
+ * Typed wrappers over `@rapidmx/restapi`'s E2E encryption endpoints (`BaseKeyVaultRoute`,
+ * `BaseKeyLookupRoute`, `BaseEncryptionPolicyRoute` — mounted in `server` at `mail/mailboxes` and
+ * `mail/encryption-policy`, see `src/{mongo,sql}/routes/{KeyVaultRoute,KeyLookupRoute,
+ * EncryptionPolicyRoute}.ts`). These calls carry only wrapped/ciphertext key material and public
+ * certificates — the server never sees an unwrapped private key or master key; see `crypto/masterKey.ts`
+ * and `crypto/keys.ts` for the client-side cryptography that produces the values passed here.
+ */
+import { apiFetch } from "../util/api.js";
+
+/** A cryptographic public key used to sign or encrypt messages — safe to expose publicly. Mirrors
+ * `@rapidmx/restapi`'s `PublicKey` type exactly. */
+export interface PublicKey {
+    /** Base64-encoded DER X.509 certificate. */
+    publicKey: string;
+    /** The key's type/format (e.g. `x509`). */
+    type: string;
+    useType: "sign" | "encrypt";
+    /** SHA-256 fingerprint of the certificate, hex encoded. */
+    fingerprint: string;
+    /** UTC timestamp (epoch ms) at which this key becomes valid. */
+    notBefore: number;
+    /** UTC timestamp (epoch ms) at which this key expires. */
+    notAfter: number;
+    /** UTC timestamp (epoch ms) at which this key was revoked, if applicable. */
+    revokedAt?: number;
+}
+
+/** A private key encrypted under the mailbox's master key (MK). Mirrors `@rapidmx/restapi`'s
+ * `WrappedPrivateKey` exactly. */
+export interface WrappedPrivateKey {
+    /** Base64-encoded AEAD ciphertext of the private key. */
+    ciphertext: string;
+    /** Base64-encoded AEAD nonce. */
+    nonce: string;
+    /** AEAD algorithm identifier (e.g. `AES-256-GCM`). */
+    algorithm: string;
+    fingerprint: string;
+    useType: "sign" | "encrypt";
+}
+
+/** One wrapped copy of the mailbox master key (MK), per unlock method. Mirrors `@rapidmx/restapi`'s
+ * `MasterKeyWrap` exactly. */
+export interface MasterKeyWrap {
+    method: "password" | "passkey" | "recovery" | "escrow";
+    /** Opaque identifier for the method instance (e.g. a WebAuthn credential ID). */
+    methodId?: string;
+    escrowScopeId?: string;
+    /** Base64-encoded AEAD ciphertext of the master key. */
+    ciphertext: string;
+    /** Base64-encoded AEAD nonce. */
+    nonce: string;
+    /** Base64-encoded KDF salt. */
+    salt: string;
+    /** KDF identifier and parameters (e.g. `argon2id:m=65536,t=3,p=4`). */
+    kdf: string;
+    schemeVersion: number;
+    createdAt: number;
+}
+
+export interface EncryptionPreference {
+    lastSeen?: number;
+    preferEncrypt: "mutual" | "nopreference";
+}
+
+export interface KeyConflict {
+    observedFingerprint: string;
+    observedAt: number;
+    source: "header" | "discovery";
+}
+
+/** The wire shape `GET`/`POST`/`PUT`/`DELETE` `/mail/mailboxes/:id/keyvault*` return. */
+export interface KeyVault {
+    wrappedKeys: WrappedPrivateKey[];
+    masterKeyWraps: MasterKeyWrap[];
+}
+
+/** Fetches the caller's key vault (wrapped private keys + wrapped master-key copies) for `mailboxUid`. */
+export function getKeyVault(mailboxUid: string): Promise<KeyVault> {
+    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault`);
+}
+
+export interface EnrollKeyInput {
+    useType: "sign" | "encrypt";
+    /** PEM-encoded PKCS#10 CSR — required (and only meaningful) for `useType: "encrypt"`; the server
+     * calls its own internal CA against this CSR. */
+    csr?: string;
+    /** An already-issued PEM certificate — required (and only meaningful) for `useType: "sign"`. */
+    certificate?: string;
+    wrappedKey: Omit<WrappedPrivateKey, "fingerprint" | "useType">;
+    /** Only meaningful the very first time a mailbox enrolls a key at all (bootstraps its master key). */
+    masterKeyWraps?: MasterKeyWrap[];
+}
+
+/** Enrolls a new signing or encryption key. See `EnrollKeyInput`'s own doc comments for which fields
+ * matter for which `useType`. */
+export function enrollKey(mailboxUid: string, input: EnrollKeyInput): Promise<KeyVault> {
+    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys`, {
+        method: "POST",
+        body: JSON.stringify(input),
+    });
+}
+
+/** Adds a wrapped copy of the master key for a new unlock method (e.g. registering a new passkey),
+ * independent of key enrollment. Requires an already-initialized vault. */
+export function addMasterKeyWrap(mailboxUid: string, wrap: MasterKeyWrap): Promise<KeyVault> {
+    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/wraps`, {
+        method: "POST",
+        body: JSON.stringify(wrap),
+    });
+}
+
+/** Removes a wrapped copy of the master key for one unlock method. `methodId` is required whenever more
+ * than one wrap could share the same `method` (e.g. multiple passkeys). This alone does NOT revoke
+ * access for anyone who already captured the wrapped blob — see `rekey()`. */
+export function removeMasterKeyWrap(mailboxUid: string, method: string, methodId?: string): Promise<KeyVault> {
+    const query = methodId ? `?methodId=${encodeURIComponent(methodId)}` : "";
+    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/wraps/${encodeURIComponent(method)}${query}`, {
+        method: "DELETE",
+    });
+}
+
+export interface RekeyInput {
+    wrappedKeys: WrappedPrivateKey[];
+    masterKeyWraps: MasterKeyWrap[];
+    keys: PublicKey[];
+}
+
+/** Full, atomic replacement of the mailbox's key-vault contents — the only real revocation mechanism
+ * for a captured wrap. Restricted server-side to the mailbox's actual owner. */
+export function rekey(mailboxUid: string, input: RekeyInput): Promise<KeyVault> {
+    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/rekey`, {
+        method: "PUT",
+        body: JSON.stringify(input),
+    });
+}
+
+/** The wire shape `GET /mail/mailboxes/:id/keys/lookup` returns. */
+export interface KeyLookupResult {
+    keys: PublicKey[];
+    encryptPreference?: EncryptionPreference;
+    keyConflict?: KeyConflict;
+}
+
+/** Server-side Discovery: the server itself performs the `_rapidmx` DNS lookup and remote key-endpoint
+ * fetch (browsers can't do DNS TXT lookups, and a direct cross-origin fetch would hit CORS), persisting
+ * the result onto a `Contact` in the caller's own address book. MUST be called lazily at compose time,
+ * never on message receipt (see `specs/end-to-end_encryption.md`'s "Discovery is Server-Side"). */
+export function lookupKeys(mailboxUid: string, addr: string): Promise<KeyLookupResult> {
+    const query = new URLSearchParams({ addr });
+    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/lookup?${query.toString()}`);
+}
+
+export type PolicyState = "automatic" | "optional" | "prohibited";
+
+export interface EncryptionPolicy {
+    encryptSameOrg: PolicyState;
+    encryptFederated: PolicyState;
+    encryptExternal: PolicyState;
+}
+
+/** The system-wide encryption policy (readable by any authenticated user, used to decide what encryption
+ * controls a compose UI should offer). */
+export function getEncryptionPolicy(): Promise<EncryptionPolicy> {
+    return apiFetch(`/mail/encryption-policy`);
+}
+
+/** Admin-only (`RequiresTrustedRole`) — updates the system-wide encryption policy. */
+export function updateEncryptionPolicy(patch: Partial<EncryptionPolicy>): Promise<EncryptionPolicy> {
+    return apiFetch(`/mail/encryption-policy`, {
+        method: "PUT",
+        body: JSON.stringify(patch),
+    });
+}
