@@ -13,10 +13,19 @@ This library is used by:
 [`@rapidmx/electron-client`](https://github.com/RapidMX/electron-client).
 
 This package is deliberately framework-free beyond React itself — no router, no HTTP client, no state
-management library. Each `*Api.ts` module is a thin `fetch` wrapper around one
-[`@rapidmx/restapi`](https://github.com/RapidMX/restapi) resource (mail, calendar, contacts, tasks, booking,
-branding, domains, etc.), and a handful of `use*` hooks and pure utilities (recurrence expansion, vCard/ICS
-helpers, emoji data, calendar color assignment) back the UI components each consumer builds independently.
+management library. `src/` is organized by feature/system, mirroring `@rapidmx/restapi`'s own
+`src/<feature>/` convention: `mail/`, `calendar/`, `contacts/`, `tasks/`, `booking/`, `admin/`, `branding/`,
+`search/`, `auth/`, and `util/` for the small set of things every feature depends on (`api.ts`'s
+`apiFetch()`, `apiQuery.ts`'s pagination helper, `dateInput.ts`, `useIsMobile.ts`). Each `*Api.ts` module is
+a thin `fetch` wrapper around one [`@rapidmx/restapi`](https://github.com/RapidMX/restapi) resource, and a
+handful of `use*` hooks and pure utilities (recurrence expansion, vCard/ICS helpers, emoji data, calendar
+color assignment) back the UI components each consumer builds independently.
+
+`src/components/` holds genuinely generic UI primitives — ones with no RapidMX/webmail-domain knowledge
+baked in — usable by any consumer: `buttons/Button`, `feedback/Alert`+`Skeleton`, `forms/FormField`,
+`overlays/Modal`+`Drawer`+`PopoverPortal`, `avatar/ContactAvatar`, `pickers/MiniDatePicker`, and
+`navigation/BottomTabBar`. Domain-specific components (calendar views, mail compose, contact/task/admin
+UI, etc.) stay in `@rapidmx/web-client`, which depends on this package rather than the other way around.
 
 ## Usage
 
@@ -24,15 +33,16 @@ Every module is published as its own subpath import — there is no single barre
 only pulls in the modules it actually uses:
 
 ```ts
-import { apiFetch, configureApiBaseUrl } from "@rapidmx/react-shared/api.js";
-import { getMailboxes } from "@rapidmx/react-shared/mailApi.js";
-import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/session.js";
+import { apiFetch, configureApiBaseUrl } from "@rapidmx/react-shared/util/api.js";
+import { getMailboxes } from "@rapidmx/react-shared/mail/mailApi.js";
+import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session.js";
+import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 ```
 
 `apiFetch()` targets a same-origin relative path (`/api/...`) by default, matching every consumer that's
 server-rendered or otherwise served from the same origin as the API it calls. A consumer whose own origin
 genuinely differs from the RapidMX server's — e.g. `@rapidmx/electron-client`'s renderer — calls
-`configureApiBaseUrl()` once at startup to target an absolute origin instead; see `src/api.ts` for the
+`configureApiBaseUrl()` once at startup to target an absolute origin instead; see `src/util/api.ts` for the
 CORS/cookie configuration that requires on the server side.
 
 ## Status

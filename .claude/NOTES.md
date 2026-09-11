@@ -56,6 +56,57 @@ Keep entries terse — this is a reference, not a transcript.
 
 ## Session Log
 
+### 2026-09-11 — Reorganized into feature folders; absorbed 8 generic UI components from web-client
+
+JP: react-shared should organize `src/` by feature/system (mirroring `restapi`'s own
+`src/<feature>/` convention) instead of one flat 34-file folder, and should be the home for any
+UI component reusable across *any* RapidMX front-end, not just business logic. Full plan in this
+session's transcript; summary here for future sessions.
+
+- **New `src/` layout**: `util/` (api.ts, apiQuery.ts, dateInput.ts, useIsMobile.ts), `auth/`,
+  `branding/`, `admin/`, `mail/` (+ `mail/compose/`), `calendar/`, `contacts/`, `tasks/`,
+  `booking/`, `search/`, and `components/` (`buttons/`, `feedback/`, `forms/`, `overlays/`,
+  `avatar/`, `pickers/`, `navigation/`). `test/` mirrors it exactly. No `package.json`/
+  `tsconfig.json`/`vitest.config.ts` changes were needed for the folder move itself — the
+  existing `"./*.js"` exports wildcard, `rootDir: "src"`, and `**`-globbed test/coverage
+  `include` patterns all already support arbitrary nesting; confirmed by inspecting `dist/`
+  post-build before touching any consumer.
+- **8 components moved in from `web-client`**: `Button`, `Alert`, `Skeleton`+`SkeletonList`,
+  `FormField`, `PopoverPortal` (zero domain imports), plus `MiniDatePicker`, `ContactAvatar`,
+  `BottomTabBar` (JP's explicit call — generic in code shape but previously single-domain-used).
+  Added `date-fns` (`MiniDatePicker`) and `react-icons` (`BottomTabBar`'s `IconType`) as real
+  dependencies. `Button`/`Alert`/`Skeleton`/`FormField` had **zero dedicated tests in
+  `web-client`** (only ever covered incidentally through consumer pages) — wrote new ones here
+  from scratch. The other 4 already had tests; moved those over, fixing one real coupling bug
+  along the way: `BottomTabBar.test.tsx` imported `web-client`'s own `AppShell.APPS` fixture,
+  which would have made this package depend on its own consumer — replaced with a local
+  `NavItem[]` fixture.
+- **`MiniDatePicker` needed `env: { TZ: "UTC" }` added to this repo's own `vitest.config.ts`**
+  (copied from `web-client`'s) — its date-fns local-time calculations only agree with UTC ISO
+  test fixtures if the test process itself runs in UTC; two tests failed non-deterministically
+  (by host timezone) until this was added.
+- **Tailwind content-scanning**: added `@source "../../node_modules/@rapidmx/react-shared/src";`
+  to `web-client/apps/shared/styles/app.css` (the one stylesheet every consumer imports as its
+  Tailwind entry) — otherwise none of this package's own Tailwind classnames
+  (`Modal`/`Drawer`/`Button`/etc.) would ever be scanned, since v4's automatic scanning excludes
+  `node_modules` by default. Verified by grepping the actual built CSS for real classnames
+  (`shadow-modal`, `bg-danger-bg`), not just watching the build succeed.
+- **Internal cross-file imports**: almost all of them needed no change at all (same-feature files
+  land in the same folder together) — the one bulk pattern was every file's own `./api.js`/
+  `./apiQuery.js` becoming `../util/api.js`/`../util/apiQuery.js`. Only `calendarColors.ts`
+  (imports `mailApi.ts`'s `Folder` type — genuine cross-feature) needed a real path change beyond
+  that pattern.
+- **Consumer updates were scripted, not manual** (~226 `@rapidmx/react-shared/<basename>.js`
+  references across `web-client`/`server`/`electron-client`, plus ~100 of `web-client`'s own
+  relative imports to the 8 moved components) — a small Node script with an explicit rename map,
+  run once per repo. It missed 5 same-directory bare imports (e.g. `AppShell.tsx`, which lives
+  *inside* the old `layout/` folder, importing `BottomTabBar` as bare `"./BottomTabBar.js"` with
+  no `layout/` prefix to match against) — caught by `server`/`electron-client`'s own build
+  failing loudly (`Could not resolve './BottomTabBar.js'`), not by any test. Worth remembering:
+  a suffix-based rename regex over relative imports must also check for the bare same-directory
+  form, not just prefixed ones.
+- Not committed - JP said "hold off on commit" for this whole cross-repo pass.
+
 ### 2026-09-11 — 100% coverage (99% branches, one documented exception), real CONTRIBUTING.md, fixed a broken `yarn lint`
 
 Brought this package from 96%/96%/95%/96% (stmts/branches/funcs/lines) to 100%/99%/100%/100% and

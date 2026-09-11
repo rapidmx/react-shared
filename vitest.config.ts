@@ -12,6 +12,11 @@ export default defineConfig({
         environment: "node",
         setupFiles: ["./test/setup.ts"],
         include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
+        // Pins the test process's local timezone to UTC - components/pickers/MiniDatePicker.tsx (moved
+        // in from web-client) uses date-fns's local-time-aware functions, so a UTC ISO fixture and its
+        // own local-time calculations only agree everywhere the suite runs if both sides pin the same
+        // zone. Carried over verbatim from web-client's own vitest.config.ts, which hit this for real.
+        env: { TZ: "UTC" },
         fileParallelism: false,
         pool: "forks",
         clearMocks: true,
