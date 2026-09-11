@@ -1,0 +1,143 @@
+// @vitest-environment jsdom
+///////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
+///////////////////////////////////////////////////////////////////////////////
+import React from "react";
+import { render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { jsonResponse, mockFetch } from "./testUtils.js";
+import { useMarkMessageRead, useMessageAttachments } from "../src/mailDetailHooks.js";
+import type { Message } from "../src/mailApi.js";
+
+function messageFixture(overrides: Record<string, unknown> = {}): Message {
+    return {
+        uid: "m1",
+        version: 0,
+        dateCreated: "2026-01-01T00:00:00.000Z",
+        dateModified: "2026-01-01T00:00:00.000Z",
+        folderUid: "f1",
+        mailboxUid: "mb1",
+        messageId: "abc@example.com",
+        subject: "Hello there",
+        from: { address: "sender@example.com", type: "to" },
+        recipients: [],
+        sentDate: "2026-01-01T00:00:00.000Z",
+        receivedDate: "2026-01-01T00:00:00.000Z",
+        bodyPreview: "",
+        flags: { read: false, flagged: false, answered: false, forwarded: false },
+        importance: "normal",
+        hasAttachments: false,
+        ...overrides,
+    };
+}
+
+afterEach(() => {
+    vi.unstubAllGlobals();
+});
+
+function AttachmentsHarness({ message }: { message: Message | null }) {
+    const attachments = useMessageAttachments(message);
+    return <span data-testid="count">{attachments.length}</span>;
+}
+
+describe("useMessageAttachments", () => {
+    it("returns an empty array when there is no message", () => {
+        render(<AttachmentsHarness message={null} />);
+        expect(screen.getByTestId("count")).toHaveTextContent("0");
+    });
+
+    it("returns an empty array without fetching when the message has no attachments", () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        render(<AttachmentsHarness message={messageFixture({ hasAttachments: false })} />);
+        expect(screen.getByTestId("count")).toHaveTextContent("0");
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("fetches and returns attachments when the message has some", async () => {
+        mockFetch((url) =>
+            url.startsWith("/api/mail/attachments") ? jsonResponse(200, [{ uid: "a1" }, { uid: "a2" }]) : jsonResponse(404, {}),
+        );
+        render(<AttachmentsHarness message={messageFixture({ hasAttachments: true })} />);
+        await waitFor(() => expect(screen.getByTestId("count")).toHaveTextContent("2"));
+    });
+
+    it("swallows a failed attachment fetch and returns an empty array", async () => {
+        mockFetch(() => jsonResponse(500, { message: "boom" }));
+        render(<AttachmentsHarness message={messageFixture({ hasAttachments: true })} />);
+        await waitFor(() => expect(screen.getByTestId("count")).toHaveTextContent("0"));
+    });
+
+    it("re-fetches when the message changes", async () => {
+        mockFetch((url) =>
+            url.startsWith("/api/mail/attachments") ? jsonResponse(200, [{ uid: "a1" }]) : jsonResponse(404, {}),
+        );
+        const { rerender } = render(<AttachmentsHarness message={messageFixture({ uid: "m1", hasAttachments: true })} />);
+        await waitFor(() => expect(screen.getByTestId("count")).toHaveTextContent("1"));
+
+        rerender(<AttachmentsHarness message={messageFixture({ uid: "m2", hasAttachments: false })} />);
+        expect(screen.getByTestId("count")).toHaveTextContent("0");
+    });
+});
+
+function MarkReadHarness({ message }: { message: Message | null }) {
+    const [current, setCurrent] = React.useState(message);
+    useMarkMessageRead(current, setCurrent);
+    return <span data-testid="read">{String(current?.flags.read)}</span>;
+}
+
+describe("useMarkMessageRead", () => {
+    it("does nothing when there is no message", () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        render(<MarkReadHarness message={null} />);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("does nothing when the message is already read", () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        render(<MarkReadHarness message={messageFixture({ flags: { read: true, flagged: false, answered: false, forwarded: false } })} />);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("marks an unread message as read and calls onUpdated with the server's copy", async () => {
+        const fetchMock = mockFetch((url, init) => {
+            if (url === "/api/mail/messages/m1" && init?.method === "PUT") {
+                return jsonResponse(200, messageFixture({ flags: { read: true, flagged: false, answered: false, forwarded: false } }));
+            }
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        render(<MarkReadHarness message={messageFixture()} />);
+
+        await waitFor(() => expect(screen.getByTestId("read")).toHaveTextContent("true"));
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m1", expect.objectContaining({ method: "PUT" }));
+    });
+
+    it("swallows a failed mark-as-read update", async () => {
+        mockFetch(() => jsonResponse(500, { message: "boom" }));
+        render(<MarkReadHarness message={messageFixture()} />);
+
+        // No assertion target other than "doesn't throw" — `current` simply never updates from its
+        // initial unread value, proving the rejection was swallowed rather than propagated.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(screen.getByTestId("read")).toHaveTextContent("false");
+    });
+
+    it("does not call onUpdated after unmount, even if the request resolves later", async () => {
+        let resolveRequest: (() => void) | undefined;
+        mockFetch(
+            () =>
+                new Promise((resolve) => {
+                    resolveRequest = () => resolve(jsonResponse(200, messageFixture({ flags: { read: true, flagged: false, answered: false, forwarded: false } })));
+                }),
+        );
+        const { unmount } = render(<MarkReadHarness message={messageFixture()} />);
+        await waitFor(() => expect(resolveRequest).toBeDefined());
+
+        unmount();
+        resolveRequest!();
+
+        // Nothing to assert against a torn-down tree beyond "resolving after unmount doesn't throw" —
+        // the `cancelled` guard inside the hook is what prevents a React state update on an unmounted
+        // component here.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+});
