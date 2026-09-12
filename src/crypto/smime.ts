@@ -119,6 +119,83 @@ export async function verifyDetached(content: Uint8Array, signatureDer: Uint8Arr
 }
 
 /**
+ * Builds an *opaque* (content embedded, not detached) CMS `SignedData` structure over `content`.
+ * Used only when the signed message is going to be encrypted immediately afterward (`buildMessage()`
+ * in `smimeMessage.ts` composes this with `encryptForRecipients()` for the combined sign-then-encrypt
+ * case) — the spec's "Digital Signatures" section requires *detached* signing only "for
+ * signature-only messages"; once the whole thing is being encrypted regardless, there is no legacy
+ * client ever exposed to this intermediate opaque layer, so embedding the content here (simpler than
+ * building a second detached `multipart/signed` entity solely to immediately encrypt it) is
+ * conformant, not a shortcut around that requirement.
+ */
+export async function signOpaque(content: Uint8Array, signingCertDer: Uint8Array, signingPrivateKey: CryptoKey): Promise<Uint8Array> {
+    const cert = parseCertificate(signingCertDer);
+    const signedData = new pkijs.SignedData({
+        encapContentInfo: new pkijs.EncapsulatedContentInfo({
+            eContentType: pkijs.ContentInfo.DATA,
+            eContent: new asn1js.OctetString({ valueHex: toArrayBuffer(content) }),
+        }),
+        signerInfos: [
+            new pkijs.SignerInfo({
+                sid: new pkijs.IssuerAndSerialNumber({ issuer: cert.issuer, serialNumber: cert.serialNumber }),
+            }),
+        ],
+        certificates: [cert],
+    });
+    await signedData.sign(signingPrivateKey, 0, DIGEST_ALGORITHM);
+
+    const contentInfo = new pkijs.ContentInfo({ contentType: pkijs.ContentInfo.SIGNED_DATA, content: signedData.toSchema(true) });
+    return new Uint8Array(contentInfo.toSchema().toBER());
+}
+
+export interface VerifyOpaqueResult extends VerifyResult {
+    /** The embedded content, recovered from the SignedData structure - only present when `valid`. */
+    content?: Uint8Array;
+}
+
+/** Verifies an opaque CMS signature (as produced by `signOpaque()`) and recovers its embedded
+ * content — unlike `verifyDetached()`, the content isn't supplied separately by the caller, since the
+ * whole point of an opaque signature is that it carries its own content. */
+export async function verifyOpaque(signedDer: Uint8Array): Promise<VerifyOpaqueResult> {
+    let contentInfo: pkijs.ContentInfo;
+    try {
+        contentInfo = pkijs.ContentInfo.fromBER(toArrayBuffer(signedDer));
+    } catch {
+        return { valid: false };
+    }
+    if (contentInfo.contentType !== pkijs.ContentInfo.SIGNED_DATA) {
+        return { valid: false };
+    }
+
+    let signedData: pkijs.SignedData;
+    let valid: boolean;
+    try {
+        signedData = new pkijs.SignedData({ schema: contentInfo.content });
+        valid = await signedData.verify({ signer: 0 });
+    } catch {
+        return { valid: false };
+    }
+
+    // Same defensive, not-reachable-through-signOpaque()'s-own-path branch as verifyDetached() above -
+    // see that function's identical comment.
+    const signerCertificate = signedData.certificates?.[0];
+    const signerCertificateDer =
+        signerCertificate && signerCertificate instanceof pkijs.Certificate
+            ? new Uint8Array(signerCertificate.toSchema().toBER())
+            : undefined;
+    // No external `data` is ever passed to verify() in this function - a detached signature (no
+    // eContent) can only ever fail to verify here, never succeed, so `valid` being true guarantees
+    // eContent is present; this isn't optional defensive handling for a case that can't occur.
+    // `.getValue()`, not `.valueBlock.valueHexView` directly - eContent commonly round-trips as a
+    // *constructed* OctetString (an outer OctetString wrapping one or more inner primitive OctetString
+    // chunks, standard per RFC 5652), and only `.getValue()` transparently concatenates those chunks;
+    // reading `.valueBlock.valueHexView` directly is only correct for a primitive OctetString and
+    // silently returns empty bytes otherwise (confirmed by direct reproduction).
+    const content = valid ? new Uint8Array(signedData.encapContentInfo.eContent!.getValue()) : undefined;
+    return { valid, signerCertificateDer, content };
+}
+
+/**
  * Builds a CMS `EnvelopedData` structure encrypting `content` to every certificate in
  * `recipientCertDers` — per the spec's "Encrypt to Self" requirement, callers MUST include the
  * sender's own encryption certificate in this list alongside the actual recipients' certificates, or

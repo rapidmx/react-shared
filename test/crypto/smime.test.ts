@@ -4,7 +4,14 @@
 import "reflect-metadata";
 import * as x509 from "@peculiar/x509";
 import { describe, expect, it } from "vitest";
-import { decryptEnvelopedData, encryptForRecipients, signDetached, verifyDetached } from "../../src/crypto/smime.js";
+import {
+    decryptEnvelopedData,
+    encryptForRecipients,
+    signDetached,
+    signOpaque,
+    verifyDetached,
+    verifyOpaque,
+} from "../../src/crypto/smime.js";
 
 x509.cryptoProvider.set(crypto);
 
@@ -86,6 +93,66 @@ describe("signDetached / verifyDetached", () => {
 
         const result = await verifyDetached(content, envelopedData);
         expect(result.valid).toBe(false);
+    });
+});
+
+describe("signOpaque / verifyOpaque", () => {
+    it("round-trips a real signature and recovers the embedded content", async () => {
+        const alice = await generateTestIdentity("alice@example.com", "sign");
+        const content = new TextEncoder().encode("This is the opaquely-signed content.");
+
+        const signed = await signOpaque(content, alice.certDer, alice.privateKey);
+        const result = await verifyOpaque(signed);
+
+        expect(result.valid).toBe(true);
+        expect(result.signerCertificateDer).toEqual(alice.certDer);
+        expect(result.content).toEqual(content);
+    });
+
+    it("fails verification, and omits content, for a tampered signature", async () => {
+        const alice = await generateTestIdentity("alice@example.com", "sign");
+        const content = new TextEncoder().encode("original content");
+        const signed = await signOpaque(content, alice.certDer, alice.privateKey);
+        // Flip a byte deep enough in the DER to land inside the signature value itself, not just
+        // re-triggering a parse failure.
+        const tampered = new Uint8Array(signed);
+        tampered[tampered.length - 10] ^= 0xff;
+
+        const result = await verifyOpaque(tampered);
+        expect(result.valid).toBe(false);
+        expect(result.content).toBeUndefined();
+    });
+
+    it("reports invalid for garbage input", async () => {
+        const result = await verifyOpaque(new Uint8Array([1, 2, 3, 4]));
+        expect(result.valid).toBe(false);
+    });
+
+    it("reports invalid for a well-formed CMS structure of the wrong type (EnvelopedData, not SignedData)", async () => {
+        const bob = await generateTestIdentity("bob@example.com", "encrypt");
+        const enveloped = await encryptForRecipients(new TextEncoder().encode("content"), [bob.certDer]);
+        const result = await verifyOpaque(enveloped);
+        expect(result.valid).toBe(false);
+    });
+
+    it("reports invalid for a contentType: SignedData blob whose content isn't actually a SignedData schema", async () => {
+        const asn1js = await import("asn1js");
+        const pkijs = await import("pkijs");
+        const bogusContentInfo = new pkijs.ContentInfo({
+            contentType: pkijs.ContentInfo.SIGNED_DATA,
+            content: new asn1js.Sequence(),
+        });
+        const result = await verifyOpaque(new Uint8Array(bogusContentInfo.toSchema().toBER()));
+        expect(result.valid).toBe(false);
+    });
+
+    it("reports invalid, with no content, when given a detached signature instead (no embedded eContent)", async () => {
+        const alice = await generateTestIdentity("alice@example.com", "sign");
+        const detached = await signDetached(new TextEncoder().encode("content"), alice.certDer, alice.privateKey);
+
+        const result = await verifyOpaque(detached);
+        expect(result.valid).toBe(false);
+        expect(result.content).toBeUndefined();
     });
 });
 
