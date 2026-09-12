@@ -336,3 +336,13 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
   wrapping the new `POST /mail/messages/:id/archive` (`FolderType.ARCHIVE`, lazily created on first use
   server-side, same pattern as Sent Items/Outbox - no client-side folder-creation step needed). Trivial
   wrapper, mirrors `recallMessage()`'s exact shape.
+
+- **2026-09-12 (continued) — Phase 3 of consuming restapi's 11 post-0.6.0 commits: Label entity.**
+  New `mail/labelsApi.ts` - full CRUD wrapper over restapi's new `Label` scoped-child route, mirroring
+  `mailSignaturesApi.ts`'s exact shape. `mail/mailApi.ts`'s `Message` interface gained `labelUids?:
+  string[]`, and a new `setMessageLabels(message, labelUids)` helper (mirrors `setMessageRead()`'s
+  identical "PUT the whole record, not a patch" shape) - `labelUids` is an ordinary settable field, not
+  read-only, confirmed by reading `BaseLabelRoute`/`Message.labelUids` directly rather than assuming.
+  Deleting a label also strips it from every message's `labelUids` server-side
+  (`BaseLabelRoute.cleanUpDeletedLabel()`, a synchronous full-mailbox scan) - documented on
+  `deleteLabel()`'s own doc comment so a caller doesn't try to duplicate that cleanup itself.

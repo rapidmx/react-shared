@@ -425,6 +425,10 @@ export interface Message {
      * appends a footer after signing invalidates the signature, so composing a reply to one SHOULD
      * default signing off. `undefined` for ordinary mail — never computed or guessed client-side. */
     listUnsubscribeHeader?: string;
+    /** `Label.uid`s applied to this message (Gmail-style labels, `labelsApi.ts`) - either set directly
+     * (`setMessageLabels()`) or auto-applied server-side by a `MailFilterActionType.APPLY_LABEL` rule.
+     * `undefined`/empty means no labels. */
+    labelUids?: string[];
 }
 
 export interface MessageReceiptEntry {
@@ -486,6 +490,17 @@ export function setMessageRead(message: Message, read: boolean): Promise<Message
     return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
         method: "PUT",
         body: JSON.stringify({ uid: message.uid, version: message.version, flags: { ...message.flags, read } }),
+    });
+}
+
+/** Sets a message's full `labelUids` list (not an add/remove delta - the caller computes the complete
+ * new set, same convention as `Note`/`Task` label-like fields elsewhere in restapi). Deleting a label
+ * elsewhere already strips it server-side from every message (`labelsApi.ts#deleteLabel()`'s own doc
+ * comment) - this is only for a user explicitly applying/removing labels on one message. */
+export function setMessageLabels(message: Message, labelUids: string[]): Promise<Message> {
+    return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
+        method: "PUT",
+        body: JSON.stringify({ uid: message.uid, version: message.version, labelUids }),
     });
 }
 

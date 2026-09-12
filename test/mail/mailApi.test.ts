@@ -36,6 +36,7 @@ import {
     releaseQuarantineEntry,
     revokeMailboxAccess,
     sendMessage,
+    setMessageLabels,
     setMessageRead,
     setMessageRequestReceipt,
     setMessageScheduledSendTime,
@@ -467,6 +468,20 @@ describe("setMessageRead", () => {
                     version: 0,
                     flags: { read: true, flagged: false, answered: false, forwarded: false },
                 }),
+            }),
+        );
+    });
+});
+
+describe("setMessageLabels", () => {
+    it("PUTs the message's uid/version with the full new labelUids list", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { ...message, labelUids: ["l1", "l2"] }));
+        await setMessageLabels(message, ["l1", "l2"]);
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/messages/m1",
+            expect.objectContaining({
+                method: "PUT",
+                body: JSON.stringify({ uid: "m1", version: 0, labelUids: ["l1", "l2"] }),
             }),
         );
     });
