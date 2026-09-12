@@ -78,6 +78,12 @@ export interface Mailbox {
      * per the spec's own `PublicKey` doc comment. Absent/empty means no keys enrolled yet
      * (`KeyEnrollmentGate` handles that state). */
     keys?: PublicKey[];
+    /** The `EscrowScope` this mailbox is currently assigned to, if any — an admin-only assignment
+     * (`specs/end-to-end_encryption.md`'s Escrow Scoping). Assigning this alone does **not** create any
+     * `MasterKeyWrap` — the mailbox owner must separately wrap MK against the scope's public key (see
+     * `crypto/keyvaultApi.ts`'s `getEscrowInfo()` and `crypto/masterKeyWraps.ts`'s `buildEscrowWrap()`).
+     * Absent means this mailbox has no escrow scope assigned. */
+    escrowScopeId?: string;
 }
 
 /** Lists mailboxes the caller can access (owned, shared with them, or — for a trusted caller — every one). */
