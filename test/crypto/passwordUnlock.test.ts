@@ -8,11 +8,27 @@ import {
     argon2idKdfLabel,
     deriveFromPassword,
     generateSalt,
+    parseArgon2idKdfLabel,
 } from "../../src/crypto/passwordUnlock.js";
 
 // Argon2id is intentionally slow (memory-hard) - use lighter parameters than the real default so this
 // suite stays fast, while still exercising the real hash-wasm computation end to end.
 const FAST_PARAMS = { memorySize: 8, iterations: 1, parallelism: 1 };
+
+describe("parseArgon2idKdfLabel", () => {
+    it("is the exact inverse of argon2idKdfLabel", () => {
+        expect(parseArgon2idKdfLabel(argon2idKdfLabel(DEFAULT_ARGON2ID_PARAMS))).toEqual(DEFAULT_ARGON2ID_PARAMS);
+        expect(parseArgon2idKdfLabel(argon2idKdfLabel(FAST_PARAMS))).toEqual(FAST_PARAMS);
+    });
+
+    it("returns undefined for a different KDF label entirely (e.g. recovery codes' own)", () => {
+        expect(parseArgon2idKdfLabel("hkdf-sha256")).toBeUndefined();
+    });
+
+    it("returns undefined for a malformed label", () => {
+        expect(parseArgon2idKdfLabel("argon2id:m=not-a-number,t=3,p=4")).toBeUndefined();
+    });
+});
 
 describe("argon2idKdfLabel", () => {
     it("formats the kdf string", () => {

@@ -41,6 +41,22 @@ export function argon2idKdfLabel(params: Argon2idParams): string {
     return `argon2id:m=${params.memorySize},t=${params.iterations},p=${params.parallelism}`;
 }
 
+/** Inverse of `argon2idKdfLabel()` — reads back the exact parameters a `MasterKeyWrap.kdf` string was
+ * created with, so unlocking always re-derives with the *original* parameters even if
+ * `DEFAULT_ARGON2ID_PARAMS` has since changed (the spec's own "KDF parameters ... MUST be stored
+ * alongside each wrap, so costs can be raised over time without breaking existing accounts"). Returns
+ * `undefined` for anything that isn't a well-formed `argon2id:m=...,t=...,p=...` label — including a
+ * different KDF entirely (e.g. recovery codes' own `"hkdf-sha256"` label), which callers must not
+ * attempt to unlock as if it were password-derived.
+ */
+export function parseArgon2idKdfLabel(label: string): Argon2idParams | undefined {
+    const match = /^argon2id:m=(\d+),t=(\d+),p=(\d+)$/.exec(label);
+    if (!match) {
+        return undefined;
+    }
+    return { memorySize: Number(match[1]), iterations: Number(match[2]), parallelism: Number(match[3]) };
+}
+
 /** A fresh random salt for a new password enrollment. 16 bytes is Argon2id's own recommended minimum. */
 export function generateSalt(lengthBytes = 16): Uint8Array {
     return crypto.getRandomValues(new Uint8Array(lengthBytes));
