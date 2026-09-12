@@ -439,3 +439,14 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
   returning `{}` when unset. Exported `MIN_AUDIT_LOG_RETENTION_DAYS` (2190) purely so client-side
   validation copy can quote the same number the server enforces; the server is the real gate either way.
   100% covered, mirroring `test/admin/escrowScopesApi.test.ts`'s conventions.
+
+- **2026-09-12 (continued) — Phase 4 of consuming restapi's next batch: GDPR data export (Group D1).**
+  New `src/mail/dataExportApi.ts` - `createExportRequest({format, mailboxUid?})` (own mailbox unless a
+  trusted caller supplies one), `listExportRequests()`, `getExportRequest(uid)`, and
+  `exportRequestDownloadUrl(uid)`. That last one is deliberately a plain URL-builder, not a fetch
+  wrapper - the download endpoint streams raw bytes back with its own `content-disposition: attachment`
+  header, so a caller renders it directly as `<a href={...}>` and lets the browser handle the download
+  natively, the exact same "no JS fetch/blob needed" pattern `mailApi.ts`'s `attachmentContentUrl()`
+  already established for attachment downloads - discovered by checking how attachments are actually
+  downloaded in `web-client` before inventing a blob-fetch helper that would have duplicated existing,
+  working infrastructure. 100% covered.
