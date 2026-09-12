@@ -429,3 +429,13 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
   out to be a real bug, but entirely in `web-client` - see that repo's own NOTES.md for the fix; no change
   needed here since `buildEscrowWrap()`/`getEscrowInfo()` themselves were already correct, just never
   called from the rotation flow.
+
+- **2026-09-12 (continued) — Phase 3 of consuming restapi's next batch (compliance roadmap Groups A-F):
+  Retention Policy (Group C).** New `src/admin/retentionPolicyApi.ts` - `getRetentionPolicy()`/
+  `updateRetentionPolicy(patch)` over the deployment-wide singleton `RetentionPolicy` row
+  (`mail/retention-policy`), mirroring `keyvaultApi.ts`'s `getEncryptionPolicy()`/`updateEncryptionPolicy()`
+  shape exactly (same singleton-GET/admin-PUT pattern). Both fields (`messageRetentionDays`,
+  `auditLogRetentionDays`) are optional - `undefined` means "no automatic purge" - and `GET` never 404s,
+  returning `{}` when unset. Exported `MIN_AUDIT_LOG_RETENTION_DAYS` (2190) purely so client-side
+  validation copy can quote the same number the server enforces; the server is the real gate either way.
+  100% covered, mirroring `test/admin/escrowScopesApi.test.ts`'s conventions.
