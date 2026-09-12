@@ -281,3 +281,50 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
     and a test-authoring bug caught along the way (a fixture missing a distinct `folderUid` let a
     stale pre-search render satisfy an assertion that should have waited for the real search response).
   - Full suite: 100%/99%+ branches held; every new file has its own dedicated test file.
+
+- **2026-09-11 (continued) — `search.md` Tier 3: server-assisted narrowing over encrypted mail.**
+  Investigation before starting Tier 2 (the local encrypted index) found two real infrastructure
+  blockers - `web-client`'s shared Vite build has no proven Worker-bundling support (a prior
+  Monaco-editor attempt hit this exact wall, `server/.claude/NOTES.md` 2026-09-06), and
+  `electron-client`'s own NOTES.md explicitly says not to add native-module/packaging scope without
+  asking first. Confirmed with JP (plan-mode `AskUserQuestion`) to build **Tier 3 first** instead -
+  it needs none of that, just the already-shipped `candidates()` endpoint plus crypto that already
+  exists. Tier 2 remains a separate future effort.
+  - `crypto/messageSecurity.ts`'s `MessageSecurityResult` gained `subject?: string`, recovered from
+    `protectedHeaders.subject` whenever content was actually decrypted/verified
+    (`signed_verified`/`encrypted`/`encrypted_verified`) - needed because RFC 9788 header protection
+    obscures the outer envelope's own `Subject` to `"[...]"` under the required `hcp_baseline`
+    default, so `Message.subject` from the server is useless for content matching/display of an
+    encrypted message's real subject. Additive; no existing test needed to change.
+  - New `search/searchTier3.ts#searchEncryptedCandidates()`: calls `searchApi.ts#candidates()`
+    (participants derived from `from`/`to`/`cc`; every other structured filter passes straight
+    through from `ParsedSearchQuery`), decrypts each returned candidate
+    (`getMessageRawContent()` + `evaluateMessageSecurity()`), and keeps only the ones whose real
+    content actually matches the free-text remainder (AND-of-terms, case-insensitive) - the one
+    thing the server structurally cannot verify for encrypted mail. Forces `types: ["message"]`
+    always: contacts are never encrypted (Tier 1 already covers them), and calendarEvent/note/task
+    encryption has no client-side decrypt path anywhere in this codebase yet. Short-circuits to `[]`
+    (no request at all) when `unlocked` is absent or the query has no free text and no structured
+    filter, mirroring `BaseSearchRoute`'s own "at least one of q or a filter" requirement.
+  - **Deliberately not `dompurify` for HTML-to-text stripping**, despite that being this codebase's
+    usual tool for handling a decrypted body (`MessageDetailPane.tsx`) - discovered mid-implementation
+    that `dompurify`'s `sanitize()` only exists once handed a real `window` (throws `TypeError:
+    default.sanitize is not a function` under this package's plain-Node test environment), while
+    `pkijs`'s ECDH key derivation - which every crypto test here depends on - breaks under jsdom's
+    WebCrypto shim (`ArgumentError: Parameter 'Zbuffer' is not of type ArrayBuffer`). No single
+    environment satisfies both, so `stripHtml()` is a small hand-rolled regex instead - not a
+    security boundary (the output only ever feeds a substring match, never touches a real DOM), and
+    it behaves identically in Node, jsdom, and a real browser/Electron renderer.
+  - Also generates a snippet locally (context window around the first matched term, or the start of
+    the body for a pure-operator query) per spec §7's "client MUST generate snippets locally for any
+    result it has decrypted... so snippet presence does not visibly differ by tier" - a small addition
+    beyond the original plan, cheap given the matching code already has the stripped body in hand.
+  - `web-client`'s `apps/www/index.tsx` runs Tier 3 alongside Tier 1 (`Promise.all`, only on the
+    first page - no pagination wiring for it yet, a deliberate scope trim) and merges via a new
+    `mergeSearchResults()`: both sides normalized independently through `searchScoring.ts`'s
+    `normalizeServerScores()` (their raw scores occupy unrelated ranges), then merged by `entityUid`
+    with a Tier 3 hit replacing a Tier 1 `metadataOnly` guess for the same message. See that repo's
+    own NOTES.md, same date, for the UI-side details.
+  - Full suite: 100%/98.97% branches (one new accepted gap, `searchTier3.ts`'s `security.subject ??
+    ""` - `ProtectedHeaders.subject` is a required field, so the fallback is unreachable whenever the
+    surrounding guard already required `subject` to be set - documented in `vitest.config.ts`).

@@ -61,6 +61,7 @@ describe("evaluateMessageSecurity", () => {
             const result = await evaluateMessageSecurity(rawMime, undefined);
             expect(result.state).toBe("signed_verified");
             expect(result.html).toBe("Hello, Bob.");
+            expect(result.subject).toBe("Real subject");
         });
 
         it("is signature_failed when the signed body was tampered with in transit", async () => {
@@ -145,6 +146,28 @@ describe("evaluateMessageSecurity", () => {
             const result = await evaluateMessageSecurity(rawMime, { encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer });
             expect(result.state).toBe("encrypted_verified");
             expect(result.html).toBe("Secret body.");
+        });
+
+        it("recovers the real subject from the protected headers, not the (possibly obscured) outer envelope", async () => {
+            const bob = await generateTestIdentity("bob@example.com", "encrypt");
+            const part = await buildEncryptedMessage("text/plain; charset=utf-8", "Secret body.", HEADERS, HEADERS, [bob.certDer]);
+            const rawMime = assembleOutboundMime(HEADERS, part);
+
+            const result = await evaluateMessageSecurity(rawMime, { encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer });
+            expect(result.subject).toBe("Real subject");
+        });
+
+        it("recovers the real subject through a sign-then-encrypt message too", async () => {
+            const alice = await generateTestIdentity("alice@example.com", "sign");
+            const bob = await generateTestIdentity("bob@example.com", "encrypt");
+            const part = await buildEncryptedMessage("text/plain; charset=utf-8", "Secret body.", HEADERS, HEADERS, [bob.certDer], {
+                certDer: alice.certDer,
+                privateKey: alice.privateKey,
+            });
+            const rawMime = assembleOutboundMime(HEADERS, part);
+
+            const result = await evaluateMessageSecurity(rawMime, { encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer });
+            expect(result.subject).toBe("Real subject");
         });
 
         it("reports headerTamperDetected: false when the raw MIME's outer envelope matches the HP-Outer copies", async () => {

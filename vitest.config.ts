@@ -50,6 +50,13 @@ export default defineConfig({
                     //    signing function ever actually embeds), and `decryptEnvelopedData()`'s
                     //    non-Error-thrown fallback (only reachable with zero recipientInfos, which
                     //    `encryptForRecipients()` never produces in practice).
+                    // 3. queryGrammar.ts#extractFirst()'s `match[2] ?? match[3] ?? ""` fallback - the
+                    //    regex it follows requires one of group 2 (quoted value) or group 3 (bare value)
+                    //    whenever it matches at all, so the `?? ""` arm is unreachable.
+                    // 4. searchTier3.ts's `security.subject ?? ""` - `ProtectedHeaders.subject` is a
+                    //    required (non-optional) string field, so whenever `MessageSecurityResult.subject`
+                    //    is set at all (which the surrounding `!security.html && !security.subject` guard
+                    //    already requires before this line is reached), it is never `undefined`.
                     branches: 98,
                     functions: 100,
                     lines: 100,

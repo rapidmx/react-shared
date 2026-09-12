@@ -42,6 +42,14 @@ export interface MessageSecurityResult {
      * `undefined` for anything that isn't an encrypted message this device could decrypt (unprotected,
      * signed-only, or an encrypted message that failed to decrypt at all - nothing to compare). */
     headerTamperDetected?: boolean;
+    /** The real subject recovered from the message's protected headers - RFC 9788 header protection
+     * obscures the outer envelope's own `Subject` to `"[...]"` under the required `hcp_baseline` default
+     * (`smimeMessage.ts`'s `applyBaselineOuterHeaders()`), so `Message.subject` from the server is not
+     * usable for content search/display of an encrypted message's real subject. Populated only when
+     * content was actually recovered (`signed_verified`/`encrypted`/`encrypted_verified`) - absent for
+     * `"unprotected"` or a failed decrypt, where the caller already has the real, non-obscured
+     * `Message.subject` directly and needs no override. */
+    subject?: string;
 }
 
 function isSignedOnlyContentType(contentType: string): boolean {
@@ -105,7 +113,7 @@ export async function evaluateMessageSecurity(
         if (!parsed.verified || !(await checkPinning(parsed.signerCertificateDer))) {
             return { state: "signature_failed" };
         }
-        return { state: "signed_verified", html: parsed.bodyText };
+        return { state: "signed_verified", html: parsed.bodyText, subject: parsed.protectedHeaders?.subject };
     }
 
     if (isEncryptedContentType(contentType)) {
@@ -116,13 +124,14 @@ export async function evaluateMessageSecurity(
         if (!parsed.decrypted) {
             return { state: "encrypted", decryptError: NO_KEY_ERROR };
         }
+        const subject = parsed.protectedHeaders?.subject;
         if (parsed.signatureVerified === undefined) {
-            return { state: "encrypted", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected };
+            return { state: "encrypted", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected, subject };
         }
         if (parsed.signatureVerified && (await checkPinning(parsed.signerCertificateDer))) {
-            return { state: "encrypted_verified", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected };
+            return { state: "encrypted_verified", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected, subject };
         }
-        return { state: "signature_failed", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected };
+        return { state: "signature_failed", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected, subject };
     }
 
     return { state: "unprotected" };
