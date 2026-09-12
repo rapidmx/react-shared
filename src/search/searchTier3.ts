@@ -130,7 +130,16 @@ function matchesFreeText(queryText: string, haystack: string): boolean {
 
 /** Counts (case-insensitive, overlapping-safe-enough for scoring purposes) occurrences of every
  * positive term/phrase in `queryText` within `haystack` - used only to weight a match's score, not to
- * decide whether it matches at all (`matchesFreeText()` already decided that). */
+ * decide whether it matches at all (`matchesFreeText()` already decided that).
+ *
+ * Returns the same flat `1` for a query with real free text that happens to be entirely `-negated`
+ * (e.g. `-spam -junk`) as for a true pure-operator query with no free text at all - there is no positive
+ * term to count occurrences of either way, so no content-relevance signal exists to differentiate on.
+ * This is not a scoring regression relative to Tier 1: `PostgresFullTextSearchProvider`'s own
+ * `ts_rank(search_vector, websearch_to_tsquery(...))` degrades identically for an all-negative tsquery
+ * (no positive lexeme contributes rank weight), so every Tier 1 result for the same query is equally
+ * flat before `normalizeServerScores()` sinks both tiers' batches to `0` together - consistent, not a
+ * one-sided disadvantage for Tier 3. */
 function countTermOccurrences(queryText: string, haystack: string): number {
     const terms = positiveTermTexts(queryText);
     if (terms.length === 0) {

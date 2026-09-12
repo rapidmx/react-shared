@@ -508,3 +508,29 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
   implementation one (reusing the shared `HEADERS` fixture's own subject, which contained "budget",
   across messages meant to differ only by body content - fixed with a neutral subject per fixture).
   Rebuilt and refreshed `web-client`'s own patch to pick this up, same date.
+
+- **2026-09-12 (continued) — Adversarial review pass over the searchTier3.ts rewrite above: one
+  candidate finding investigated and determined NOT a bug, documented and pinned with a test instead of
+  changed.** A reviewer flagged that an all-`-negated` free-text query (e.g. `-spam -junk`, no positive
+  terms at all) makes `countTermOccurrences()` fall into its `terms.length === 0 -> return 1` fallback for
+  every candidate that survives the negation filter, giving them all an identical flat score that
+  `searchScoring.ts#normalizeServerScores()` then normalizes to `0` (its own documented behavior for a
+  zero-range batch) - sinking genuinely content-matched, encrypted-only Tier 3 results to the bottom of
+  any merged ranking against Tier 1.
+  - **Investigated rather than assumed either way**: read `restapi/src/search/PostgresFullTextSearchProvider.ts`
+    directly to check what Tier 1 actually does for the identical query shape. Confirmed
+    `ts_rank(search_vector, websearch_to_tsquery(...))` degrades the same way for an all-negative
+    tsquery - there's no positive lexeme for `ts_rank` to weight, so Tier 1's own batch for the same
+    query is *also* flat, and *also* normalizes to `0`. Both tiers tie together rather than Tier 3 being
+    one-sidedly disadvantaged relative to a genuinely-differentiated Tier 1 batch - the actual outcome the
+    "same query language across tiers" parity goal wants, not a regression.
+  - Also confirmed mathematically that no alternative constant in place of `1` would change the outcome:
+    `normalizeServerScores()`'s zero-range branch ignores the tied value entirely and always returns `0`
+    - so this isn't fixable (or brokeN) at `countTermOccurrences()`'s level at all; whatever "problem"
+    exists lives in the independent-per-tier-normalization-then-raw-merge design itself, which is its own
+    pre-existing, deliberately-scoped decision (that file's own module doc comment: real cross-source
+    score-space unification is out of scope for this pass).
+  - Added a doc comment on `countTermOccurrences()` spelling out this reasoning (so a future reviewer
+    doesn't re-flag it without checking Tier 1's own behavior first) and a pinning test asserting two
+    genuinely different-content candidates get the identical score for an all-negated query - protects
+    against a future change accidentally making this asymmetric between tiers instead of symmetric.

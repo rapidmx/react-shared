@@ -414,4 +414,35 @@ describe("searchEncryptedCandidates", () => {
         expect(result).toHaveLength(1);
         expect(result[0].snippet).toContain("budget");
     });
+
+    it("gives every candidate the same flat score for an all-negated query, matching Tier 1's own degenerate ts_rank for the same query shape", async () => {
+        const bob = await generateTestIdentity("bob@example.com");
+        const unlocked = { masterKey: new Uint8Array(32), encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer } as UnlockedKeys;
+        const neutralHeaders: ProtectedHeaders = { ...HEADERS, subject: "Update" };
+        const rawA = await buildEncryptedRawMime("Here is the final report, nothing excluded.", neutralHeaders, bob);
+        const rawB = await buildEncryptedRawMime("Here is a much longer final report with extra unrelated padding.", neutralHeaders, bob);
+
+        mockFetch((url) => {
+            if (url.includes("/search/candidates")) {
+                return jsonResponse(200, {
+                    candidates: [
+                        { entityType: "message", entityUid: "m1" },
+                        { entityType: "message", entityUid: "m2" },
+                    ],
+                });
+            }
+            if (url.includes("/messages/m1/raw")) return new Response(rawA, { status: 200 });
+            if (url.includes("/messages/m2/raw")) return new Response(rawB, { status: 200 });
+            throw new Error(`unexpected ${url}`);
+        });
+
+        // No positive term exists to differentiate on - both candidates that pass the negation filter
+        // get the same flat score, exactly like a pure-operator query with no free text at all. This is
+        // intentional (see countTermOccurrences()'s own doc comment), not an oversight: Tier 1's
+        // ts_rank() degrades identically for an all-negative tsquery, so both tiers tie together rather
+        // than Tier 3 being unfairly disadvantaged relative to a genuinely-differentiated Tier 1 batch.
+        const result = await searchEncryptedCandidates(baseParsedQuery({ text: "-spam -junk" }), unlocked);
+        expect(result).toHaveLength(2);
+        expect(result[0].score).toBe(result[1].score);
+    });
 });
