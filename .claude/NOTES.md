@@ -462,3 +462,13 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
   it can't reuse that helper here either - same duplication `uploadAttachment()` already accepted for the
   identical reason. 100% covered, mirroring `test/mail/mailApi.test.ts`'s own `uploadAttachment`
   describe-block conventions (every response-shape/error-path branch, not just the happy path).
+
+- **2026-09-12 (continued) — Phase 6 of consuming restapi's next batch: GDPR right-to-erasure
+  (Group E).** New `src/mail/erasureRequestApi.ts` - `createErasureRequest()` (no parameters at all -
+  unlike `dataExportApi.ts`/`mailboxImportApi.ts`, there is no admin-on-behalf-of path or `mailboxUid`
+  override; always the caller's own mailbox, matching the route's own real signature exactly),
+  `listErasureRequests()`, `getErasureRequest(uid)`, `approveErasureRequest(uid)`/
+  `denyErasureRequest(uid, reason)` (trusted-admin-only server-side). `approveErasureRequest()`'s own doc
+  comment flags the 409-if-legal-hold case explicitly, since it's the one error path a caller needs to
+  handle differently in the UI (surface the server's own message, which names the blocking Matter). 100%
+  covered.
