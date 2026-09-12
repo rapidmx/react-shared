@@ -69,7 +69,10 @@ export interface SearchParams {
     labels?: string[];
 }
 
-function buildSearchParams(text: string, params: SearchParams): URLSearchParams {
+/** Exported so `admin/matterSearchApi.ts` can build the identical query-param set against a different
+ * base path (`escrow/matter-search`, plus its own required `matterId`) — `BaseMatterSearchRoute` reuses
+ * this exact same query-param grammar verbatim, per its own doc comment. */
+export function buildSearchParams(text: string, params: SearchParams): URLSearchParams {
     const query = new URLSearchParams({ q: text });
     if (params.types?.length) {
         query.set("types", params.types.join(","));

@@ -472,3 +472,18 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
   comment flags the 409-if-legal-hold case explicitly, since it's the one error path a caller needs to
   handle differently in the UI (surface the server's own message, which names the blocking Matter). 100%
   covered.
+
+- **2026-09-12 (continued) — Phase 7 of consuming restapi's next batch: eDiscovery, Matter export +
+  Matter-scoped search (Group F).** New `src/admin/matterExportApi.ts` -
+  `createMatterExportRequest(matterId)`, `listMatterExportRequests()`, `getMatterExportRequest(uid)`,
+  `matterExportRequestDownloadUrl(uid)` (same plain-URL-builder/native-`<a href>` download pattern as
+  Phase 4's `exportRequestDownloadUrl()` - no fetch/blob wrapper needed). New
+  `src/admin/matterSearchApi.ts` - `searchMatter(matterId, text, params?)`, returning
+  `Record<mailboxUid, SearchResultPage>`. Both live under `src/admin/` (not `src/mail/`) to match
+  `mattersApi.ts`'s existing precedent - that folder holds every Matter/Escrow-family wrapper regardless
+  of the actual authz gate, holder-only included. Exported `search/searchApi.ts`'s previously-private
+  `buildSearchParams(text, params)` so `matterSearchApi.ts` reuses the identical operator-grammar
+  query-param logic against a different base path, rather than re-implementing it - confirmed via
+  `BaseMatterSearchRoute`'s own doc comment that it fans out the same grammar verbatim, just once per
+  custodian mailbox. 100% covered on all three files (`searchApi.ts`'s existing suite, plus two new test
+  files).
