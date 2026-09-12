@@ -47,29 +47,99 @@ function stripHtml(html: string): string {
         .trim();
 }
 
-/** `true` when every whitespace-separated term in `queryText` appears case-insensitively somewhere in
- * `haystack` - AND semantics, matching how a plain free-text search box query reads intuitively. An
- * empty `queryText` (a pure-operator query - the operators themselves already did the narrowing)
+interface FreeTextTerm {
+    /** The literal text to match - a whole phrase (quotes stripped) or a single word. */
+    text: string;
+    /** `true` for a `-`-prefixed term (`-word`/`-"a phrase"`) - `haystack` must NOT contain it. */
+    negated: boolean;
+    /** `true` when this term came from a `"quoted phrase"` - kept separate from a plain word so an
+     * exact, literal `"OR"` (quoted) is never mistaken for the `OR` group separator below. */
+    isPhrase: boolean;
+}
+
+/** Tokenizes `queryText`'s free-text remainder the same way `queryGrammar.ts`'s own doc comment says a
+ * provider's free-text engine is expected to (Postgres's `websearch_to_tsquery` in particular) - a
+ * `"quoted phrase"` is one term, and a leading `-` (`-word`/`-"a phrase"`) negates it. Without this,
+ * Tier 3's own matching silently diverged from Tier 1's (a quoted phrase split into separate
+ * AND-matched words; `-excluded` treated as a literal required word instead of a negation) - `specs/
+ * search.md` §14 requires the same query language across tiers "or the tiering becomes visible to the
+ * user." */
+function tokenizeFreeText(queryText: string): FreeTextTerm[] {
+    const terms: FreeTextTerm[] = [];
+    const pattern = /(-?)"([^"]*)"|(-?)(\S+)/g;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(queryText)) !== null) {
+        if (match[2] !== undefined) {
+            if (match[2]) {
+                terms.push({ text: match[2], negated: match[1] === "-", isPhrase: true });
+            }
+        } else {
+            // match[4] is always non-empty here: the `(-?)(\S+)` alternative only ever matches via `\S+`,
+            // which requires at least one character.
+            terms.push({ text: match[4], negated: match[3] === "-", isPhrase: false });
+        }
+    }
+    return terms;
+}
+
+/** Splits a flat term list into `OR`-separated alternative groups (each an implicit AND of its own
+ * terms), mirroring `websearch_to_tsquery`'s `OR` support - `budget OR forecast` matches either, not
+ * both. A bare, unquoted, unnegated `OR` token is the separator itself, never matched against content;
+ * an empty group (a leading/trailing/doubled `OR`) is dropped. */
+function groupByOr(terms: FreeTextTerm[]): FreeTextTerm[][] {
+    const groups: FreeTextTerm[][] = [[]];
+    for (const term of terms) {
+        if (!term.isPhrase && !term.negated && term.text === "OR") {
+            groups.push([]);
+        } else {
+            groups[groups.length - 1].push(term);
+        }
+    }
+    return groups.filter((group) => group.length > 0);
+}
+
+/** The positive (non-negated, non-`OR`-separator) term texts in `queryText`, for scoring/snippet
+ * purposes only - those don't need OR's alternative-groups structure, just "what to count/highlight". */
+function positiveTermTexts(queryText: string): string[] {
+    return tokenizeFreeText(queryText)
+        .filter((term) => !term.negated && !(term.isPhrase === false && term.text === "OR"))
+        .map((term) => term.text);
+}
+
+/** `true` when `haystack` satisfies `queryText`'s free-text remainder - quoted phrases matched whole,
+ * a `-`-prefixed term required absent, and (at least) one `OR`-separated group's terms all satisfied.
+ * An empty `queryText` (a pure-operator query - the operators themselves already did the narrowing)
  * matches unconditionally. */
 function matchesFreeText(queryText: string, haystack: string): boolean {
-    const terms = queryText.split(/\s+/).filter(Boolean);
+    const terms = tokenizeFreeText(queryText);
     if (terms.length === 0) {
         return true;
     }
+    const groups = groupByOr(terms);
+    if (groups.length === 0) {
+        return true;
+    }
     const lowerHaystack = haystack.toLowerCase();
-    return terms.every((term) => lowerHaystack.includes(term.toLowerCase()));
+    return groups.some((group) =>
+        group.every((term) => {
+            const present = lowerHaystack.includes(term.text.toLowerCase());
+            return term.negated ? !present : present;
+        }),
+    );
 }
 
-/** Counts (case-insensitive, overlapping-safe-enough for scoring purposes) occurrences of every term
- * in `queryText` within `haystack` - used only to weight a match's score, not to decide whether it
- * matches at all (`matchesFreeText()` already decided that). */
+/** Counts (case-insensitive, overlapping-safe-enough for scoring purposes) occurrences of every
+ * positive term/phrase in `queryText` within `haystack` - used only to weight a match's score, not to
+ * decide whether it matches at all (`matchesFreeText()` already decided that). */
 function countTermOccurrences(queryText: string, haystack: string): number {
-    const terms = queryText.split(/\s+/).filter(Boolean);
+    const terms = positiveTermTexts(queryText);
     if (terms.length === 0) {
         return 1;
     }
     const lowerHaystack = haystack.toLowerCase();
     return terms.reduce((total, term) => {
+        // Never empty: tokenizeFreeText() only ever pushes a term with at least one character, whether
+        // matched via `\S+` (which requires one) or a quoted phrase (explicitly checked non-empty there).
         const lowerTerm = term.toLowerCase();
         let count = 0;
         let index = lowerHaystack.indexOf(lowerTerm);
@@ -90,7 +160,7 @@ function countTermOccurrences(queryText: string, haystack: string): number {
  * reaching this function. */
 function buildSnippet(queryText: string, subjectText: string, bodyText: string): string {
     const source = bodyText || subjectText;
-    const terms = queryText.split(/\s+/).filter(Boolean);
+    const terms = positiveTermTexts(queryText);
     const lowerSource = source.toLowerCase();
     let matchIndex = -1;
     for (const term of terms) {

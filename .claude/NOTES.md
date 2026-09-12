@@ -487,3 +487,24 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
   `BaseMatterSearchRoute`'s own doc comment that it fans out the same grammar verbatim, just once per
   custodian mailbox. 100% covered on all three files (`searchApi.ts`'s existing suite, plus two new test
   files).
+
+- **2026-09-12 (continued) — Fixed a real Tier 1/Tier 3 parity bug in `search/searchTier3.ts`, found
+  while auditing outstanding spec work: `matchesFreeText()`/`countTermOccurrences()`/`buildSnippet()` all
+  split the free-text remainder on plain whitespace, so a `"quoted phrase"` was matched as separate
+  AND-ed words instead of a whole phrase, a `-negated` term was treated as a literal required word instead
+  of an exclusion, and `budget OR forecast` required both words rather than either - directly contradicting
+  `specs/search.md` §14's "the same query language across tiers, or the tiering becomes visible to the
+  user," since Tier 1's Postgres `websearch_to_tsquery`/OpenSearch already handle all three correctly.**
+  Added `tokenizeFreeText()` (quote/negation-aware, mirroring `queryGrammar.ts`'s own extraction
+  conventions) and `groupByOr()` (splits on a bare unquoted `OR` into alternative AND-groups, `.some()`
+  across them); `countTermOccurrences()`/`buildSnippet()` now share a `positiveTermTexts()` helper so
+  scoring/snippeting stay consistent with what actually matched, ignoring negated terms. Removed two
+  defensive checks (`if (match[2])` false branch already handled by the empty-string skip one line up
+  being the only route there; `match[4]` truthy-check) that turned out unreachable given the regex's own
+  structure, rather than writing untestable coverage for them - same "don't keep a guard the surrounding
+  code makes impossible" precedent as elsewhere this session. Added 6 new tests (quoted phrase, negation,
+  OR, literal quoted `"OR"` not mistaken for the separator, bare `OR` with nothing real on either side,
+  an empty `""` contributing no requirement) - two of the first drafts had a test-authoring bug, not an
+  implementation one (reusing the shared `HEADERS` fixture's own subject, which contained "budget",
+  across messages meant to differ only by body content - fixed with a neutral subject per fixture).
+  Rebuilt and refreshed `web-client`'s own patch to pick this up, same date.

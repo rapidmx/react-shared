@@ -279,4 +279,139 @@ describe("searchEncryptedCandidates", () => {
         const result = await searchEncryptedCandidates(baseParsedQuery({ text: "plain" }), unlocked);
         expect(result).toEqual([]);
     });
+
+    it("matches a quoted phrase only when it appears as a whole, not as separate words in any order", async () => {
+        const bob = await generateTestIdentity("bob@example.com");
+        const unlocked = { masterKey: new Uint8Array(32), encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer } as UnlockedKeys;
+        // A neutral subject (not HEADERS's own "Quarterly budget review") - otherwise the subject alone
+        // would satisfy the phrase for both messages regardless of body content.
+        const neutralHeaders: ProtectedHeaders = { ...HEADERS, subject: "Update" };
+        const matchingRaw = await buildEncryptedRawMime("The quarterly budget review is attached.", neutralHeaders, bob);
+        const nonMatchingRaw = await buildEncryptedRawMime("The budget for this quarterly review is separate.", neutralHeaders, bob);
+
+        mockFetch((url) => {
+            if (url.includes("/search/candidates")) {
+                return jsonResponse(200, {
+                    candidates: [
+                        { entityType: "message", entityUid: "m1" },
+                        { entityType: "message", entityUid: "m2" },
+                    ],
+                });
+            }
+            if (url.includes("/messages/m1/raw")) return new Response(matchingRaw, { status: 200 });
+            if (url.includes("/messages/m2/raw")) return new Response(nonMatchingRaw, { status: 200 });
+            throw new Error(`unexpected ${url}`);
+        });
+
+        const result = await searchEncryptedCandidates(baseParsedQuery({ text: '"quarterly budget"' }), unlocked);
+        expect(result).toHaveLength(1);
+        expect(result[0].entityUid).toBe("m1");
+        expect(result[0].snippet).toContain("quarterly budget review");
+    });
+
+    it("excludes a candidate whose content contains a negated term", async () => {
+        const bob = await generateTestIdentity("bob@example.com");
+        const unlocked = { masterKey: new Uint8Array(32), encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer } as UnlockedKeys;
+        const excludedRaw = await buildEncryptedRawMime("Here is the draft budget figures.", HEADERS, bob);
+        const keptRaw = await buildEncryptedRawMime("Here is the final budget figures.", HEADERS, bob);
+
+        mockFetch((url) => {
+            if (url.includes("/search/candidates")) {
+                return jsonResponse(200, {
+                    candidates: [
+                        { entityType: "message", entityUid: "m1" },
+                        { entityType: "message", entityUid: "m2" },
+                    ],
+                });
+            }
+            if (url.includes("/messages/m1/raw")) return new Response(excludedRaw, { status: 200 });
+            if (url.includes("/messages/m2/raw")) return new Response(keptRaw, { status: 200 });
+            throw new Error(`unexpected ${url}`);
+        });
+
+        const result = await searchEncryptedCandidates(baseParsedQuery({ text: "budget -draft" }), unlocked);
+        expect(result).toHaveLength(1);
+        expect(result[0].entityUid).toBe("m2");
+    });
+
+    it("matches a candidate satisfying either side of an OR query", async () => {
+        const bob = await generateTestIdentity("bob@example.com");
+        const unlocked = { masterKey: new Uint8Array(32), encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer } as UnlockedKeys;
+        // A neutral subject (not HEADERS's own "Quarterly budget review") - otherwise "budget" in the
+        // subject would satisfy the query for every message regardless of body content.
+        const neutralHeaders: ProtectedHeaders = { ...HEADERS, subject: "Update" };
+        const forecastRaw = await buildEncryptedRawMime("The forecast numbers are attached.", neutralHeaders, bob);
+        const budgetRaw = await buildEncryptedRawMime("The budget numbers are attached.", neutralHeaders, bob);
+        const neitherRaw = await buildEncryptedRawMime("Nothing relevant here at all.", neutralHeaders, bob);
+
+        mockFetch((url) => {
+            if (url.includes("/search/candidates")) {
+                return jsonResponse(200, {
+                    candidates: [
+                        { entityType: "message", entityUid: "m1" },
+                        { entityType: "message", entityUid: "m2" },
+                        { entityType: "message", entityUid: "m3" },
+                    ],
+                });
+            }
+            if (url.includes("/messages/m1/raw")) return new Response(forecastRaw, { status: 200 });
+            if (url.includes("/messages/m2/raw")) return new Response(budgetRaw, { status: 200 });
+            if (url.includes("/messages/m3/raw")) return new Response(neitherRaw, { status: 200 });
+            throw new Error(`unexpected ${url}`);
+        });
+
+        const result = await searchEncryptedCandidates(baseParsedQuery({ text: "budget OR forecast" }), unlocked);
+        expect(result.map((r) => r.entityUid).sort()).toEqual(["m1", "m2"]);
+    });
+
+    it("treats a literal quoted \"OR\" as a phrase to match, not as a group separator", async () => {
+        const bob = await generateTestIdentity("bob@example.com");
+        const unlocked = { masterKey: new Uint8Array(32), encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer } as UnlockedKeys;
+        const raw = await buildEncryptedRawMime("Approved OR denied, pending review.", HEADERS, bob);
+
+        mockFetch((url) => {
+            if (url.includes("/search/candidates")) return jsonResponse(200, { candidates: [{ entityType: "message", entityUid: "m1" }] });
+            if (url.includes("/messages/m1/raw")) return new Response(raw, { status: 200 });
+            throw new Error(`unexpected ${url}`);
+        });
+
+        const result = await searchEncryptedCandidates(baseParsedQuery({ text: '"approved OR denied"' }), unlocked);
+        expect(result).toHaveLength(1);
+    });
+
+    it("matches unconditionally when the free text is nothing but a bare OR (no actual terms on either side)", async () => {
+        const bob = await generateTestIdentity("bob@example.com");
+        const unlocked = { masterKey: new Uint8Array(32), encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer } as UnlockedKeys;
+        const raw = await buildEncryptedRawMime("Completely unrelated content.", HEADERS, bob);
+
+        mockFetch((url) => {
+            if (url.includes("/search/candidates")) return jsonResponse(200, { candidates: [{ entityType: "message", entityUid: "m1" }] });
+            if (url.includes("/messages/m1/raw")) return new Response(raw, { status: 200 });
+            throw new Error(`unexpected ${url}`);
+        });
+
+        // An edge case with no real terms at all (every OR-separated group ends up empty) - falls back to
+        // matching unconditionally, the same as an empty query text.
+        const result = await searchEncryptedCandidates(baseParsedQuery({ text: "OR" }), unlocked);
+        expect(result).toHaveLength(1);
+    });
+
+    it("ignores an empty quoted phrase in the free text rather than treating it as a real term", async () => {
+        const bob = await generateTestIdentity("bob@example.com");
+        const unlocked = { masterKey: new Uint8Array(32), encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer } as UnlockedKeys;
+        const raw = await buildEncryptedRawMime("Here is the quarterly budget figures.", HEADERS, bob);
+
+        mockFetch((url) => {
+            if (url.includes("/search/candidates")) return jsonResponse(200, { candidates: [{ entityType: "message", entityUid: "m1" }] });
+            if (url.includes("/messages/m1/raw")) return new Response(raw, { status: 200 });
+            throw new Error(`unexpected ${url}`);
+        });
+
+        // An accidental empty pair of quotes alongside a real term - the empty phrase must contribute no
+        // requirement of its own (an empty string is trivially a substring of anything, so treating it as
+        // a real term would be harmless here, but it must not be counted/highlighted as a match either).
+        const result = await searchEncryptedCandidates(baseParsedQuery({ text: '"" budget' }), unlocked);
+        expect(result).toHaveLength(1);
+        expect(result[0].snippet).toContain("budget");
+    });
 });
