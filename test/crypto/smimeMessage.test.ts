@@ -1,0 +1,289 @@
+///////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
+///////////////////////////////////////////////////////////////////////////////
+import "reflect-metadata";
+import * as x509 from "@peculiar/x509";
+import { describe, expect, it } from "vitest";
+import {
+    ProtectedHeaders,
+    applyBaselineOuterHeaders,
+    buildEncryptedMessage,
+    buildSignedOnlyMessage,
+    parseEncryptedMessage,
+    parseSignedOnlyMessage,
+} from "../../src/crypto/smimeMessage.js";
+
+x509.cryptoProvider.set(crypto);
+
+interface TestIdentity {
+    certDer: Uint8Array;
+    privateKey: CryptoKey;
+}
+
+async function generateTestIdentity(cn: string, keyUsage: "sign" | "encrypt"): Promise<TestIdentity> {
+    const keys = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
+    const cert = await x509.X509CertificateGenerator.createSelfSigned({
+        serialNumber: "01",
+        name: `CN=${cn}`,
+        notBefore: new Date(),
+        notAfter: new Date(Date.now() + 86_400_000),
+        signingAlgorithm: { name: "ECDSA", hash: "SHA-256" },
+        keys,
+    });
+    let privateKey = keys.privateKey;
+    if (keyUsage === "encrypt") {
+        const pkcs8 = await crypto.subtle.exportKey("pkcs8", keys.privateKey);
+        privateKey = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+    }
+    return { certDer: new Uint8Array(cert.rawData), privateKey };
+}
+
+const HEADERS: ProtectedHeaders = {
+    from: "alice@example.com",
+    to: "bob@example.com",
+    cc: "carol@example.com",
+    date: "Wed, 11 Jan 2023 16:08:43 -0500",
+    subject: "Real subject line",
+    messageId: "<abc123@example.com>",
+};
+
+describe("applyBaselineOuterHeaders", () => {
+    it("obscures only the Subject, per RFC 9788's hcp_baseline default", () => {
+        const outer = applyBaselineOuterHeaders(HEADERS);
+        expect(outer.subject).toBe("[...]");
+        expect(outer.from).toBe(HEADERS.from);
+        expect(outer.to).toBe(HEADERS.to);
+        expect(outer.date).toBe(HEADERS.date);
+        expect(outer.messageId).toBe(HEADERS.messageId);
+    });
+});
+
+describe("buildSignedOnlyMessage / parseSignedOnlyMessage", () => {
+    it("round-trips: verifies, and recovers protected headers, body, and signer certificate", async () => {
+        const alice = await generateTestIdentity("alice@example.com", "sign");
+        const { contentType, body } = await buildSignedOnlyMessage("text/plain; charset=utf-8", "Hello, Bob.", HEADERS, alice.certDer, alice.privateKey);
+
+        expect(contentType).toContain("multipart/signed");
+        expect(contentType).toContain('protocol="application/pkcs7-signature"');
+
+        const result = await parseSignedOnlyMessage(contentType, body);
+        expect(result.verified).toBe(true);
+        expect(result.signerCertificateDer).toEqual(alice.certDer);
+        expect(result.bodyContentType).toContain("text/plain");
+        expect(result.bodyContentType).toContain('hp="clear"');
+        expect(result.bodyText).toBe("Hello, Bob.");
+        expect(result.protectedHeaders).toEqual(HEADERS);
+    });
+
+    it("fails verification when the body was tampered with in transit", async () => {
+        const alice = await generateTestIdentity("alice@example.com", "sign");
+        const { contentType, body } = await buildSignedOnlyMessage("text/plain; charset=utf-8", "Hello, Bob.", HEADERS, alice.certDer, alice.privateKey);
+
+        const tampered = body.replace("Hello, Bob.", "Hello, Eve.");
+        const result = await parseSignedOnlyMessage(contentType, tampered);
+        expect(result.verified).toBe(false);
+    });
+
+    it("reports unverified for a Content-Type with no boundary parameter", async () => {
+        const result = await parseSignedOnlyMessage("multipart/signed; protocol=\"application/pkcs7-signature\"", "irrelevant");
+        expect(result.verified).toBe(false);
+    });
+
+    it("reports unverified when the boundary produces fewer than two parts", async () => {
+        const result = await parseSignedOnlyMessage('multipart/signed; boundary="B"', "--B--");
+        expect(result.verified).toBe(false);
+    });
+
+    it("reports unverified when the signature part's body isn't valid base64", async () => {
+        const boundary = "B";
+        const body = [
+            `--${boundary}`,
+            "Content-Type: text/plain",
+            "",
+            "body text",
+            `--${boundary}`,
+            "Content-Type: application/pkcs7-signature",
+            "",
+            "not-valid-base64!!",
+            `--${boundary}--`,
+        ].join("\r\n");
+        const result = await parseSignedOnlyMessage(`multipart/signed; boundary="${boundary}"`, body);
+        expect(result.verified).toBe(false);
+    });
+});
+
+const HEADERS_NO_CC: ProtectedHeaders = {
+    from: "alice@example.com",
+    to: "bob@example.com",
+    date: "Wed, 11 Jan 2023 16:08:43 -0500",
+    subject: "Real subject line",
+    messageId: "<abc123@example.com>",
+};
+
+describe("parseSignedOnlyMessage header parsing", () => {
+    it("omits the Cc line entirely when there is no Cc (protected or HP-Outer)", async () => {
+        const alice = await generateTestIdentity("alice@example.com", "sign");
+        const { contentType, body } = await buildSignedOnlyMessage(
+            "text/plain; charset=utf-8",
+            "no cc here",
+            HEADERS_NO_CC,
+            alice.certDer,
+            alice.privateKey,
+        );
+        const result = await parseSignedOnlyMessage(contentType, body);
+        expect(result.verified).toBe(true);
+        expect(result.protectedHeaders?.cc).toBeUndefined();
+
+        const bob = await generateTestIdentity("bob@example.com", "encrypt");
+        const { body: encryptedBody } = await buildEncryptedMessage(
+            "text/plain",
+            "no cc here either",
+            HEADERS_NO_CC,
+            applyBaselineOuterHeaders(HEADERS_NO_CC),
+            [bob.certDer],
+        );
+        const encResult = await parseEncryptedMessage(encryptedBody, bob.certDer, bob.privateKey);
+        expect(encResult.protectedHeaders?.cc).toBeUndefined();
+    });
+
+    it("treats an entity with no blank-line separator as all-headers, empty body", async () => {
+        const alice = await generateTestIdentity("alice@example.com", "sign");
+        const boundary = "B";
+        // No blank-line separator anywhere in this inner entity at all.
+        const innerEntity = `Content-Type: text/plain; hp="clear"`;
+        const { signDetached } = await import("../../src/crypto/smime.js");
+        const signature = await signDetached(new TextEncoder().encode(innerEntity), alice.certDer, alice.privateKey);
+        const { toBase64 } = await import("../../src/crypto/encoding.js");
+        const body = [
+            `--${boundary}`,
+            innerEntity,
+            `--${boundary}`,
+            "Content-Type: application/pkcs7-signature",
+            "",
+            toBase64(signature),
+            `--${boundary}--`,
+        ].join("\r\n");
+
+        const result = await parseSignedOnlyMessage(`multipart/signed; boundary="${boundary}"`, body);
+        expect(result.verified).toBe(true);
+        expect(result.bodyText).toBe("");
+    });
+
+    it("skips a malformed header line with no colon, rather than treating it as a header", async () => {
+        const alice = await generateTestIdentity("alice@example.com", "sign");
+        const boundary = "B";
+        const innerEntity = ["not a real header line", `Content-Type: text/plain; hp="clear"`, "", "body text"].join("\r\n");
+        const { signDetached } = await import("../../src/crypto/smime.js");
+        const signature = await signDetached(new TextEncoder().encode(innerEntity), alice.certDer, alice.privateKey);
+        const { toBase64 } = await import("../../src/crypto/encoding.js");
+        const body = [
+            `--${boundary}`,
+            innerEntity,
+            `--${boundary}`,
+            "Content-Type: application/pkcs7-signature",
+            "",
+            toBase64(signature),
+            `--${boundary}--`,
+        ].join("\r\n");
+
+        const result = await parseSignedOnlyMessage(`multipart/signed; boundary="${boundary}"`, body);
+        expect(result.verified).toBe(true);
+        expect(result.bodyText).toBe("body text");
+    });
+});
+
+describe("buildEncryptedMessage / parseEncryptedMessage", () => {
+    it("round-trips an encrypted-only message (no inner signature)", async () => {
+        const bob = await generateTestIdentity("bob@example.com", "encrypt");
+        const outerHeaders = applyBaselineOuterHeaders(HEADERS);
+
+        const { contentType, body, additionalHeaders } = await buildEncryptedMessage(
+            "text/plain; charset=utf-8",
+            "Encrypted body content.",
+            HEADERS,
+            outerHeaders,
+            [bob.certDer],
+        );
+
+        expect(contentType).toContain('smime-type="enveloped-data"');
+        expect(additionalHeaders?.["Content-Transfer-Encoding"]).toBe("base64");
+
+        const result = await parseEncryptedMessage(body, bob.certDer, bob.privateKey);
+        expect(result.decrypted).toBe(true);
+        expect(result.signatureVerified).toBeUndefined();
+        expect(result.bodyContentType).toContain('hp="cipher"');
+        expect(result.bodyText).toBe("Encrypted body content.");
+        expect(result.protectedHeaders).toEqual(HEADERS);
+    });
+
+    it("round-trips a signed-then-encrypted message, verifying the inner signature", async () => {
+        const alice = await generateTestIdentity("alice@example.com", "sign");
+        const aliceEncrypt = await generateTestIdentity("alice@example.com", "encrypt");
+        const bob = await generateTestIdentity("bob@example.com", "encrypt");
+        const outerHeaders = applyBaselineOuterHeaders(HEADERS);
+
+        // Encrypt to self (aliceEncrypt) alongside the real recipient (bob), per the spec.
+        const { body } = await buildEncryptedMessage(
+            "text/plain; charset=utf-8",
+            "Signed and encrypted body.",
+            HEADERS,
+            outerHeaders,
+            [bob.certDer, aliceEncrypt.certDer],
+            { certDer: alice.certDer, privateKey: alice.privateKey },
+        );
+
+        const bobResult = await parseEncryptedMessage(body, bob.certDer, bob.privateKey);
+        expect(bobResult.decrypted).toBe(true);
+        expect(bobResult.signatureVerified).toBe(true);
+        expect(bobResult.signerCertificateDer).toEqual(alice.certDer);
+        expect(bobResult.bodyText).toBe("Signed and encrypted body.");
+
+        // The sender's own encrypt-to-self copy independently decrypts and verifies too.
+        const selfResult = await parseEncryptedMessage(body, aliceEncrypt.certDer, aliceEncrypt.privateKey);
+        expect(selfResult.decrypted).toBe(true);
+        expect(selfResult.signatureVerified).toBe(true);
+    });
+
+    it("reports not-decrypted for base64 that doesn't decode", async () => {
+        const bob = await generateTestIdentity("bob@example.com", "encrypt");
+        const result = await parseEncryptedMessage("not valid base64!!", bob.certDer, bob.privateKey);
+        expect(result.decrypted).toBe(false);
+    });
+
+    it("reports not-decrypted when decrypting with a key that was never a recipient", async () => {
+        const bob = await generateTestIdentity("bob@example.com", "encrypt");
+        const eve = await generateTestIdentity("eve@example.com", "encrypt");
+        const outerHeaders = applyBaselineOuterHeaders(HEADERS);
+
+        const { body } = await buildEncryptedMessage("text/plain", "secret", HEADERS, outerHeaders, [bob.certDer]);
+        const result = await parseEncryptedMessage(body, eve.certDer, eve.privateKey);
+        expect(result.decrypted).toBe(false);
+    });
+
+    it("reports not-decrypted when the embedded signed-data claim isn't even valid base64", async () => {
+        const bob = await generateTestIdentity("bob@example.com", "encrypt");
+        const { encryptForRecipients } = await import("../../src/crypto/smime.js");
+        const bogusEntity = ['Content-Type: application/pkcs7-mime; smime-type="signed-data"', "", "not-valid-base64!!"].join("\r\n");
+        const enveloped = await encryptForRecipients(new TextEncoder().encode(bogusEntity), [bob.certDer]);
+        const { toBase64 } = await import("../../src/crypto/encoding.js");
+
+        const result = await parseEncryptedMessage(toBase64(enveloped), bob.certDer, bob.privateKey);
+        expect(result.decrypted).toBe(false);
+    });
+
+    it("reports signatureVerified: false when the embedded signed-data is malformed", async () => {
+        const bob = await generateTestIdentity("bob@example.com", "encrypt");
+        // Build a plaintext entity that claims to be signed-data but contains garbage instead of a
+        // real CMS SignedData structure, then encrypt it directly (bypassing signOpaque()).
+        const { encryptForRecipients } = await import("../../src/crypto/smime.js");
+        const bogusEntity = ['Content-Type: application/pkcs7-mime; smime-type="signed-data"', "", "bm90IHJlYWwgc2lnbmVkIGRhdGE="].join(
+            "\r\n",
+        );
+        const enveloped = await encryptForRecipients(new TextEncoder().encode(bogusEntity), [bob.certDer]);
+        const { toBase64 } = await import("../../src/crypto/encoding.js");
+
+        const result = await parseEncryptedMessage(toBase64(enveloped), bob.certDer, bob.privateKey);
+        expect(result.decrypted).toBe(true);
+        expect(result.signatureVerified).toBe(false);
+    });
+});
