@@ -644,6 +644,24 @@ export function sendMessage(messageUid: string): Promise<Message> {
     return apiFetch(`/mail/messages/${encodeURIComponent(messageUid)}/send`, { method: "POST" });
 }
 
+/**
+ * Fetches a message's raw RFC 5322 MIME source — for client-side E2E decrypt/signature-verification
+ * only (`crypto/smimeMessage.ts`), never for display. Bypasses `apiFetch()` (which only ever decodes a
+ * JSON response body): this server-local route (`BaseMessageRawContentRoute.ts` in `server`, mounted
+ * alongside `@rapidmx/restapi`'s own `MessageRoute`) returns `message/rfc822`, not JSON — the one thing
+ * that library's own `GET /:id/content` deliberately never serves (see that route's own doc comment).
+ */
+export async function getMessageRawContent(messageUid: string): Promise<string> {
+    const res = await fetch(`/api/mail/messages/${encodeURIComponent(messageUid)}/raw`);
+    if (!res.ok) {
+        const contentType = res.headers.get("content-type") ?? "";
+        const body = contentType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
+        const message = (body && (body.message || body.error)) || res.statusText || "Could not load this message's raw content.";
+        throw new ApiRequestError(message, res.status, body?.code);
+    }
+    return res.text();
+}
+
 export interface ImpersonationResult {
     token: string;
     user: { uid: string; roles: string[]; scopes: string[] };

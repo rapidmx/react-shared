@@ -229,6 +229,32 @@ export async function buildEncryptedMessage(
     };
 }
 
+/**
+ * Combines a `MimePart` (from `buildSignedOnlyMessage()`/`buildEncryptedMessage()`) with the outer
+ * envelope's own headers into one complete RFC 5322 message source, ready for `mailApi.ts`'s
+ * `assembleDraftRaw()`. `outerHeaders` MUST be the already-obscured headers for an encrypted message
+ * (`applyBaselineOuterHeaders()`'s output) - this function does no obscuring itself, it only serializes
+ * whatever headers it's given. Deliberately excludes `Bcc`: that recipient list is submission-only and
+ * must never appear as a message header (see `AssembleDraftRawInput`'s own doc comment - `bcc` is passed
+ * to that call separately, never baked into `rawMime`).
+ */
+export function assembleOutboundMime(outerHeaders: ProtectedHeaders, part: MimePart): string {
+    const lines = [
+        `From: ${outerHeaders.from}`,
+        `To: ${outerHeaders.to}`,
+        ...(outerHeaders.cc ? [`Cc: ${outerHeaders.cc}`] : []),
+        `Date: ${outerHeaders.date}`,
+        `Subject: ${outerHeaders.subject}`,
+        `Message-ID: ${outerHeaders.messageId}`,
+        `MIME-Version: 1.0`,
+        `Content-Type: ${part.contentType}`,
+        ...Object.entries(part.additionalHeaders ?? {}).map(([key, value]) => `${key}: ${value}`),
+        "",
+        part.body,
+    ];
+    return lines.join(CRLF);
+}
+
 export interface ParsedEncryptedMessage {
     decrypted: boolean;
     /** Whether an inner (opaque) signature was present and verified - `undefined` when the message
@@ -322,8 +348,10 @@ function decodeBase64Body(base64Body: string): Uint8Array | undefined {
 }
 
 /** Splits a MIME entity's raw text into its header lines (lowercased-key map) and body, and returns
- * the entity's own Content-Type value (if present) for convenience. */
-function splitHeadersAndBody(entity: string): { headers: Record<string, string>; contentType?: string; body: string } {
+ * the entity's own Content-Type value (if present) for convenience. Exported for `messageSecurity.ts`,
+ * which uses it to read a *received* message's own top-level Content-Type before deciding whether to
+ * treat it as `buildEncryptedMessage()`- or `buildSignedOnlyMessage()`-shaped. */
+export function splitHeadersAndBody(entity: string): { headers: Record<string, string>; contentType?: string; body: string } {
     const separatorIndex = entity.indexOf(`${CRLF}${CRLF}`);
     const headerBlock = separatorIndex === -1 ? entity : entity.slice(0, separatorIndex);
     const body = separatorIndex === -1 ? "" : entity.slice(separatorIndex + 2 * CRLF.length);

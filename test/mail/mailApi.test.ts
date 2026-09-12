@@ -20,6 +20,7 @@ import {
     getMailbox,
     getMailboxAcl,
     getMessage,
+    getMessageRawContent,
     grantMailboxAccess,
     impersonateUser,
     listAttachments,
@@ -676,6 +677,45 @@ describe("assembleDraftRaw", () => {
             expect.objectContaining({ method: "POST", body: JSON.stringify(input) }),
         );
         expect(result).toEqual(message);
+    });
+});
+
+describe("getMessageRawContent", () => {
+    it("fetches the encoded message's raw endpoint and returns its text body", async () => {
+        const fetchMock = mockFetch(() => new Response("From: a@example.com\r\n\r\nbody", { status: 200, headers: { "content-type": "message/rfc822" } }));
+        const result = await getMessageRawContent("m/1");
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m%2F1/raw");
+        expect(result).toBe("From: a@example.com\r\n\r\nbody");
+    });
+
+    it("throws ApiRequestError using the body's message field on a non-ok JSON response", async () => {
+        mockFetch(() => jsonResponse(404, { message: "no such message", code: "api-404" }));
+        await expect(getMessageRawContent("m1")).rejects.toMatchObject({
+            name: "ApiRequestError",
+            message: "no such message",
+            status: 404,
+            code: "api-404",
+        });
+    });
+
+    it("falls back to statusText when a non-ok response has no JSON body", async () => {
+        mockFetch(() => new Response(null, { status: 500, statusText: "Server Error" }));
+        await expect(getMessageRawContent("m1")).rejects.toMatchObject({ message: "Server Error", status: 500 });
+    });
+
+    it("falls back to the body's error field when message is absent", async () => {
+        mockFetch(() => jsonResponse(500, { error: "internal failure" }));
+        await expect(getMessageRawContent("m1")).rejects.toMatchObject({ message: "internal failure" });
+    });
+
+    it("falls back to a generic message when there is no body and no statusText", async () => {
+        mockFetch(() => new Response(null, { status: 500, statusText: "" }));
+        await expect(getMessageRawContent("m1")).rejects.toMatchObject({ message: "Could not load this message's raw content." });
+    });
+
+    it("falls back to a generic message when the error response claims JSON but isn't parseable", async () => {
+        mockFetch(() => new Response("not actually json", { status: 500, statusText: "", headers: { "content-type": "application/json" } }));
+        await expect(getMessageRawContent("m1")).rejects.toMatchObject({ message: "Could not load this message's raw content." });
     });
 });
 

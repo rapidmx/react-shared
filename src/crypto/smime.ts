@@ -250,3 +250,16 @@ export async function decryptEnvelopedData(
     // defensive fallback since `lastError` could otherwise surface as a non-Error thrown value.
     throw lastError instanceof Error ? lastError : new Error("No recipient slot in this EnvelopedData could be decrypted with this key.");
 }
+
+/** SHA-256 fingerprint of a DER certificate, hex encoded — matches `keyvaultApi.ts`'s own `PublicKey.
+ * fingerprint` format exactly, so a value computed here is directly comparable against one already on
+ * a `Mailbox`/`Contact` record. Used by `messageSecurity.ts` to compare a received message's embedded
+ * signer certificate against a pinned `Contact` key per the spec's Trust Model (TOFU) — `verifyDetached()`/
+ * `verifyOpaque()` only prove a signature is mathematically valid, never that the certificate belongs to
+ * who the message claims (see `VerifyResult`'s own doc comment). */
+export async function computeCertFingerprint(certDer: Uint8Array): Promise<string> {
+    const digest = await crypto.subtle.digest(DIGEST_ALGORITHM, toArrayBuffer(certDer));
+    return Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+}

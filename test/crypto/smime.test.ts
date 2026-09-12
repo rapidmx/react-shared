@@ -5,6 +5,7 @@ import "reflect-metadata";
 import * as x509 from "@peculiar/x509";
 import { describe, expect, it } from "vitest";
 import {
+    computeCertFingerprint,
     decryptEnvelopedData,
     encryptForRecipients,
     signDetached,
@@ -209,5 +210,23 @@ describe("encryptForRecipients / decryptEnvelopedData", () => {
         await expect(decryptEnvelopedData(signature, alice.certDer, alice.privateKey)).rejects.toThrow(
             "This CMS content is not EnvelopedData.",
         );
+    });
+});
+
+describe("computeCertFingerprint", () => {
+    it("is deterministic for the same certificate bytes", async () => {
+        const alice = await generateTestIdentity("alice@example.com", "sign");
+        expect(await computeCertFingerprint(alice.certDer)).toBe(await computeCertFingerprint(alice.certDer));
+    });
+
+    it("differs between two different certificates", async () => {
+        const alice = await generateTestIdentity("alice@example.com", "sign");
+        const bob = await generateTestIdentity("bob@example.com", "sign");
+        expect(await computeCertFingerprint(alice.certDer)).not.toBe(await computeCertFingerprint(bob.certDer));
+    });
+
+    it("is a 64-character lowercase hex string (SHA-256)", async () => {
+        const alice = await generateTestIdentity("alice@example.com", "sign");
+        expect(await computeCertFingerprint(alice.certDer)).toMatch(/^[0-9a-f]{64}$/);
     });
 });

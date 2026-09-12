@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
     ProtectedHeaders,
     applyBaselineOuterHeaders,
+    assembleOutboundMime,
     buildEncryptedMessage,
     buildSignedOnlyMessage,
     parseEncryptedMessage,
@@ -46,6 +47,46 @@ const HEADERS: ProtectedHeaders = {
     subject: "Real subject line",
     messageId: "<abc123@example.com>",
 };
+
+describe("assembleOutboundMime", () => {
+    it("serializes outer headers, MIME-Version, Content-Type, and body, in order, with a blank-line separator", () => {
+        const mime = assembleOutboundMime(HEADERS, { contentType: 'text/plain; hp="clear"', body: "the body text" });
+        const lines = mime.split("\r\n");
+        expect(lines).toEqual([
+            `From: ${HEADERS.from}`,
+            `To: ${HEADERS.to}`,
+            `Cc: ${HEADERS.cc}`,
+            `Date: ${HEADERS.date}`,
+            `Subject: ${HEADERS.subject}`,
+            `Message-ID: ${HEADERS.messageId}`,
+            "MIME-Version: 1.0",
+            `Content-Type: text/plain; hp="clear"`,
+            "",
+            "the body text",
+        ]);
+    });
+
+    it("omits the Cc line entirely when there is no Cc", () => {
+        const noCc: ProtectedHeaders = { ...HEADERS, cc: undefined };
+        const mime = assembleOutboundMime(noCc, { contentType: "text/plain", body: "x" });
+        expect(mime).not.toContain("Cc:");
+    });
+
+    it("includes each of a MimePart's additionalHeaders as its own header line", () => {
+        const mime = assembleOutboundMime(HEADERS, {
+            contentType: "application/pkcs7-mime",
+            additionalHeaders: { "Content-Transfer-Encoding": "base64", "Content-Disposition": 'attachment; filename="smime.p7m"' },
+            body: "base64stuff",
+        });
+        expect(mime).toContain("Content-Transfer-Encoding: base64");
+        expect(mime).toContain('Content-Disposition: attachment; filename="smime.p7m"');
+    });
+
+    it("never includes a Bcc line - Bcc is submission-only and must never be baked into rawMime", () => {
+        const mime = assembleOutboundMime(HEADERS, { contentType: "text/plain", body: "x" });
+        expect(mime.toLowerCase()).not.toContain("bcc:");
+    });
+});
 
 describe("applyBaselineOuterHeaders", () => {
     it("obscures only the Subject, per RFC 9788's hcp_baseline default", () => {
