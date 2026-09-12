@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
 import {
     approveReceipt,
+    archiveMessage,
     assembleDraft,
     assembleDraftRaw,
     attachmentContentUrl,
@@ -412,6 +413,19 @@ describe("recallMessage", () => {
         const result = await recallMessage("m/1");
         expect(fetchMock).toHaveBeenCalledWith(
             "/api/mail/messages/m%2F1/recall",
+            expect.objectContaining({ method: "POST" }),
+        );
+        expect(result).toEqual(updated);
+    });
+});
+
+describe("archiveMessage", () => {
+    it("POSTs to the encoded uid's archive route", async () => {
+        const updated = { ...message, folderUid: "archive-folder" };
+        const fetchMock = mockFetch(() => jsonResponse(200, updated));
+        const result = await archiveMessage("m/1");
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/messages/m%2F1/archive",
             expect.objectContaining({ method: "POST" }),
         );
         expect(result).toEqual(updated);

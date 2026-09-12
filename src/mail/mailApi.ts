@@ -456,6 +456,16 @@ export function recallMessage(uid: string): Promise<Message> {
 }
 
 /**
+ * Moves a message into the mailbox's Archive folder (`FolderType.ARCHIVE`), lazily created on first use
+ * server-side — same pattern as Sent Items/Outbox, no client-side folder-creation step needed. Rejects
+ * (400, surfaced as an `ApiRequestError`) for a message currently in Drafts or Outbox. Idempotent —
+ * archiving an already-archived message is a no-op that still returns the message.
+ */
+export function archiveMessage(uid: string): Promise<Message> {
+    return apiFetch(`/mail/messages/${encodeURIComponent(uid)}/archive`, { method: "POST" });
+}
+
+/**
  * Moves a message between the Focused and Other halves of the Inbox — Outlook's "Move to Other" gesture.
  * With `applyToSender: true` ("Always move to Other"), also upserts a standing `FocusedInboxOverride` for
  * every future message from the same sender (see `focusedInboxOverridesApi.ts`) in the same round trip.

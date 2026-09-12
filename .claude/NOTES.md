@@ -328,3 +328,11 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
   - Full suite: 100%/98.97% branches (one new accepted gap, `searchTier3.ts`'s `security.subject ??
     ""` - `ProtectedHeaders.subject` is a required field, so the fallback is unreachable whenever the
     surrounding guard already required `subject` to be set - documented in `vitest.config.ts`).
+
+- **2026-09-12 — Phase 2 of consuming restapi's 11 post-0.6.0 commits: Archive folder.** JP confirmed
+  that batch (RFC 8823 ACME, Escrow Scoping, Labels, Archive, S3BlobStore) is done and asked for
+  everything it unlocks to be implemented; sequenced smallest-first after a Phase 0 patch-in step (see
+  `server`'s own NOTES.md for both). This phase: `mail/mailApi.ts` gained `archiveMessage(uid)`,
+  wrapping the new `POST /mail/messages/:id/archive` (`FolderType.ARCHIVE`, lazily created on first use
+  server-side, same pattern as Sent Items/Outbox - no client-side folder-creation step needed). Trivial
+  wrapper, mirrors `recallMessage()`'s exact shape.
