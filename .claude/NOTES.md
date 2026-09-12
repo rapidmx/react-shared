@@ -145,3 +145,30 @@ pinned it via a new `thresholds` block in `vitest.config.ts` (there wasn't one b
   that applies to this package) - replaced with a `configureApiBaseUrl()`/`apiFetch()`-relevant
   example.
 - Not committed - JP said "hold off on commit" for this whole cross-repo pass.
+
+### 2026-09-11 — Add `crypto/` (client-side E2E encryption foundation)
+
+Added `src/crypto/`: `masterKey.ts` (MK generation, AES-256-GCM AEAD seal/open with mailboxUid+purpose
+bound as AAD, HKDF-SHA256), `passwordUnlock.ts` (Argon2id via `hash-wasm` → HKDF-split auth-proof/
+wrapping-key), `recoveryCode.ts` (CSPRNG codes, HKDF derivation), `passkeyUnlock.ts` (WebAuthn PRF via
+the raw `navigator.credentials` API - deliberately not `@simplewebauthn/browser`, since this credential
+is a local KDF input with no server-verified ceremony, not an auth flow), `keys.ts` (P-256 ECDSA
+keypair + real PKCS#10 CSR via `@peculiar/x509`, with export/import helpers proving the same key
+material re-imports under ECDH for actual key-agreement use), and `keyvaultApi.ts` (typed wrappers
+over `@rapidmx/restapi`'s key-vault/discovery/policy endpoints). New dependencies: `@peculiar/x509`,
+`hash-wasm`, `reflect-metadata`.
+
+- 100% stmts/lines/functions, 99.65% branches across the full suite (only the pre-existing, already-
+  documented `useBranding.ts` gap above remains) - every crypto test uses real WebCrypto/Argon2id/CSR
+  operations, not mocked crypto, including round-trips, tamper/AAD-mismatch rejection tests, and
+  direct ECDSA→ECDH re-import interop verification.
+- `web-client` consumes this via a **new `yarn patch`** (not yet a real npm publish) specifically to
+  reach this new `crypto/` subpath - see that repo's own NOTES.md (same date) for the full
+  consequences: patching alone does not pull in a patched package's *new* transitive dependencies
+  (`@peculiar/x509`/`hash-wasm`/`reflect-metadata` had to be added directly to `web-client`'s own
+  `package.json` too), and a `vi.stubGlobal("fetch", ...)`-based mock does not reliably reach this
+  specific not-yet-published subpath in that repo's test suite (root cause not fully isolated - work
+  around it there with a module-level `vi.mock()` instead, not by changing anything here).
+- `enrollKey()`'s `useType: "encrypt"` path is the only one actually wired up client-side so far
+  (`web-client`'s `KeyEnrollmentGate`) - `useType: "sign"` has no real path yet, since RFC 8823 ACME
+  public-CA enrolment doesn't exist server-side (`restapi`'s own scope, tracked separately).
