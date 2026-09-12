@@ -172,3 +172,50 @@ over `@rapidmx/restapi`'s key-vault/discovery/policy endpoints). New dependencie
 - `enrollKey()`'s `useType: "encrypt"` path is the only one actually wired up client-side so far
   (`web-client`'s `KeyEnrollmentGate`) - `useType: "sign"` has no real path yet, since RFC 8823 ACME
   public-CA enrolment doesn't exist server-side (`restapi`'s own scope, tracked separately).
+
+### 2026-09-11 — CMS/S-MIME engine, compose-time sign/encrypt decisions, message-view decrypt/verify
+
+Added on top of the `crypto/` foundation above, completing Phase 3 of the E2E encryption plan
+(server wiring → client key foundation → **CMS sign/encrypt + message-view decrypt/verify**, in
+that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are still ahead):
+
+- `keySession.ts` — the in-memory (never localStorage/IndexedDB) session key store the spec's
+  "destroyed on explicit logout" requirement calls for. `unlockWithPassword()` fetches the vault,
+  re-derives the wrapping key via the *exact* KDF params (`passwordUnlock.ts`'s new
+  `parseArgon2idKdfLabel()`, the inverse of `argon2idKdfLabel()`) the wrap was created with, unwraps
+  MK, then unwraps/imports whichever signing/encryption keys have a currently-active public key on
+  file. Password is the only unlock method wired up so far - passkey/recovery-code derivation exist
+  but nothing calls them yet (a mailbox enrolled *only* via passkey can't unlock through this module
+  today).
+- `smime.ts`/`smimeMessage.ts` — the CMS engine (`pkijs`+`asn1js`, new deps) and RFC 9788 header-
+  protection MIME assembly on top of it. **Verified RFC 9788's actual wire format via WebFetch
+  against the RFC text directly** rather than assuming from memory - its real mechanism (protected
+  headers as literal header lines on the signed/encrypted entity itself, an `hp="clear"`/`"cipher"`
+  Content-Type parameter, `HP-Outer:` field copies, outer `Subject` obscured to `"[...]"` under the
+  required `hcp_baseline` default) is materially different from the RFC 8551 §3.1
+  `message/rfc822`-wrapping approach the spec explicitly forbids. `pkijs.setEngine("rapidmx", crypto,
+  crypto.subtle)` uses the raw 3-argument form, not `new pkijs.CryptoEngine({...})` - the latter
+  fails `tsc --noEmit` (a real type-definition bug in pkijs itself: `generateKey`'s Ed25519/X25519
+  overloads don't line up between the class and its own declared interface) despite working at
+  runtime, which only surfaced because this repo actually runs `tsc --noEmit` separately from
+  `vitest` (esbuild's transform strips types without validating them - a test suite passing is not
+  proof the code typechecks).
+- `composeSecurity.ts` — pure sign/encrypt decision functions for compose. `classifyRecipientTier()`
+  (same-org/federated/external) is a **disclosed approximation**: the spec's tiers are a genuine
+  server-side administrative concept restapi 0.6.0 doesn't expose to the client at all (confirmed by
+  reading `util/KeyringUtils.ts` - no tier field on a key lookup result), so this falls back to a
+  domain-suffix heuristic. A real fix needs a restapi endpoint exposing which domains a server
+  controls.
+- `messageSecurity.ts` — the received-message counterpart: reads a raw MIME's own outer Content-Type
+  to classify it as `multipart/signed`/`pkcs7-mime enveloped-data`/neither, then decrypts/verifies
+  into one of the spec's five Message Security Indicator states. **Trust Model gap, disclosed not
+  silent**: it accepts an optional pinned-signer-fingerprint parameter (via the new
+  `smime.ts#computeCertFingerprint()`) but no caller supplies one yet - Contact key-pinning UI is
+  Phase 4 work, so every signature verified today is only proven mathematically self-consistent, not
+  checked against a TOFU-pinned identity yet.
+- New deps: `pkijs`, `asn1js` (the CMS engine), `dompurify` (client-side sanitization of a decrypted
+  message body before rendering - the server's own `sanitize-html` pass never runs against
+  ciphertext it can't read).
+- Coverage held at 100% stmt/line/func, ~99% branches throughout (see `vitest.config.ts`'s own
+  per-branch justification comments for the handful of accepted unreachable gaps, mostly in
+  `smime.ts`'s defensive error paths).
