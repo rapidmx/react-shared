@@ -264,16 +264,63 @@ export interface ParsedEncryptedMessage {
     protectedHeaders?: ProtectedHeaders;
     bodyContentType?: string;
     bodyText?: string;
+    /** `true` when `actualOuterHeaders` was supplied and disagrees with the `HP-Outer:` field copies
+     * found in the decrypted protected content - RFC 9788's own requirement to "visually distinguish a
+     * message whose outer and protected headers disagree" (a MITM or malicious intermediary rewrote the
+     * unprotected envelope after signing/encryption). `false` when both were supplied and agree.
+     * `undefined` when there's nothing to compare - no `actualOuterHeaders` given, or the message
+     * carries no `HP-Outer:` lines at all (a foreign sender's S/MIME implementation that doesn't write
+     * them, or a message from before this field existed). */
+    headerTamperDetected?: boolean;
+}
+
+/** RFC 9788's `HP-Outer:` field-copy fields to actually compare - a subset of `ProtectedHeaders`
+ * (`messageId` has no `HP-Outer` counterpart; only the fields the outer envelope itself carries do).
+ * Exported so `messageSecurity.ts` can build one from a received message's real outer envelope. */
+export type ComparableOuterHeaders = Partial<Pick<ProtectedHeaders, "from" | "to" | "cc" | "date" | "subject">>;
+
+/** Extracts the outer-envelope header values RFC 9788's `HP-Outer: <Field>: <value>` mechanism embeds
+ * inside an encrypted message's protected content - one line per outer header, all sharing the literal
+ * field name `HP-Outer`, which `splitHeadersAndBody()`'s own flat header map can hold only the last of
+ * (a real bug if reused for this - JSON/`Record` keys aren't multi-valued). Scans the raw header block
+ * text directly instead. Returns `undefined` when no `HP-Outer:` lines are present at all, so a caller
+ * can distinguish "nothing to compare" from "compared and everything matched". */
+function extractHpOuterHeaders(rawHeaderBlock: string): ComparableOuterHeaders | undefined {
+    const result: ComparableOuterHeaders = {};
+    let found = false;
+    for (const line of rawHeaderBlock.split(CRLF)) {
+        const match = /^HP-Outer:\s*(From|To|Cc|Date|Subject):\s*(.*)$/i.exec(line);
+        if (!match) {
+            continue;
+        }
+        found = true;
+        const field = match[1].toLowerCase() as keyof ComparableOuterHeaders;
+        result[field] = match[2].trim();
+    }
+    return found ? result : undefined;
+}
+
+/** `true` when every field `hpOuter` actually carries matches `actualOuterHeaders`' value for that same
+ * field - a field `hpOuter` doesn't carry (e.g. no `Cc` on this message) is not compared, since RFC
+ * 9788 never claims coverage for it either way. */
+function outerHeadersMatch(hpOuter: ComparableOuterHeaders, actualOuterHeaders: ComparableOuterHeaders): boolean {
+    return (Object.keys(hpOuter) as (keyof ComparableOuterHeaders)[]).every((field) => hpOuter[field] === actualOuterHeaders[field]);
 }
 
 /** Decrypts (and, if present, verifies the inner signature of) a message built by
  * `buildEncryptedMessage()`. Returns `{ decrypted: false }` (never throws) for anything malformed or
  * undecryptable with the given key — the caller's own concern is distinguishing "wrong key" from
- * "corrupt message," neither of which this function treats as exceptional. */
+ * "corrupt message," neither of which this function treats as exceptional.
+ *
+ * `actualOuterHeaders` — the received message's real, unprotected outer envelope headers (as the
+ * caller itself read them, before ever calling this function) — enables the RFC 9788 `HP-Outer`
+ * comparison (see `ParsedEncryptedMessage.headerTamperDetected`); omit it to skip that check entirely.
+ */
 export async function parseEncryptedMessage(
     base64Body: string,
     recipientCertDer: Uint8Array,
     recipientPrivateKey: CryptoKey,
+    actualOuterHeaders?: ComparableOuterHeaders,
 ): Promise<ParsedEncryptedMessage> {
     const envelopedDer = decodeBase64Body(base64Body);
     if (!envelopedDer) {
@@ -287,8 +334,16 @@ export async function parseEncryptedMessage(
         return { decrypted: false };
     }
 
+    function compareTamper(rawHeaderBlock: string): boolean | undefined {
+        const hpOuter = extractHpOuterHeaders(rawHeaderBlock);
+        if (!hpOuter || !actualOuterHeaders) {
+            return undefined;
+        }
+        return !outerHeadersMatch(hpOuter, actualOuterHeaders);
+    }
+
     const decoded = new TextDecoder().decode(decrypted);
-    const { headers: outerContentHeaders, body: outerContentBody } = splitHeadersAndBody(decoded);
+    const { headers: outerContentHeaders, body: outerContentBody, rawHeaderBlock: outerRawHeaderBlock } = splitHeadersAndBody(decoded);
     const innerContentType = outerContentHeaders["content-type"];
 
     if (innerContentType?.includes('smime-type="signed-data"')) {
@@ -301,7 +356,7 @@ export async function parseEncryptedMessage(
             return { decrypted: true, signatureVerified: false };
         }
         const plaintext = new TextDecoder().decode(verifyResult.content);
-        const { headers, contentType: bodyContentType, body: bodyText } = splitHeadersAndBody(plaintext);
+        const { headers, contentType: bodyContentType, body: bodyText, rawHeaderBlock } = splitHeadersAndBody(plaintext);
         return {
             decrypted: true,
             signatureVerified: true,
@@ -309,11 +364,18 @@ export async function parseEncryptedMessage(
             protectedHeaders: headersToProtectedHeaders(headers),
             bodyContentType,
             bodyText,
+            headerTamperDetected: compareTamper(rawHeaderBlock),
         };
     }
 
     const { headers, contentType: bodyContentType, body: bodyText } = splitHeadersAndBody(decoded);
-    return { decrypted: true, protectedHeaders: headersToProtectedHeaders(headers), bodyContentType, bodyText };
+    return {
+        decrypted: true,
+        protectedHeaders: headersToProtectedHeaders(headers),
+        bodyContentType,
+        bodyText,
+        headerTamperDetected: compareTamper(outerRawHeaderBlock),
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -350,8 +412,13 @@ function decodeBase64Body(base64Body: string): Uint8Array | undefined {
 /** Splits a MIME entity's raw text into its header lines (lowercased-key map) and body, and returns
  * the entity's own Content-Type value (if present) for convenience. Exported for `messageSecurity.ts`,
  * which uses it to read a *received* message's own top-level Content-Type before deciding whether to
- * treat it as `buildEncryptedMessage()`- or `buildSignedOnlyMessage()`-shaped. */
-export function splitHeadersAndBody(entity: string): { headers: Record<string, string>; contentType?: string; body: string } {
+ * treat it as `buildEncryptedMessage()`- or `buildSignedOnlyMessage()`-shaped.
+ *
+ * Also returns the raw, unparsed header block text as `rawHeaderBlock` — the flat `headers` map can
+ * only hold one value per (lowercased) name, which silently drops all but the last line for a
+ * repeated-name header like RFC 9788's `HP-Outer` (see `extractHpOuterHeaders()`, which parses
+ * `rawHeaderBlock` directly instead). */
+export function splitHeadersAndBody(entity: string): { headers: Record<string, string>; contentType?: string; body: string; rawHeaderBlock: string } {
     const separatorIndex = entity.indexOf(`${CRLF}${CRLF}`);
     const headerBlock = separatorIndex === -1 ? entity : entity.slice(0, separatorIndex);
     const body = separatorIndex === -1 ? "" : entity.slice(separatorIndex + 2 * CRLF.length);
@@ -366,7 +433,7 @@ export function splitHeadersAndBody(entity: string): { headers: Record<string, s
         const value = line.slice(colonIndex + 1).trim();
         headers[name] = value;
     }
-    return { headers, contentType: headers["content-type"], body };
+    return { headers, contentType: headers["content-type"], body, rawHeaderBlock: headerBlock };
 }
 
 function headersToProtectedHeaders(headers: Record<string, string>): ProtectedHeaders {

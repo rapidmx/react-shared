@@ -147,6 +147,39 @@ describe("evaluateMessageSecurity", () => {
             expect(result.html).toBe("Secret body.");
         });
 
+        it("reports headerTamperDetected: false when the raw MIME's outer envelope matches the HP-Outer copies", async () => {
+            const bob = await generateTestIdentity("bob@example.com", "encrypt");
+            const part = await buildEncryptedMessage("text/plain; charset=utf-8", "Secret body.", HEADERS, HEADERS, [bob.certDer]);
+            const rawMime = assembleOutboundMime(HEADERS, part);
+
+            const result = await evaluateMessageSecurity(rawMime, { encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer });
+            expect(result.headerTamperDetected).toBe(false);
+        });
+
+        it("reports headerTamperDetected: true when the raw MIME's outer Subject was rewritten after signing/encryption", async () => {
+            const bob = await generateTestIdentity("bob@example.com", "encrypt");
+            const part = await buildEncryptedMessage("text/plain; charset=utf-8", "Secret body.", HEADERS, HEADERS, [bob.certDer]);
+            const rawMime = assembleOutboundMime(HEADERS, part).replace("Subject: Real subject", "Subject: Rewritten by an intermediary");
+
+            const result = await evaluateMessageSecurity(rawMime, { encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer });
+            expect(result.state).toBe("encrypted");
+            expect(result.headerTamperDetected).toBe(true);
+        });
+
+        it("propagates headerTamperDetected through a verified sign-then-encrypt message too", async () => {
+            const alice = await generateTestIdentity("alice@example.com", "sign");
+            const bob = await generateTestIdentity("bob@example.com", "encrypt");
+            const part = await buildEncryptedMessage("text/plain; charset=utf-8", "Secret body.", HEADERS, HEADERS, [bob.certDer], {
+                certDer: alice.certDer,
+                privateKey: alice.privateKey,
+            });
+            const rawMime = assembleOutboundMime(HEADERS, part).replace("From: alice@example.com", "From: eve@example.com");
+
+            const result = await evaluateMessageSecurity(rawMime, { encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer });
+            expect(result.state).toBe("encrypted_verified");
+            expect(result.headerTamperDetected).toBe(true);
+        });
+
         it("is signature_failed for a sign-then-encrypt message whose signer doesn't match a supplied pinned fingerprint", async () => {
             const alice = await generateTestIdentity("alice@example.com", "sign");
             const bob = await generateTestIdentity("bob@example.com", "encrypt");

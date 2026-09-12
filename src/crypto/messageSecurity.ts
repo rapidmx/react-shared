@@ -19,7 +19,7 @@
  * validity only, not against a pinned identity.
  */
 import { computeCertFingerprint } from "./smime.js";
-import { parseEncryptedMessage, parseSignedOnlyMessage, splitHeadersAndBody } from "./smimeMessage.js";
+import { ComparableOuterHeaders, parseEncryptedMessage, parseSignedOnlyMessage, splitHeadersAndBody } from "./smimeMessage.js";
 
 export type MessageSecurityState = "encrypted" | "signed_verified" | "encrypted_verified" | "signature_failed" | "unprotected";
 
@@ -35,6 +35,13 @@ export interface MessageSecurityResult {
      * `GET /:id/content` already produced (empty, per `BaseMailComposeRoute.assembleRaw()`'s design)
      * alongside this explanation, rather than a blank pane with no context. */
     decryptError?: string;
+    /** See `ParsedEncryptedMessage.headerTamperDetected`'s own doc comment - a deliberately separate,
+     * orthogonal signal from `state`, since RFC 9788's `HP-Outer` is written on every encrypted message
+     * regardless of whether it's also signed, and folding a header-mismatch into `"signature_failed"`
+     * would misrepresent an unsigned-but-tampered message as a signature problem it doesn't have.
+     * `undefined` for anything that isn't an encrypted message this device could decrypt (unprotected,
+     * signed-only, or an encrypted message that failed to decrypt at all - nothing to compare). */
+    headerTamperDetected?: boolean;
 }
 
 function isSignedOnlyContentType(contentType: string): boolean {
@@ -69,10 +76,22 @@ export async function evaluateMessageSecurity(
     unlocked: { encryptionPrivateKey?: CryptoKey; encryptionCertDer?: Uint8Array } | undefined,
     pinnedSignerFingerprint?: string,
 ): Promise<MessageSecurityResult> {
-    const { contentType, body } = splitHeadersAndBody(rawMime);
+    const { contentType, body, headers } = splitHeadersAndBody(rawMime);
     if (!contentType) {
         return { state: "unprotected" };
     }
+
+    // The received message's own *real* outer envelope - what `HP-Outer`'s field copies (written at
+    // send time, inside the encrypted content) are compared against to detect post-send tampering with
+    // the unprotected envelope. Built from whichever of these five headers this outer envelope actually
+    // has; a missing one is simply absent from the comparison (see `outerHeadersMatch()`).
+    const actualOuterHeaders: ComparableOuterHeaders = {
+        from: headers["from"],
+        to: headers["to"],
+        cc: headers["cc"],
+        date: headers["date"],
+        subject: headers["subject"],
+    };
 
     async function checkPinning(signerCertificateDer: Uint8Array | undefined): Promise<boolean> {
         if (!pinnedSignerFingerprint || !signerCertificateDer) {
@@ -93,17 +112,17 @@ export async function evaluateMessageSecurity(
         if (!unlocked?.encryptionPrivateKey || !unlocked.encryptionCertDer) {
             return { state: "encrypted", decryptError: NO_KEY_ERROR };
         }
-        const parsed = await parseEncryptedMessage(body, unlocked.encryptionCertDer, unlocked.encryptionPrivateKey);
+        const parsed = await parseEncryptedMessage(body, unlocked.encryptionCertDer, unlocked.encryptionPrivateKey, actualOuterHeaders);
         if (!parsed.decrypted) {
             return { state: "encrypted", decryptError: NO_KEY_ERROR };
         }
         if (parsed.signatureVerified === undefined) {
-            return { state: "encrypted", html: parsed.bodyText };
+            return { state: "encrypted", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected };
         }
         if (parsed.signatureVerified && (await checkPinning(parsed.signerCertificateDer))) {
-            return { state: "encrypted_verified", html: parsed.bodyText };
+            return { state: "encrypted_verified", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected };
         }
-        return { state: "signature_failed", html: parsed.bodyText };
+        return { state: "signature_failed", html: parsed.bodyText, headerTamperDetected: parsed.headerTamperDetected };
     }
 
     return { state: "unprotected" };

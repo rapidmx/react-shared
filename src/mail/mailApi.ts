@@ -418,6 +418,13 @@ export interface Message {
      * stored body, not from a flag this API exposes. Always present on a real `Message` (defaults
      * `false` server-side), same optional-for-old-fixtures caveat as `Mailbox.oofEnabled`. */
     encrypted?: boolean;
+    /** The raw RFC 2369/8058 `List-Unsubscribe` header value, if present — computed server-side by
+     * `@rapidmx/restapi`'s `ScanPipeline` from the stored MIME, the strongest single bulk-mail signal it
+     * captures. Used client-side to detect list traffic when replying, per
+     * `specs/end-to-end_encryption.md`'s "Mailing lists" note under Digital Signatures: a list that
+     * appends a footer after signing invalidates the signature, so composing a reply to one SHOULD
+     * default signing off. `undefined` for ordinary mail — never computed or guessed client-side. */
+    listUnsubscribeHeader?: string;
 }
 
 export interface MessageReceiptEntry {

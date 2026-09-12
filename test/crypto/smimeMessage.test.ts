@@ -328,3 +328,79 @@ describe("buildEncryptedMessage / parseEncryptedMessage", () => {
         expect(result.signatureVerified).toBe(false);
     });
 });
+
+describe("parseEncryptedMessage HP-Outer tamper detection", () => {
+    it("is undefined when the caller supplies no actualOuterHeaders to compare against", async () => {
+        const bob = await generateTestIdentity("bob@example.com", "encrypt");
+        const outerHeaders = applyBaselineOuterHeaders(HEADERS);
+        const { body } = await buildEncryptedMessage("text/plain", "hi", HEADERS, outerHeaders, [bob.certDer]);
+
+        const result = await parseEncryptedMessage(body, bob.certDer, bob.privateKey);
+        expect(result.headerTamperDetected).toBeUndefined();
+    });
+
+    it("is false when the real outer envelope matches the embedded HP-Outer field copies", async () => {
+        const bob = await generateTestIdentity("bob@example.com", "encrypt");
+        const outerHeaders = applyBaselineOuterHeaders(HEADERS);
+        const { body } = await buildEncryptedMessage("text/plain", "hi", HEADERS, outerHeaders, [bob.certDer]);
+
+        const result = await parseEncryptedMessage(body, bob.certDer, bob.privateKey, outerHeaders);
+        expect(result.headerTamperDetected).toBe(false);
+    });
+
+    it("is true when the real outer envelope's Subject disagrees with the embedded HP-Outer copy", async () => {
+        const bob = await generateTestIdentity("bob@example.com", "encrypt");
+        const outerHeaders = applyBaselineOuterHeaders(HEADERS);
+        const { body } = await buildEncryptedMessage("text/plain", "hi", HEADERS, outerHeaders, [bob.certDer]);
+
+        const tamperedOuter = { ...outerHeaders, subject: "A completely different subject" };
+        const result = await parseEncryptedMessage(body, bob.certDer, bob.privateKey, tamperedOuter);
+        expect(result.headerTamperDetected).toBe(true);
+    });
+
+    it("is true when the real outer envelope drops a Cc the embedded HP-Outer copy carries", async () => {
+        const bob = await generateTestIdentity("bob@example.com", "encrypt");
+        const outerHeaders = applyBaselineOuterHeaders(HEADERS);
+        const { body } = await buildEncryptedMessage("text/plain", "hi", HEADERS, outerHeaders, [bob.certDer]);
+
+        const tamperedOuter = { ...outerHeaders, cc: undefined };
+        const result = await parseEncryptedMessage(body, bob.certDer, bob.privateKey, tamperedOuter);
+        expect(result.headerTamperDetected).toBe(true);
+    });
+
+    it("compares correctly through a signed-then-encrypted message too", async () => {
+        const alice = await generateTestIdentity("alice@example.com", "sign");
+        const bob = await generateTestIdentity("bob@example.com", "encrypt");
+        const outerHeaders = applyBaselineOuterHeaders(HEADERS);
+        const { body } = await buildEncryptedMessage("text/plain", "hi", HEADERS, outerHeaders, [bob.certDer], {
+            certDer: alice.certDer,
+            privateKey: alice.privateKey,
+        });
+
+        const matching = await parseEncryptedMessage(body, bob.certDer, bob.privateKey, outerHeaders);
+        expect(matching.headerTamperDetected).toBe(false);
+
+        const tamperedOuter = { ...outerHeaders, from: "eve@example.com" };
+        const tampered = await parseEncryptedMessage(body, bob.certDer, bob.privateKey, tamperedOuter);
+        expect(tampered.headerTamperDetected).toBe(true);
+    });
+
+    it("is undefined when the encrypted content carries no HP-Outer lines at all", async () => {
+        const bob = await generateTestIdentity("bob@example.com", "encrypt");
+        // HEADERS_NO_CC has no `outerHeaders` argument, i.e. `buildEncryptedMessage()` called without
+        // an `hpOuter` - matches a hypothetical foreign S/MIME sender that never writes HP-Outer at all.
+        const { encryptForRecipients } = await import("../../src/crypto/smime.js");
+        const plaintextEntity = ["From: alice@example.com", "To: bob@example.com", 'Content-Type: text/plain; hp="cipher"', "", "hi"].join(
+            "\r\n",
+        );
+        const enveloped = await encryptForRecipients(new TextEncoder().encode(plaintextEntity), [bob.certDer]);
+        const { toBase64 } = await import("../../src/crypto/encoding.js");
+
+        const result = await parseEncryptedMessage(toBase64(enveloped), bob.certDer, bob.privateKey, {
+            from: "alice@example.com",
+            to: "bob@example.com",
+        });
+        expect(result.decrypted).toBe(true);
+        expect(result.headerTamperDetected).toBeUndefined();
+    });
+});

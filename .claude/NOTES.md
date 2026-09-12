@@ -219,3 +219,24 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
 - Coverage held at 100% stmt/line/func, ~99% branches throughout (see `vitest.config.ts`'s own
   per-branch justification comments for the handful of accepted unreachable gaps, mostly in
   `smime.ts`'s defensive error paths).
+
+## Session log
+
+- **2026-09-11 — RFC 9788 `HP-Outer` tamper detection on receipt.** `smimeMessage.ts`'s
+  `protectedHeaderLines()` already *wrote* `HP-Outer: <Field>: <value>` copies on every encrypted
+  message; nothing ever read them back. Added `extractHpOuterHeaders()` (regex-scans the raw header
+  block text directly, not the flat `headers` map `splitHeadersAndBody()` returns - that map can only
+  hold one value per lowercased name, so it silently drops all but the last of several same-named
+  `HP-Outer:` lines) and wired a new optional 4th `parseEncryptedMessage()` parameter
+  (`actualOuterHeaders`, the caller's own real received envelope) that produces a new
+  `ParsedEncryptedMessage.headerTamperDetected` field. Deliberately kept **separate** from the
+  existing 5-state `MessageSecurityState` enum rather than folded into `"signature_failed"`: HP-Outer
+  is written unconditionally on every encrypted message regardless of whether it's also signed, so a
+  tampered-but-unsigned message reusing the signature-failure state would misrepresent what actually
+  went wrong. `messageSecurity.ts#evaluateMessageSecurity()` now also destructures `headers` from its
+  own top-level `splitHeadersAndBody(rawMime)` call to build `actualOuterHeaders` and propagates the
+  result onto `MessageSecurityResult.headerTamperDetected`. RFC 9788's own "MUST visually distinguish"
+  requirement is left to a caller-side UI banner (`MessageDetailPane.tsx`, not yet wired at time of
+  writing), separate from the existing state badge. `splitHeadersAndBody()`'s return type gained a
+  `rawHeaderBlock: string` field (the pre-parse header block text) to make this possible without a
+  second parse pass.
