@@ -83,7 +83,14 @@ export async function buildRecoveryWraps(
 }
 
 /** `nonce`/`salt` labels for an escrow wrap - see `buildEscrowWrap()`'s own doc comment for why these
- * are fixed placeholders rather than freshly generated values, unlike every other wrap method. */
+ * are fixed placeholders rather than freshly generated values, unlike every other wrap method.
+ * Deliberately NOT valid base64 (`fromBase64("n/a")` decodes to 2 arbitrary bytes rather than throwing,
+ * since only a length of `4n+1` makes `atob()` reject its input) - any future generic
+ * `fromBase64(wrap.salt)`/`fromBase64(wrap.nonce)` refactor across every wrap method MUST special-case
+ * (or simply skip) `method === "escrow"` first, or it will silently "succeed" with garbage bytes instead
+ * of failing loudly. Nothing in this codebase does that generically today (`keySession.ts` only ever
+ * reads `.salt`/`.nonce` after already filtering to `method === "password"`), but it's exactly the kind
+ * of innocent-looking refactor that would reintroduce this as a real bug. */
 export const ESCROW_KDF_LABEL = "cms-enveloped-data";
 const ESCROW_NONCE_PLACEHOLDER = "n/a";
 const ESCROW_SALT_PLACEHOLDER = "n/a";

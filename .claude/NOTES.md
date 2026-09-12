@@ -413,3 +413,19 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
     top of these - see that repo's NOTES.md for the full breakdown, including why `apps/escrow` needed a
     new top-level app rather than living under `apps/admin` (holding escrow is a separate role from server
     administration, per the spec's "Separation of duties").
+
+- **2026-09-12 (continued) — Adversarial review pass over the restapi-consumption batch.** An adversarial
+  review agent verified `buildEscrowWrap()`'s CMS-EnvelopedData placeholder-field reasoning is sound (the
+  round-trip test genuinely exercises the real implementation, and nothing today reads an escrow wrap's
+  `.salt`/`.nonce` at all) but flagged a latent fragility: `fromBase64("n/a")` does **not** throw (`atob()`
+  only rejects an input whose length is `4n+1`, and `"n/a"` isn't) - it silently decodes to 2 arbitrary
+  bytes instead. Nothing calls `fromBase64()` generically across every wrap method today (`keySession.ts`
+  only ever reads `.salt`/`.nonce` after first filtering to `method === "password"`), so this isn't an
+  active bug, but a future "clean up the repeated per-method special-casing" refactor could easily
+  reintroduce it as one. Strengthened `masterKeyWraps.ts`'s doc comment on `ESCROW_NONCE_PLACEHOLDER`/
+  `ESCROW_SALT_PLACEHOLDER` to spell this out explicitly, so a future refactor has a concrete warning to
+  trip over rather than discovering it the hard way. The other flagged item (does `handleRotateKeys` in
+  `web-client`'s Settings > Encryption correctly maintain escrow protection across a key rotation) turned
+  out to be a real bug, but entirely in `web-client` - see that repo's own NOTES.md for the fix; no change
+  needed here since `buildEscrowWrap()`/`getEscrowInfo()` themselves were already correct, just never
+  called from the rotation flow.
