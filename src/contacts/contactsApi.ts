@@ -7,6 +7,7 @@
 
 import { apiFetch } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
+import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
 
 export type ContactAddressKind = "home" | "work" | "other";
 
@@ -56,6 +57,21 @@ export interface Contact {
     /** Present (and `true`) only when fetched via `listDeletedContacts()` — a soft-deleted `RecoverableBaseEntity`
      * record still exists server-side so it can be restored, per `@rapidmx/restapi`'s own soft-delete model. */
     deleted?: boolean;
+    /** This contact's known encryption preference, per `specs/end-to-end_encryption.md` — discovered
+     * via `crypto/keyvaultApi.ts`'s `lookupKeys()` at compose time, never fetched on message receipt
+     * (that would leak read timing to the sender's server). */
+    encryptPreference?: EncryptionPreference;
+    /** This contact's published public keys, as last discovered. Trust is TOFU (trust-on-first-use) —
+     * see `keyConflict` for what happens when a newly observed key differs from this one. */
+    keys?: PublicKey[];
+    /** Set when an observed key conflicts with the currently pinned key above — blocks silent
+     * acceptance until the user takes explicit action (the spec's Key Conflict Handling). The
+     * previously pinned `keys` are retained unchanged while this is set. */
+    keyConflict?: {
+        observedFingerprint: string;
+        observedAt: number;
+        source: "header" | "discovery";
+    };
 }
 
 /** Lists a folder's contacts, alphabetically by display name. Never includes soft-deleted contacts — see

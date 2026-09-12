@@ -7,6 +7,7 @@ import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
 import {
     approveReceipt,
     assembleDraft,
+    assembleDraftRaw,
     attachmentContentUrl,
     autoProvisionMailbox,
     cancelScheduledSend,
@@ -659,6 +660,19 @@ describe("assembleDraft", () => {
         const result = await assembleDraft("m/1", input);
         expect(fetchMock).toHaveBeenCalledWith(
             "/api/mail/compose/m%2F1/assemble",
+            expect.objectContaining({ method: "POST", body: JSON.stringify(input) }),
+        );
+        expect(result).toEqual(message);
+    });
+});
+
+describe("assembleDraftRaw", () => {
+    it("posts the raw MIME source to the encoded draft's assemble-raw endpoint", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, message));
+        const input = { to: [{ address: "b@example.com" }], subject: "[...]", rawMime: "raw mime source" };
+        const result = await assembleDraftRaw("m/1", input);
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/compose/m%2F1/assemble-raw",
             expect.objectContaining({ method: "POST", body: JSON.stringify(input) }),
         );
         expect(result).toEqual(message);

@@ -21,8 +21,12 @@ import * as pkijs from "pkijs";
 // Mirrors keys.ts's own WebCrypto engine setup - both @peculiar/x509 and pkijs need to be told which
 // Crypto implementation to use; the browser/Electron renderer's own global `crypto` is exactly what
 // both expect (unlike Node's global `crypto`, which @rapidmx/restapi's server-side code has to set up
-// differently - see that repo's LocalX509CertificateAuthority.ts).
-pkijs.setEngine("rapidmx", crypto, new pkijs.CryptoEngine({ name: "rapidmx", crypto, subtle: crypto.subtle }));
+// differently - see that repo's LocalX509CertificateAuthority.ts). The raw (`crypto`, `crypto.subtle`)
+// three-argument form, not `new pkijs.CryptoEngine({...})` - pkijs's own `CryptoEngine` class doesn't
+// actually satisfy its own `ICryptoEngine` interface (a real type-definition inconsistency in pkijs
+// itself, confirmed via `tsc --noEmit`: `generateKey`'s Ed25519/X25519 overloads don't line up between
+// the two), so passing an instance of it here fails to compile even though it works at runtime.
+pkijs.setEngine("rapidmx", crypto, crypto.subtle);
 
 /** SHA-256 detached signatures throughout, matching this system's hash-algorithm default everywhere
  * else (fingerprints, HKDF). */

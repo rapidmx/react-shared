@@ -12,8 +12,10 @@
 
 import { ApiRequestError, apiFetch, authApiFetch } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
+import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
 
 export type { ListParams };
+export type { EncryptionPreference, PublicKey };
 
 export interface Mailbox {
     uid: string;
@@ -68,6 +70,14 @@ export interface Mailbox {
      * requester, not the recipient. Always present (defaults `true`/`false` respectively), same caveat. */
     autoSendReceiptsInternal?: boolean;
     autoSendReceiptsExternal?: boolean;
+    /** This mailbox's own encryption preference, per `specs/end-to-end_encryption.md` — a client
+     * defaults to encrypting only when *both* sender and recipient report `"mutual"`. Absent is
+     * equivalent to `{ preferEncrypt: "nopreference" }` (no keys enrolled yet). */
+    encryptPreference?: EncryptionPreference;
+    /** This mailbox's published public keys (signing and/or encryption) — safe to expose publicly,
+     * per the spec's own `PublicKey` doc comment. Absent/empty means no keys enrolled yet
+     * (`KeyEnrollmentGate` handles that state). */
+    keys?: PublicKey[];
 }
 
 /** Lists mailboxes the caller can access (owned, shared with them, or — for a trusted caller — every one). */
@@ -400,6 +410,14 @@ export interface Message {
     /** The per-recipient delivery/read roster on a *sent* message — the client-visible tracking indicator.
      * `undefined` (not an empty array) when no receipt was ever requested for this message. */
     receiptStatus?: MessageReceiptEntry[];
+    /** `true` when this message's body is S/MIME (CMS) encrypted — computed server-side by
+     * `@rapidmx/restapi`'s `ScanPipeline` from the actual stored MIME structure, not something a
+     * client ever sets directly. Says nothing about whether it's *signed* — see
+     * `specs/end-to-end_encryption.md`'s Message Security Indicators (encryption and signing are
+     * separate guarantees); signature verification happens client-side by decrypting/parsing the
+     * stored body, not from a flag this API exposes. Always present on a real `Message` (defaults
+     * `false` server-side), same optional-for-old-fixtures caveat as `Mailbox.oofEnabled`. */
+    encrypted?: boolean;
 }
 
 export interface MessageReceiptEntry {
@@ -588,6 +606,34 @@ export function createDraft(mailboxUid: string, folderUid: string): Promise<Mess
  */
 export function assembleDraft(messageUid: string, input: AssembleDraftInput): Promise<Message> {
     return apiFetch(`/mail/compose/${encodeURIComponent(messageUid)}/assemble`, {
+        method: "POST",
+        body: JSON.stringify(input),
+    });
+}
+
+export interface AssembleDraftRawInput {
+    to: ComposeRecipientInput[];
+    cc?: ComposeRecipientInput[];
+    bcc?: ComposeRecipientInput[];
+    /** The message's own top-level `Subject` — for an encrypted message this MUST be the outer,
+     * RFC 9788 `hcp_baseline`-obscured value (`"[...]"`, see `crypto/smimeMessage.ts`'s
+     * `applyBaselineOuterHeaders()`), matching what's already in `rawMime`'s own outer header. */
+    subject: string;
+    /** The complete RFC 5322 message source, already finalized client-side — see
+     * `crypto/smimeMessage.ts`'s `buildSignedOnlyMessage()`/`buildEncryptedMessage()`, combined with
+     * the outer envelope headers (`From`/`To`/`Cc`/`Date`/`Message-ID`/`MIME-Version`) by the caller. */
+    rawMime: string;
+}
+
+/**
+ * Stores an already-signed/encrypted draft's raw MIME source as its `bodyBlobKey`, completely
+ * unmodified — the E2E counterpart to `assembleDraft()`, for when the message body was built
+ * client-side via `crypto/smimeMessage.ts` rather than from plain HTML. Does not send the message. A
+ * draft assembled this way cannot carry file attachments yet — see `BaseMailComposeRoute.assembleRaw()`'s
+ * own doc comment in `server`.
+ */
+export function assembleDraftRaw(messageUid: string, input: AssembleDraftRawInput): Promise<Message> {
+    return apiFetch(`/mail/compose/${encodeURIComponent(messageUid)}/assemble-raw`, {
         method: "POST",
         body: JSON.stringify(input),
     });
