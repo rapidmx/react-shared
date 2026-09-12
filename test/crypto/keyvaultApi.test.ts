@@ -9,6 +9,7 @@ import {
     checkSignEnrollmentStatus,
     enrollKey,
     getEncryptionPolicy,
+    getEscrowInfo,
     getKeyVault,
     lookupKeys,
     rekey,
@@ -85,6 +86,28 @@ describe("checkSignEnrollmentStatus", () => {
         await checkSignEnrollmentStatus("mb1", "enr/1");
         const [url] = fetchMock.mock.calls[0];
         expect(url).toBe("/api/mail/mailboxes/mb1/keyvault/keys/sign-enrollment/enr%2F1");
+    });
+});
+
+describe("getEscrowInfo", () => {
+    it("fetches this mailbox's assigned escrow scope's public key", async () => {
+        const escrowInfo = {
+            escrowScopeId: "scope-1",
+            publicKey: { publicKey: "base64cert", type: "x509", fingerprint: "fp1", notBefore: 0, notAfter: 1 },
+        };
+        const fetchMock = mockFetch(() => jsonResponse(200, escrowInfo));
+        const result = await getEscrowInfo("mb1");
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb1/escrow-info", expect.anything());
+        expect(result).toEqual(escrowInfo);
+    });
+
+    it("encodes a mailbox uid needing escaping", async () => {
+        const fetchMock = mockFetch(() =>
+            jsonResponse(200, { escrowScopeId: "scope-1", publicKey: { publicKey: "c", type: "x509", fingerprint: "f", notBefore: 0, notAfter: 1 } }),
+        );
+        await getEscrowInfo("mb/1");
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe("/api/mail/mailboxes/mb%2F1/escrow-info");
     });
 });
 

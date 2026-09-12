@@ -16,6 +16,7 @@ import { MASTER_KEY_AAD_PURPOSE } from "./keySession.js";
 import type { MasterKeyWrap } from "./keyvaultApi.js";
 import { Argon2idParams, DEFAULT_ARGON2ID_PARAMS, argon2idKdfLabel, deriveFromPassword, generateSalt } from "./passwordUnlock.js";
 import { deriveFromRecoveryCode, generateRecoveryCode } from "./recoveryCode.js";
+import { encryptForRecipients } from "./smime.js";
 
 /** KDF label for a recovery-code wrap - there's no Argon2id step for these (the code itself is already
  * high-entropy, see `recoveryCode.ts`'s own doc comment), just a direct HKDF derivation. */
@@ -79,4 +80,43 @@ export async function buildRecoveryWraps(
         });
     }
     return { wraps, codes };
+}
+
+/** `nonce`/`salt` labels for an escrow wrap - see `buildEscrowWrap()`'s own doc comment for why these
+ * are fixed placeholders rather than freshly generated values, unlike every other wrap method. */
+export const ESCROW_KDF_LABEL = "cms-enveloped-data";
+const ESCROW_NONCE_PLACEHOLDER = "n/a";
+const ESCROW_SALT_PLACEHOLDER = "n/a";
+
+/**
+ * Wraps `mk` for the `escrow` unlock method: encrypts it as a CMS `EnvelopedData` structure to the
+ * escrow scope's own X.509 public-key certificate (`keyvaultApi.ts`'s `getEscrowInfo()` return value) -
+ * the exact same "encrypt to a recipient's certificate" operation `smime.ts`'s `encryptForRecipients()`
+ * already implements for message bodies, just applied to MK instead. Matches
+ * `specs/end-to-end_encryption.md`'s `wrap_escrow = AEAD(escrow scope public key, MK)` pseudocode.
+ *
+ * Unlike `buildPasswordWrap()`/`buildRecoveryWraps()`, there is no separately-generated salt or nonce
+ * here - CMS `EnvelopedData` already embeds everything a holder's own offline tooling needs to unwrap
+ * (the content-encryption algorithm, its IV, and the ECDH key-agreement material) inside the ciphertext
+ * itself. `nonce`/`salt` are still populated with a fixed, documented placeholder rather than left empty
+ * because restapi's own `validateMasterKeyWrap()` requires every `MasterKeyWrap` field to be a non-empty
+ * string regardless of method - they carry no cryptographic meaning for this method and a holder's
+ * unwrap tooling must never read them.
+ *
+ * This client never has (and this function never touches) the scope's *private* key - only a holder's
+ * own external tooling can ever unwrap the result. `escrowScopeId` is required so `resolveAllowEscrow()`
+ * (server-side) can confirm it matches the mailbox's actually-assigned scope before persisting.
+ */
+export async function buildEscrowWrap(mk: Uint8Array, escrowScopeId: string, scopePublicKeyCertDer: Uint8Array): Promise<MasterKeyWrap> {
+    const envelopedDer = await encryptForRecipients(mk, [scopePublicKeyCertDer]);
+    return {
+        method: "escrow",
+        escrowScopeId,
+        ciphertext: toBase64(envelopedDer),
+        nonce: ESCROW_NONCE_PLACEHOLDER,
+        salt: ESCROW_SALT_PLACEHOLDER,
+        kdf: ESCROW_KDF_LABEL,
+        schemeVersion: WRAP_SCHEME_VERSION,
+        createdAt: Date.now(),
+    };
 }

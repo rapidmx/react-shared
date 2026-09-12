@@ -1,13 +1,18 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
+import "reflect-metadata";
+import * as x509 from "@peculiar/x509";
 import { describe, expect, it } from "vitest";
-import { RECOVERY_CODE_COUNT, buildPasswordWrap, buildRecoveryWraps } from "../../src/crypto/masterKeyWraps.js";
+import { ESCROW_KDF_LABEL, RECOVERY_CODE_COUNT, buildEscrowWrap, buildPasswordWrap, buildRecoveryWraps } from "../../src/crypto/masterKeyWraps.js";
 import { fromBase64 } from "../../src/crypto/encoding.js";
 import { buildAad, generateMasterKey, openWithKey } from "../../src/crypto/masterKey.js";
 import { MASTER_KEY_AAD_PURPOSE } from "../../src/crypto/keySession.js";
 import { deriveFromPassword } from "../../src/crypto/passwordUnlock.js";
 import { deriveFromRecoveryCode } from "../../src/crypto/recoveryCode.js";
+import { decryptEnvelopedData } from "../../src/crypto/smime.js";
+
+x509.cryptoProvider.set(crypto);
 
 const MAILBOX_UID = "mb1";
 // Argon2id is intentionally slow (memory-hard) - use lighter parameters than the real default so this
@@ -80,5 +85,48 @@ describe("buildRecoveryWraps", () => {
         const { wraps, codes } = await buildRecoveryWraps(MAILBOX_UID, mk, 2);
         expect(wraps).toHaveLength(2);
         expect(codes).toHaveLength(2);
+    });
+});
+
+async function generateEscrowScopeIdentity(): Promise<{ certDer: Uint8Array; privateKey: CryptoKey }> {
+    const keys = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
+    const cert = await x509.X509CertificateGenerator.createSelfSigned({
+        serialNumber: "01",
+        name: "CN=Escrow Scope",
+        notBefore: new Date(),
+        notAfter: new Date(Date.now() + 86_400_000),
+        signingAlgorithm: { name: "ECDSA", hash: "SHA-256" },
+        keys,
+    });
+    // Same re-import-under-ECDH technique smime.test.ts's own generateTestIdentity() uses for its
+    // "encrypt" identities - a holder's own offline tooling would do the same to unwrap this.
+    const pkcs8 = await crypto.subtle.exportKey("pkcs8", keys.privateKey);
+    const privateKey = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+    return { certDer: new Uint8Array(cert.rawData), privateKey };
+}
+
+describe("buildEscrowWrap", () => {
+    it("produces a wrap a holder can unwrap back to the same MK using the scope's own certificate/private key", async () => {
+        const mk = generateMasterKey();
+        const scope = await generateEscrowScopeIdentity();
+
+        const wrap = await buildEscrowWrap(mk, "scope-1", scope.certDer);
+
+        expect(wrap.method).toBe("escrow");
+        expect(wrap.escrowScopeId).toBe("scope-1");
+        expect(wrap.kdf).toBe(ESCROW_KDF_LABEL);
+
+        const opened = await decryptEnvelopedData(fromBase64(wrap.ciphertext), scope.certDer, scope.privateKey);
+        expect(opened).toEqual(mk);
+    });
+
+    it("cannot be unwrapped with a different scope's certificate/private key", async () => {
+        const mk = generateMasterKey();
+        const scope = await generateEscrowScopeIdentity();
+        const otherScope = await generateEscrowScopeIdentity();
+
+        const wrap = await buildEscrowWrap(mk, "scope-1", scope.certDer);
+
+        await expect(decryptEnvelopedData(fromBase64(wrap.ciphertext), otherScope.certDer, otherScope.privateKey)).rejects.toThrow();
     });
 });

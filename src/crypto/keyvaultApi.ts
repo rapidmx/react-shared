@@ -158,6 +158,37 @@ export function checkSignEnrollmentStatus(mailboxUid: string, enrollmentId: stri
     );
 }
 
+/** An escrow scope's public key, exposed only via `getEscrowInfo()` below. Mirrors `@rapidmx/restapi`'s
+ * `EscrowScopePublicKey` exactly - the same shape as `PublicKey` minus `useType` (an escrow scope's key
+ * is only ever used for encryption, never signing). */
+export interface EscrowScopePublicKey {
+    /** Base64-encoded DER X.509 certificate. */
+    publicKey: string;
+    type: string;
+    fingerprint: string;
+    notBefore: number;
+    notAfter: number;
+    revokedAt?: number;
+}
+
+/** The wire shape `GET /mail/mailboxes/:id/escrow-info` returns - see that route's own doc comment
+ * (`server`'s `BaseEscrowInfoRoute`) for why this exists as a `server`-only proxy rather than a restapi
+ * route: `@rapidmx/restapi`'s own `GET /escrow-scopes/:id` is trusted-admin-only, with no lighter
+ * alternative a mailbox owner could use to read the one scope their own mailbox is assigned to. */
+export interface EscrowInfo {
+    escrowScopeId: string;
+    publicKey: EscrowScopePublicKey;
+}
+
+/** Fetches `{escrowScopeId, publicKey}` for the `EscrowScope` this mailbox is currently assigned to
+ * (`Mailbox.escrowScopeId`, an admin-only assignment - see `EscrowInfo`'s own doc comment). 404s if the
+ * mailbox has no escrow scope assigned, the scope no longer exists, or the caller can't access this
+ * mailbox. Used by `crypto/masterKeyWraps.ts`'s `buildEscrowWrap()` to get the certificate MK is wrapped
+ * against. */
+export function getEscrowInfo(mailboxUid: string): Promise<EscrowInfo> {
+    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/escrow-info`);
+}
+
 /** Adds a wrapped copy of the master key for a new unlock method (e.g. registering a new passkey),
  * independent of key enrollment. Requires an already-initialized vault. */
 export function addMasterKeyWrap(mailboxUid: string, wrap: MasterKeyWrap): Promise<KeyVault> {

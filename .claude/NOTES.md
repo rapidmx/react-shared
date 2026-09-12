@@ -362,3 +362,31 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
   DI/config/job-registration wiring this phase also needed there (including a real, load-bearing gap
   found and fixed: the driver job wasn't in `Jobs.ts`'s re-export list, so it would silently never run
   even with the right backend selected).
+
+- **2026-09-12 (continued) — Phase 5b of consuming restapi's 11 post-0.6.0 commits: Escrow Scoping,
+  mailbox-owner wrapping.** `crypto/keyvaultApi.ts` gained `getEscrowInfo(mailboxUid)` (`GET
+  /mail/mailboxes/:id/escrow-info` → `{escrowScopeId, publicKey}`), the client wrapper for `server`'s own
+  new gap-filling proxy route (`BaseEscrowInfoRoute` - see that repo's NOTES.md for why it exists:
+  restapi's own `GET /escrow-scopes/:id` is trusted-admin-only, with no lighter path for a mailbox owner
+  to read the *one* scope their own mailbox is assigned to).
+  - `crypto/masterKeyWraps.ts` gained `buildEscrowWrap(mk, escrowScopeId, scopePublicKeyCertDer)` -
+    unlike `buildPasswordWrap()`/`buildRecoveryWraps()` (both symmetric, AEAD-under-a-derived-key), an
+    escrow wrap has no shared secret the mailbox owner knows - only the scope's *public* key. Reuses
+    `smime.ts`'s `encryptForRecipients()` (CMS `EnvelopedData`, ECDH key-agreement against a recipient's
+    X.509 certificate) verbatim, the exact same operation already used to encrypt a message body to a
+    recipient - just applied to MK instead. Matches the spec's own terse `wrap_escrow = AEAD(escrow scope
+    public key, MK)` pseudocode; CMS EnvelopedData is the concrete mechanism that pseudocode leaves
+    implicit, and was already implemented/tested here rather than being new crypto.
+  - **A real wire-format judgment call, not specced down to this level**: `MasterKeyWrap`'s `nonce`/
+    `salt`/`kdf` fields are required non-empty strings for every method (confirmed by reading restapi's
+    own `validateMasterKeyWrap()`), but CMS `EnvelopedData` is fully self-contained (embeds its own IV and
+    ECDH key-agreement material) - there is nothing left to put in `nonce`/`salt`. Resolved by writing
+    fixed, documented placeholder values (`"n/a"`) for both and a descriptive `kdf: "cms-enveloped-data"`
+    label - satisfies the wire contract without inventing new `MasterKeyWrap` fields; a holder's own
+    unwrap tooling parses the CMS structure directly and never reads these two fields for this method.
+  - Round-trip tested against a real generated test certificate/keypair (mirroring `smime.test.ts`'s own
+    `generateTestIdentity()` helper) - confirms a holder with the matching private key can unwrap back to
+    the exact same MK, and that a *different* scope's keypair cannot.
+  - Settings UI (the mailbox owner actually calling these to add an escrow wrap once assigned) and the
+    admin/holder UI (EscrowScope/Matter/EscrowAccessRequest/audit log CRUD) are `web-client`'s own Phase
+    5b/5c, not yet built - tracked as the next step in this batch.
