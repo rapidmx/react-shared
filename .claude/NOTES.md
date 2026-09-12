@@ -390,3 +390,26 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
   - Settings UI (the mailbox owner actually calling these to add an escrow wrap once assigned) and the
     admin/holder UI (EscrowScope/Matter/EscrowAccessRequest/audit log CRUD) are `web-client`'s own Phase
     5b/5c, not yet built - tracked as the next step in this batch.
+
+- **2026-09-12 (continued) — Phase 5c of consuming restapi's 11 post-0.6.0 commits: Escrow Scoping,
+  admin/holder CRUD.** Four new `src/admin/*Api.ts` wrappers, same shape as every other CRUD wrapper in
+  this directory (`transportRulesApi.ts`/`distributionListsApi.ts`/`labelsApi.ts`):
+  - `escrowScopesApi.ts` - full CRUD over `escrow/scopes` (trusted-admin-only server-side). `EscrowScope`
+    mirrors restapi's own shape exactly, including `publicKey: EscrowScopePublicKey` (an admin pastes in
+    an already-issued certificate's fields here - nothing generates a keypair in this app).
+  - `mattersApi.ts` - CRUD over `escrow/matters` plus `closeMatter()` (`POST /:id/close`). Holder-gated
+    server-side, not admin-gated - a trusted admin who isn't a holder of the matter's own scope gets the
+    same 403 as anyone.
+  - `escrowAccessRequestsApi.ts` - a bespoke (non-CRUD) wrapper: `createAccessRequest({matterId,
+    mailboxUid})`, `approveAccessRequest()`/`denyAccessRequest()`, and `getAccessRequestMaterial()`
+    (`GET /:id/material` → `{masterKeyWraps}`, readable only once `approved`/`fulfilled` - still-wrapped
+    ciphertext, never anything this server or client could decrypt itself).
+  - `escrowAuditLogApi.ts` - read-only `listAuditLogEntries`/`getAuditLogEntry` (create/update/delete are
+    unconditionally rejected server-side - the log is append-only, written internally by restapi's own
+    escrow routes) plus `verifyAuditChain()` (`GET /verify`, trusted-admin-only server-side - the wrapper
+    itself enforces nothing, same "server is the actual gate" posture as every other role-gated wrapper).
+  - All four fully covered (100%/100%/100%/100%), mirroring existing `test/admin/*.test.ts` conventions.
+  - `web-client`'s own admin (`apps/admin/escrow-scopes`) and new holder-facing (`apps/escrow`) UI built on
+    top of these - see that repo's NOTES.md for the full breakdown, including why `apps/escrow` needed a
+    new top-level app rather than living under `apps/admin` (holding escrow is a separate role from server
+    administration, per the spec's "Separation of duties").

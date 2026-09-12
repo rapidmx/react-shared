@@ -1,0 +1,97 @@
+///////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2026 Jean-Philippe Steinmetz
+// SPDX-License-Identifier: MPL-2.0
+///////////////////////////////////////////////////////////////////////////////
+/**
+ * Typed wrappers over `@rapidmx/restapi`'s `EscrowScope` CRUD route (`BaseEscrowScopeRoute`) —
+ * trusted-role-only for every action (create/update/delete/find/count/findById). Configuring *who counts
+ * as a holder*, the dual-control threshold, and the scope's own public key is an administrative act,
+ * deliberately separate from actually holding the eDiscovery/compliance role (see `mattersApi.ts`,
+ * `specs/end-to-end_encryption.md`'s "Separation of duties") — this file is consumed only by
+ * `apps/admin/escrow-scopes/*`, never by the holder-facing `apps/escrow` area.
+ */
+
+import { apiFetch } from "../util/api.js";
+import { ListParams, buildQuery } from "../util/apiQuery.js";
+
+export type { ListParams };
+
+/** A scope's own public key — mirrors `@rapidmx/restapi`'s `EscrowScopePublicKey` exactly. An admin
+ * pastes in the fields of an already-issued certificate here; nothing in this app generates a keypair. */
+export interface EscrowScopePublicKey {
+    /** Base64-encoded public key (DER-encoded X.509 certificate, or raw key material). */
+    publicKey: string;
+    type: string;
+    /** SHA-256 fingerprint of the key, hex encoded. */
+    fingerprint: string;
+    /** UTC timestamp (epoch ms) at which this key becomes valid. */
+    notBefore: number;
+    /** UTC timestamp (epoch ms) at which this key expires. */
+    notAfter: number;
+    /** UTC timestamp (epoch ms) at which this key was revoked, if applicable. */
+    revokedAt?: number;
+}
+
+export interface EscrowScope {
+    uid: string;
+    version: number;
+    dateCreated: string;
+    dateModified: string;
+    name: string;
+    description?: string;
+    publicKey: EscrowScopePublicKey;
+    /** Uids of every user in the eDiscovery/compliance role for this scope. At least one required. */
+    holderUserUids: string[];
+    /** M in "M-of-N dual control" — must be between 1 and `holderUserUids.length` inclusive. */
+    requiredHolders: number;
+    notifySubjectOnAccess: boolean;
+}
+
+export function listEscrowScopes(params: ListParams = {}): Promise<EscrowScope[]> {
+    return apiFetch(`/escrow/scopes?${buildQuery(params)}`);
+}
+
+export function getEscrowScope(uid: string): Promise<EscrowScope> {
+    return apiFetch(`/escrow/scopes/${encodeURIComponent(uid)}`);
+}
+
+export interface CreateEscrowScopeInput {
+    name: string;
+    description?: string;
+    publicKey: EscrowScopePublicKey;
+    holderUserUids: string[];
+    requiredHolders: number;
+    notifySubjectOnAccess?: boolean;
+}
+
+export function createEscrowScope(input: CreateEscrowScopeInput): Promise<EscrowScope> {
+    return apiFetch("/escrow/scopes", {
+        method: "POST",
+        body: JSON.stringify({ notifySubjectOnAccess: false, ...input }),
+    });
+}
+
+export interface UpdateEscrowScopeInput {
+    uid: string;
+    version: number;
+    name?: string;
+    description?: string;
+    publicKey?: EscrowScopePublicKey;
+    holderUserUids?: string[];
+    requiredHolders?: number;
+    notifySubjectOnAccess?: boolean;
+}
+
+export function updateEscrowScope(input: UpdateEscrowScopeInput): Promise<EscrowScope> {
+    return apiFetch(`/escrow/scopes/${encodeURIComponent(input.uid)}`, {
+        method: "PUT",
+        body: JSON.stringify(input),
+    });
+}
+
+/** 409s if a `Matter` still references this scope (`BaseEscrowScopeRoute.delete()`'s own referencing-Matter
+ * guard) — the caller is expected to surface that `ApiRequestError` as-is, same as every other CRUD wrapper
+ * in this package. */
+export function deleteEscrowScope(uid: string, version: number): Promise<void> {
+    return apiFetch(`/escrow/scopes/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+}
