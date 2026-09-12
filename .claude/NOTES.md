@@ -239,4 +239,45 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
   requirement is left to a caller-side UI banner (`MessageDetailPane.tsx`, not yet wired at time of
   writing), separate from the existing state badge. `splitHeadersAndBody()`'s return type gained a
   `rawHeaderBlock: string` field (the pre-parse header block text) to make this possible without a
-  second parse pass.
+  second parse pass. (Since wired into `MessageDetailPane.tsx` as its own `Alert` banner - see
+  `web-client`'s NOTES.md, same date.)
+
+- **2026-09-11 — `search.md` Tier 1 client support: query grammar parser, `searchApi.ts` brought up
+  to restapi's actual interface.** Investigation before starting this found Tier 1 (server-side
+  search) **already fully implemented and mounted** in the current restapi release -
+  `SearchProvider`/`SearchDocument`/`SearchQuery`/`SearchResult`/`CandidateQuery` in
+  `restapi/src/search/SearchProvider.ts` already carry every field `specs/search.md` §12/§14
+  require (`from`/`to`/`cc`, `folderUid`, `flags`, `labels`, `hasAttachments`, `metadataOnly`), and
+  `BaseSearchRoute` (mounted at `GET /mail/search` and `GET /mail/search/candidates` via `server`'s
+  existing `SearchRoute.ts` files) already accepts the full operator-grammar query params and Tier-3
+  candidate narrowing. None of that needed building - only this repo's client wrapper was stuck on
+  the original bare-bones `{q, types, cursor, limit}` shape. Tiers 2/3 (local encrypted SQLite FTS5
+  index, progressive skeleton-result UI, composite pagination cursor) remain **explicitly out of
+  scope** - confirmed with JP via plan-mode `AskUserQuestion` before starting, since the spec itself
+  says the web encrypting VFS needs prototyping before committing and flags an unresolved index-size
+  measurement task.
+  - Rewrote `search/searchApi.ts`'s `SearchResult`/`SearchParams` to carry every structured filter
+    (`from`/`to`/`cc`/`subject`/`hasAttachment`/`before`/`after`/`folderUid`/`flags`/`labels`) and
+    `metadataOnly`/`source` fields, matching `BaseSearchRoute.search()`'s exact query-param names.
+    Added `candidates()` wrapping the already-shipped `GET /mail/search/candidates` Tier-3 endpoint -
+    nothing calls it yet (that's real Tier 3 UI work, not this pass), added now so that work doesn't
+    need to revisit this file's shape later.
+  - New `search/queryGrammar.ts#parseSearchQuery()` - `specs/search.md` §14's operator grammar
+    (`from:`/`to:`/`cc:`/`subject:`/`has:attachment`/`before:`/`after:`/`in:`/`is:`/`label:`/`type:`),
+    parsed once client-side per the spec's own requirement. **Deliberately does not implement phrase-
+    quoting or `-` negation itself** - those apply to the free-text remainder, which every provider's
+    own engine already handles natively (the spec's own §14 "Provider Implementation": Postgres's
+    `websearch_to_tsquery` understands quotes/`OR`/negation on untrusted input already) - reimplementing
+    that client-side would just be a worse duplicate. Only operator tokens are extracted; an operator-
+    looking token preceded by `-` or living inside a quoted phrase is left untouched in the free-text
+    output, since there is no server-side representation for a *negated* structured filter.
+  - New `search/searchScoring.ts` - the spec §7 field-weight table plus `normalizeServerScores()`
+    (min-max normalization of one page's raw scores into `[0,1]`, preserving relative order). Only one
+    source exists yet (Tier 1), so there's nothing to actually *merge* - written generically (a page's
+    scores in, normalized scores out) so a future per-source call is all real cross-tier merging needs.
+  - `web-client`'s inbox search UI (`apps/www/index.tsx`) now parses the raw search box value through
+    `parseSearchQuery()` and forwards every structured field, plus renders `SearchResult.snippet` in
+    place of the plain `bodyPreview` - see that repo's own NOTES.md, same date, for the UI-side details
+    and a test-authoring bug caught along the way (a fixture missing a distinct `folderUid` let a
+    stale pre-search render satisfy an assertion that should have waited for the real search response).
+  - Full suite: 100%/99%+ branches held; every new file has its own dedicated test file.
