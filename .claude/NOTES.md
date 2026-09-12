@@ -450,3 +450,15 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
   already established for attachment downloads - discovered by checking how attachments are actually
   downloaded in `web-client` before inventing a blob-fetch helper that would have duplicated existing,
   working infrastructure. 100% covered.
+
+- **2026-09-12 (continued) — Phase 5 of consuming restapi's next batch: Mailbox import, Mbox + PST
+  (Group D2).** New `src/mail/mailboxImportApi.ts` - `uploadMailboxImport(file, {format,
+  targetFolderUid, mailboxUid?})`, `listImportRequests()`, `getImportRequest(uid)`. The upload wrapper
+  bypasses `apiFetch()` (which always forces `Content-Type: application/json`) exactly the same way
+  `mailApi.ts`'s `uploadAttachment()` already does for a raw-bytes upload - sends the file's own bytes as
+  the request body with `format`/`targetFolderUid`/`mailboxUid` as query-string params (not JSON),
+  matching `BaseMailboxImportRoute.create()`'s real wire shape, and hand-replicates `apiFetch()`'s own
+  error-decoding logic (content-type sniffing, `message`/`error` fallback, `statusText` fallback) since
+  it can't reuse that helper here either - same duplication `uploadAttachment()` already accepted for the
+  identical reason. 100% covered, mirroring `test/mail/mailApi.test.ts`'s own `uploadAttachment`
+  describe-block conventions (every response-shape/error-path branch, not just the happy path).
