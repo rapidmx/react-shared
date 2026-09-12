@@ -21,7 +21,7 @@
  * passkey has no way to unlock through this module today.
  */
 import type { KeyVault, PublicKey } from "./keyvaultApi.js";
-import { getKeyVault } from "./keyvaultApi.js";
+import { findActivePublicKey, getKeyVault } from "./keyvaultApi.js";
 import { fromBase64 } from "./encoding.js";
 import { importPrivateKeyPkcs8 } from "./keys.js";
 import { buildAad, openWithKey } from "./masterKey.js";
@@ -61,17 +61,6 @@ export function destroyUnlockedKeys(mailboxUid?: string): void {
     } else {
         sessions.clear();
     }
-}
-
-/** The most recently issued, currently-valid (non-revoked, non-expired) published key of the given
- * use type — the one this device should actually sign/encrypt with going forward. A mailbox may have
- * several of the same `useType` on file after a rotation; older ones are kept for decrypting old mail,
- * never removed, per the spec's own key-lifecycle rules. */
-function findActivePublicKey(keys: PublicKey[], useType: "sign" | "encrypt"): PublicKey | undefined {
-    const now = Date.now();
-    return keys
-        .filter((k) => k.useType === useType && !k.revokedAt && k.notAfter > now)
-        .sort((a, b) => b.notBefore - a.notBefore)[0];
 }
 
 /** Finds the wrapped private key whose fingerprint matches a given published public key. */

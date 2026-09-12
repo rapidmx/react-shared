@@ -84,6 +84,18 @@ export function getKeyVault(mailboxUid: string): Promise<KeyVault> {
     return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault`);
 }
 
+/** The most recently issued, currently-valid (non-revoked, non-expired) published key of the given use
+ * type — the one that should actually be used to sign/encrypt going forward. A mailbox or contact may
+ * have several of the same `useType` on file after a rotation; older ones are kept for decrypting old
+ * mail, never removed, per the spec's own key-lifecycle rules. Shared by `crypto/keySession.ts` (the
+ * mailbox's own keys) and `crypto/composeSecurity.ts` (a recipient's discovered keys). */
+export function findActivePublicKey(keys: PublicKey[], useType: "sign" | "encrypt"): PublicKey | undefined {
+    const now = Date.now();
+    return keys
+        .filter((k) => k.useType === useType && !k.revokedAt && k.notAfter > now)
+        .sort((a, b) => b.notBefore - a.notBefore)[0];
+}
+
 export interface EnrollKeyInput {
     useType: "sign" | "encrypt";
     /** PEM-encoded PKCS#10 CSR — required (and only meaningful) for `useType: "encrypt"`; the server
