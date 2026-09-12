@@ -117,6 +117,47 @@ export function enrollKey(mailboxUid: string, input: EnrollKeyInput): Promise<Ke
     });
 }
 
+export interface SignEnrollmentRequest {
+    /** A PEM-encoded PKCS#10 CSR for the signing key pair to enroll. */
+    csr: string;
+    wrappedKey: Omit<WrappedPrivateKey, "fingerprint" | "useType">;
+}
+
+/** The status of a started automated (RFC 8823 ACME) signing-certificate enrollment. Mirrors
+ * `@rapidmx/restapi`'s `EnrollmentResult` exactly. */
+export interface EnrollmentResult {
+    status: "pending" | "issued" | "failed";
+    /** The issued certificate, PEM-encoded — present only once `status` is `"issued"`. Not needed
+     * client-side: once issued, restapi's own `AcmeEnrollmentDriverJob` auto-installs it into this
+     * mailbox's `KeyVault` server-side, using the `wrappedKey` already submitted in
+     * `startSignEnrollment()` — no further client action installs it. */
+    certificate?: string;
+    /** A human-readable reason — present only once `status` is `"failed"`. */
+    error?: string;
+}
+
+/** Starts an automated (RFC 8823 email-reply-00 ACME) public-CA signing-certificate enrollment —
+ * only meaningful when the deployment has `mail:pki:signing_enrollment:backend` set to `"rfc8823"`
+ * (a `"manual"`-backend deployment's `SigningCertificateEnrollment` throws instead). Genuinely
+ * asynchronous — the CA issues the certificate via a real email round-trip, likely minutes away, not
+ * synchronous the way `enrollKey()`'s encryption-key path is — poll `checkSignEnrollmentStatus()`
+ * rather than expecting an immediate result. `wrappedKey` is submitted upfront (this server never sees
+ * an unwrapped private key) so the eventual install needs no further client action at all. */
+export function startSignEnrollment(mailboxUid: string, input: SignEnrollmentRequest): Promise<{ enrollmentId: string }> {
+    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment`, {
+        method: "POST",
+        body: JSON.stringify(input),
+    });
+}
+
+/** Reports the current status of a previously started automated enrollment — see
+ * `startSignEnrollment()`. */
+export function checkSignEnrollmentStatus(mailboxUid: string, enrollmentId: string): Promise<EnrollmentResult> {
+    return apiFetch(
+        `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment/${encodeURIComponent(enrollmentId)}`,
+    );
+}
+
 /** Adds a wrapped copy of the master key for a new unlock method (e.g. registering a new passkey),
  * independent of key enrollment. Requires an already-initialized vault. */
 export function addMasterKeyWrap(mailboxUid: string, wrap: MasterKeyWrap): Promise<KeyVault> {

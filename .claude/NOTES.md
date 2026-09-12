@@ -346,3 +346,19 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
   Deleting a label also strips it from every message's `labelUids` server-side
   (`BaseLabelRoute.cleanUpDeletedLabel()`, a synchronous full-mailbox scan) - documented on
   `deleteLabel()`'s own doc comment so a caller doesn't try to duplicate that cleanup itself.
+
+- **2026-09-12 (continued) — Phase 4 of consuming restapi's 11 post-0.6.0 commits: RFC 8823 ACME
+  signing-certificate enrollment.** Closes the gap disclosed repeatedly earlier this session -
+  `KeyEnrollmentGate` only ever provisioned the encryption key; signing had nowhere real to enroll.
+  `crypto/keyvaultApi.ts` gained `startSignEnrollment(mailboxUid, {csr, wrappedKey})` (`POST
+  /mail/mailboxes/:id/keyvault/keys/sign-enrollment` → `{enrollmentId}`) and
+  `checkSignEnrollmentStatus(mailboxUid, enrollmentId)` (`GET .../sign-enrollment/:enrollmentId` →
+  `EnrollmentResult{status:"pending"|"issued"|"failed", certificate?, error?}`), field names/paths read
+  directly from restapi's `BaseKeyVaultRoute` source rather than guessed. Genuinely asynchronous - the
+  CA issues via a real email round-trip, likely minutes away - so callers must poll rather than expect
+  an immediate result; once `status` is `"issued"`, restapi's own `AcmeEnrollmentDriverJob` has already
+  auto-installed the certificate into the mailbox's `KeyVault` server-side using the `wrappedKey`
+  submitted upfront, so no further client call installs anything. See `server`'s own NOTES.md for the
+  DI/config/job-registration wiring this phase also needed there (including a real, load-bearing gap
+  found and fixed: the driver job wasn't in `Jobs.ts`'s re-export list, so it would silently never run
+  even with the right backend selected).

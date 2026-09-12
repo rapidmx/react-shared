@@ -6,12 +6,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import {
     addMasterKeyWrap,
+    checkSignEnrollmentStatus,
     enrollKey,
     getEncryptionPolicy,
     getKeyVault,
     lookupKeys,
     rekey,
     removeMasterKeyWrap,
+    startSignEnrollment,
     updateEncryptionPolicy,
 } from "../../src/crypto/keyvaultApi.js";
 
@@ -48,6 +50,41 @@ describe("enrollKey", () => {
             "/api/mail/mailboxes/mb1/keyvault/keys",
             expect.objectContaining({ method: "POST", body: JSON.stringify(input) }),
         );
+    });
+});
+
+describe("startSignEnrollment", () => {
+    it("posts the csr and wrapped key", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { enrollmentId: "enr-1" }));
+        const input = {
+            csr: "csr-pem",
+            wrappedKey: { ciphertext: "c", nonce: "n", algorithm: "AES-256-GCM" },
+        };
+        const result = await startSignEnrollment("mb1", input);
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/mailboxes/mb1/keyvault/keys/sign-enrollment",
+            expect.objectContaining({ method: "POST", body: JSON.stringify(input) }),
+        );
+        expect(result).toEqual({ enrollmentId: "enr-1" });
+    });
+});
+
+describe("checkSignEnrollmentStatus", () => {
+    it("fetches the enrollment status", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { status: "pending" }));
+        const result = await checkSignEnrollmentStatus("mb1", "enr-1");
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/mailboxes/mb1/keyvault/keys/sign-enrollment/enr-1",
+            expect.anything(),
+        );
+        expect(result).toEqual({ status: "pending" });
+    });
+
+    it("encodes an enrollment id needing escaping", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { status: "issued", certificate: "cert-pem" }));
+        await checkSignEnrollmentStatus("mb1", "enr/1");
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe("/api/mail/mailboxes/mb1/keyvault/keys/sign-enrollment/enr%2F1");
     });
 });
 
