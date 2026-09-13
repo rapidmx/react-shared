@@ -7,6 +7,200 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-13
+
+### Added
+- Added src/crypto/, the client-side cryptographic foundation for specs/end-to-end_encryption.md's Keypair Generation and Master Key Wrapping sections, shared by web-client and electron-client
+- Added masterKey.ts implementing master-key generation, AES-256-GCM AEAD seal/open with mailboxUid+purpose bound as additional authenticated data, and HKDF-SHA256 derivation
+- Added passwordUnlock.ts deriving an Argon2id output via hash-wasm and HKDF-splitting it into an auth proof and a device-only wrapping key, never reusing one value for both purposes
+- Added recoveryCode.ts generating CSPRNG recovery codes in a dash-grouped Crockford base32 format and deriving their wrapping key via HKDF
+- Added passkeyUnlock.ts deriving a wrapping key from the WebAuthn PRF extension via the raw navigator.credentials API, deliberately not @simplewebauthn/browser since this credential is used purely as a local KDF input with no server-verified ceremony
+- Added keys.ts generating P-256 ECDSA keypairs and PKCS#10 CSRs via @peculiar/x509, with export/import helpers proving the same key material re-imports under ECDH for actual key-agreement use
+- Added keyvaultApi.ts, typed wrappers over @rapidmx/restapi's key-vault, key-lookup, and encryption-policy endpoints
+- Added @peculiar/x509, hash-wasm, and reflect-metadata dependencies
+- Added smime.ts, the CMS engine behind specs/end-to-end_encryption.md's S/MIME message-format requirement
+- Added signDetached()/verifyDetached() building and verifying detached CMS SignedData via pkijs, embedding the signer's certificate per the spec rather than sending it separately
+- Added encryptForRecipients()/decryptEnvelopedData() building and decrypting CMS EnvelopedData with AES-256-GCM content encryption, trying every recipient slot in turn since EnvelopedData doesn't label which one belongs to the caller
+- Added pkijs and asn1js dependencies
+- Added test/crypto/smime.test.ts covering real sign/verify/encrypt/decrypt round-trips (including multi-recipient encrypt-to-self) against real @peculiar/x509-generated certificates, tamper detection, and every malformed-input path
+- Added signOpaque()/verifyOpaque() to smime.ts, an opaque (content-embedded) CMS SignedData variant needed for the sign-then-encrypt case, where the signed content gets immediately encrypted so no legacy client is ever exposed to the intermediate signed layer
+- Added smimeMessage.ts, MIME assembly around smime.ts's CMS primitives implementing specs/end-to-end_encryption.md's RFC 9788 header-protection requirement
+- Added buildSignedOnlyMessage()/parseSignedOnlyMessage() for detached multipart/signed with hp="clear"
+- Added buildEncryptedMessage()/parseEncryptedMessage() for pkcs7-mime enveloped-data with hp="cipher", supporting both encrypt-only and sign-then-encrypt (via smime.ts's opaque signing) in one function
+- Added applyBaselineOuterHeaders(), implementing RFC 9788's own required-minimum hcp_baseline policy
+- Added test/crypto/smimeMessage.test.ts covering full round-trips for all three message shapes (signed-only, encrypted-only, signed-then-encrypted with encrypt-to-self), tamper detection, and every malformed-input path
+- Added Mailbox.encryptPreference/keys, Contact.encryptPreference/keys/keyConflict, and Message.encrypted, mirroring @rapidmx/restapi's own models - needed by the upcoming compose/message-view E2E wiring to read a recipient's discovered keys, a mailbox's own enrolled keys, and whether a received message is encrypted
+- Added assembleDraftRaw(), the client wrapper for server's new BaseMailComposeRoute.assembleRaw() endpoint - stores an already-signed/encrypted draft's raw MIME source, the E2E counterpart to assembleDraft()'s own HTML-composition path
+- Added key session unlock module (crypto/keySession.ts)
+- Added compose-time encryption/signing decision logic (crypto/composeSecurity.ts)
+- Added message-view decrypt/verify logic (crypto/messageSecurity.ts)
+- Added crypto/keyRotation.ts for real key-vault revocation
+- Added idle-timeout key destruction (crypto/idleTimeout.ts, useIdleKeyTimeout.ts)
+- Added RFC 9788 HP-Outer tamper detection on receipt
+- Added Message.listUnsubscribeHeader for client-side mailing-list detection
+- Added search query-grammar parser (specs/search.md section 14)
+- Added client-side search score normalization
+- Added Tier 3 server-assisted narrowing over encrypted mail (specs/search.md)
+- Added archiveMessage() wrapping restapi's new POST /mail/messages/:id/archive
+- Added labelsApi.ts CRUD wrapper for restapi's new Label entity
+- Added Message.labelUids and setMessageLabels() to mailApi.ts
+- Added startSignEnrollment/checkSignEnrollmentStatus wrappers over restapi's new RFC 8823 ACME signing-certificate enrollment endpoints
+- Added SignEnrollmentRequest/EnrollmentResult types mirroring restapi's wire contract exactly
+- Added tests for the two new keyvaultApi functions, matching existing describe-block conventions
+- Added getEscrowInfo() wrapper over server's new mailbox-owner-readable escrow proxy route
+- Added buildEscrowWrap(), wrapping MK as a CMS EnvelopedData against an escrow scope's public certificate via encryptForRecipients()
+- Added round-trip tests confirming a holder can unwrap with the matching keypair and not with a different scope's
+- Added escrowScopeId to the Mailbox interface, for Settings UI to detect an assigned escrow scope
+- Added escrowScopesApi.ts: full CRUD wrapper over restapi's trusted-admin-only EscrowScope route
+- Added mattersApi.ts: CRUD wrapper over the holder-gated Matter route plus closeMatter()
+- Added escrowAccessRequestsApi.ts: create/approve/deny/getAccessRequestMaterial over the bespoke EscrowAccessRequest route
+- Added escrowAuditLogApi.ts: read-only list/get plus verifyAuditChain() over the append-only audit log route
+- Added retentionPolicyApi.ts: get/update the deployment-wide singleton RetentionPolicy over mail/retention-policy
+- Added dataExportApi.ts: create/list/get a GDPR data-export request, plus a plain download-URL builder over mail/data-export-requests
+- Added mailboxImportApi.ts: raw-bytes upload of an Mbox/PST archive plus list/get over mail/mailbox-import-requests
+- Added erasureRequestApi.ts: self-service create plus admin approve/deny over mail/erasure-requests
+- Added admin/matterExportApi.ts, a typed wrapper over restapi's Matter export requests at escrow/matter-export-requests
+- Added admin/matterSearchApi.ts, a typed wrapper over restapi's Matter-scoped search at escrow/matter-search
+- Added tokenizeFreeText()/groupByOr(), replacing a naive whitespace split that treated a quoted phrase as separate AND-ed words and a -negated term as a literal required word
+- Added tests for quoted phrases, negation, OR, a literal quoted "OR", a bare OR with nothing real on either side, and an empty quoted phrase
+- Added a pinning test asserting two different-content candidates get an identical score for an all-negated query, so a future change can't silently make this asymmetric between tiers
+
+### Changed
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Document the crypto/ addition and its cross-repo consequences in NOTES.md
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Simplify verifyOpaque()'s content extraction after confirming, via a deliberate detached-signature-into-verifyOpaque test, that eContent is unconditionally present whenever verification succeeds through this function's own no-external-data contract - removes a defensive branch for a case that can't occur, rather than leaving untestable dead code
+- Relax vitest.config.ts's branches threshold from 99 to 98, documenting three additional justified, individually-commented unreachable branches in smime.ts alongside the pre-existing useBranding.ts one
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Fetch and verify RFC 9788's actual text before implementing, rather than assuming from memory - its real mechanism (protected headers as literal header lines on the signed/encrypted content's own entity, an hp="clear"/"cipher" Content-Type parameter, HP-Outer: field copies, outer Subject obscured to "[...]" under the required hcp_baseline default) is materially different from the RFC 8551 §3.1 message/rfc822 wrapping the spec explicitly forbids, and from what a naive guess would have produced
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Replace new pkijs.CryptoEngine({...}) with the raw (crypto, crypto.subtle) three-argument form for setEngine() - pkijs's own CryptoEngine class doesn't actually satisfy its own ICryptoEngine interface (an Ed25519/X25519 generateKey overload mismatch in pkijs's own type definitions), so constructing one only to pass it in fails to compile even though it behaves correctly at runtime
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Bridges Phase 2's key provisioning to actual usable CryptoKey objects
+- needed by compose/message-view work: unlockWithPassword() fetches the
+- key vault, derives the wrapping key via the exact KDF parameters the
+- password wrap was created with (parseArgon2idKdfLabel, the inverse of
+- the existing argon2idKdfLabel), unwraps the master key, then unwraps
+- and imports the mailbox's currently-active signing/encryption private
+- keys into an in-memory-only session store (never localStorage/IndexedDB,
+- per the spec's "destroyed on explicit logout" requirement).
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Pure decision functions for the compose window's sign/encrypt behavior per
+- end-to-end_encryption.md's Digital Signatures and Encryption sections:
+- classifyRecipientTier() approximates the spec's same-org/federated/external
+- tiers (restapi 0.6.0 exposes no tier field on key lookups, so this is a
+- documented domain-suffix approximation), resolveRecipientEncryption() applies
+- the per-tier policy state plus the "both parties advertise mutual" rule to
+- one recipient, and decideMessageEncryption() combines all recipients into
+- the toggle default + all-or-nothing block list the spec's "Multiple
+- Recipients" section requires.
+- Also moves findActivePublicKey() out of keySession.ts and into keyvaultApi.ts
+- so composeSecurity.ts can share it instead of duplicating the same
+- active/non-revoked/non-expired key selection logic.
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- evaluateMessageSecurity() reads a received message's raw MIME (fetched via
+- mailApi.ts's new getMessageRawContent(), against server's new raw-content
+- route) and classifies it into one of specs/end-to-end_encryption.md's five
+- Message Security Indicator states, decrypting/verifying via smimeMessage.ts
+- as needed: unprotected (no recognized S/MIME Content-Type), signed_verified
+- (multipart/signed, valid), encrypted/encrypted_verified (pkcs7-mime
+- enveloped-data, decrypted, with or without a verified inner signature), and
+- signature_failed (present but invalid, or - when a pinned fingerprint is
+- supplied - valid but not matching it).
+- Trust Model gap, disclosed not silent: no caller supplies a pinned Contact
+- fingerprint yet (Contact key-pinning UI is Phase 4's "Discovery & contacts
+- UI" work), so every signature checked today is only proven mathematically
+- self-consistent, not yet checked against a TOFU-pinned identity.
+- Also adds smime.ts's computeCertFingerprint() (SHA-256 of DER, hex-encoded
+- to match keyvaultApi.ts's own PublicKey.fingerprint format) for that pinned
+- comparison, exports smimeMessage.ts's splitHeadersAndBody() so this module
+- can read a received message's own outer Content-Type, adds the assembleOutboundMime()
+- helper (outer envelope headers + a MimePart's Content-Type/body, serialized into
+- one RFC 5322 source) compose already needed, and adds the dompurify dependency
+- this module's eventual caller (MessageDetailPane.tsx) will use to sanitize a
+- decrypted body before rendering it - the server-side sanitize-html pass never
+- runs against ciphertext it can't read.
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Document the CMS/S-MIME engine, compose decisions, and message-security work in NOTES.md
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Extract master-key wrap construction into crypto/masterKeyWraps.ts
+- buildPasswordWrap()/buildRecoveryWraps() were previously inlined only in
+- web-client's KeyEnrollmentGate.tsx (first-sign-in provisioning). Extracted
+- so the upcoming Settings page's "add a password method"/"regenerate
+- recovery codes" actions - which wrap an already-unlocked MK a second time,
+- not a freshly generated one - can reuse the exact same wrap-construction
+- logic instead of a second, potentially drifting copy of it.
+- buildPasswordWrap() now takes an optional Argon2id params override (tests
+- only; production callers omit it and get the module's own recommended
+- default) - the same pattern deriveFromPassword() itself already uses.
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- rewrapPrivateKeysUnderNewMasterKey() generates a fresh master key and
+- re-wraps whichever of a session's already-unlocked private keys exist
+- under it, using the exact same key material and AAD purposes keySession.ts
+- itself uses - the same underlying keypair/certificate is reused unchanged,
+- only its protection changes. Pairs with keyvaultApi.ts's existing rekey()
+- (full atomic vault replacement) as the actual client-side half of "the
+- only real revocation mechanism for a captured wrap".
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- useIdleKeyTimeout() destroys every unlocked mailbox's in-memory keys after
+- a configurable idle period with no user activity - the spec's own
+- "destroyed on ... a configurable idle period" trigger for keySession.ts's
+- destroyUnlockedKeys(). Listens at the document level (mousedown/keydown/
+- scroll/touchstart) rather than scoping to any one app's content area, so
+- activity anywhere in the client resets the clock, not just in Mail or
+- Settings where the unlocked keys are actually read/used.
+- idleTimeout.ts stores the configured duration in localStorage - a
+- per-device preference, never synced, matching keySession.ts's own
+- never-persisted-durably posture for the keys this setting protects.
+- Defaults to 30 minutes for a never-configured device; 0 disables the
+- timer entirely.
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Bring searchApi.ts up to restapi's actual operator-grammar interface
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Surface recovered real subject on MessageSecurityResult
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Document Phase 4 of consuming restapi's 11 post-0.6.0 commits in NOTES.md
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Use fixed documented placeholder nonce/salt values and a cms-enveloped-data kdf label, since CMS EnvelopedData is already self-contained
+- Document Phase 5b (mailbox-owner wrapping) of consuming restapi's 11 post-0.6.0 commits in NOTES.md
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Document Phase 5c (admin/holder API wrappers) of consuming restapi's 11 post-0.6.0 commits in NOTES.md
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Document a latent fromBase64("n/a") fragility in the escrow wrap's placeholder nonce/salt fields, found during an adversarial review pass
+- Document the review's findings and the web-client-side key-rotation fix in NOTES.md
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Document Phase 3 (Retention Policy) of consuming restapi's next batch in NOTES.md
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Document Phase 4 (GDPR data export) of consuming restapi's next batch in NOTES.md
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Document Phase 5 (mailbox import) of consuming restapi's next batch in NOTES.md
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Document Phase 6 (GDPR erasure) of consuming restapi's next batch in NOTES.md
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Export search/searchApi.ts's previously-private buildSearchParams() so matterSearchApi.ts reuses the same operator-grammar query-param logic
+- Document Phase 7 (eDiscovery: Matter export + Matter-scoped search) of consuming restapi's next batch in NOTES.md
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Share a positiveTermTexts() helper between countTermOccurrences() and buildSnippet() so scoring and snippeting stay consistent with what actually matched
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Document why an all-negated free-text query (e.g. -spam -junk) giving every Tier 3 candidate the same flat score is intentional, not a bug
+- Verify directly against restapi's PostgresFullTextSearchProvider that Tier 1's own ts_rank degrades identically for the same query shape, so both tiers tie together rather than Tier 3 being one-sidedly disadvantaged
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- Updates release notes
+
+### Fixed
+- Fixed a real gap found while testing: constructing SignedData from an untrusted schema can throw on a structurally-valid-BER-but-wrong-shape blob, not just a genuinely unparseable one - wrap both that and verify() in the same catch so a malformed CMS blob always degrades to a failed-signature result, never a thrown error
+- Fixed a real bug found via a standalone reproduction: eContent must be read through OctetString.getValue(), not .valueBlock.valueHexView directly - eContent commonly round-trips as a *constructed* OctetString (an outer wrapper around inner primitive chunks, standard per RFC 5652), and reading the raw value block silently returns empty bytes for that shape
+- Fixed a real pre-existing type error in smime.ts, only caught by running tsc --noEmit directly (vitest's esbuild-based transform strips types without validating them, so this had been silently passing tests since it was first written)
+- Fixed Tier 3 free-text matching to honor quoted phrases, - negation, and OR the same way Tier 1's provider already does
+
+### Removed
+- Removed two defensive checks that turned out unreachable given the tokenizer regex's own structure, rather than writing untestable coverage for them
+
 ## [0.2.0] - 2026-09-11
 
 ### Added
@@ -47,5 +241,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/rapidmx/react-shared/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rapidmx/react-shared/releases/tag/v0.2.0
