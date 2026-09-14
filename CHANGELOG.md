@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-14
+
+### Added
+- Added mailboxAccessApi.ts: client wrapper for the new mailbox access management/email-lookup routes
+- Added per-mailbox calendar accent colors
+- Added deleteMessage() wrapper
+- Added pluginsApi for the admin console: list plugins and their per-server status, preview a package from the registry, and add, upgrade, configure, enable, disable and remove plugins
+- Added generateEscrowKeyPair, which creates an escrow scope's P-256 key and self-signed certificate in the browser and returns the certificate as a scope public key plus the PKCS#8 private key for the administrator to download
+- Added a test proving a holder with the downloaded private key can unwrap a master key escrowed to the generated certificate
+- Added setupApi for the first-run setup wizard state (read, save the current step, complete, reopen) and mailboxPolicyApi for the new deployment-wide mailbox policy
+
+### Changed
+- listMailboxAccess/setMailboxAccess/removeMailboxAccess/lookupMailboxOwnerByEmail
+- wrap @rapidmx/restapi's new BaseMailboxAccessRoute - a friendlier, viewer/manager
+- layer over mailbox delegate access than this package's existing raw
+- getMailboxAcl/grantMailboxAccess/revokeMailboxAccess (which stay untouched for
+- their one existing caller, the admin-only ShareAccessCard).
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+- accentColorForMailbox() hashes a mailbox uid to a stable palette color
+- (never the default blue), and colorForFolder() takes an optional fallback so
+- a shared mailbox's uncolored calendar can render in its mailbox's color
+- instead of the same default as the caller's own. Explicit folder colors
+- still win.
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Used by compose to discard an unsent draft when the sender mailbox changes.
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Change the branding, retention policy and encryption policy clients to the system/ API paths, where deployment-wide settings now live
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
 ## [0.3.0] - 2026-09-13
 
 ### Added
@@ -241,6 +271,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/rapidmx/react-shared/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rapidmx/react-shared/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rapidmx/react-shared/releases/tag/v0.2.0
