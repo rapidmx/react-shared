@@ -20,6 +20,8 @@ interface OverlayEntry {
     onEscape: () => void;
     /** How many overlays enclose this one in the React tree (portals don't change React nesting). */
     depth: number;
+    /** Which commit (see `push()`) pushed this entry - assigned by `push()`. */
+    commit?: number;
 }
 
 /**
@@ -83,16 +85,31 @@ function handleKeyDown(e: KeyboardEvent) {
     }
 }
 
+/** Identifies the synchronous burst of effects (one React commit) an entry was pushed in: bumped in a
+ * microtask after the first push of a burst, so every push from the same commit shares one value. */
+let currentCommit = 0;
+let commitBumpScheduled = false;
+
 function push(entry: OverlayEntry) {
     if (stack.length === 0) {
         document.addEventListener("keydown", handleKeyDown);
     }
+    if (!commitBumpScheduled) {
+        commitBumpScheduled = true;
+        queueMicrotask(() => {
+            commitBumpScheduled = false;
+            currentCommit++;
+        });
+    }
+    entry.commit = currentCommit;
     // Normally just an append (the most recently opened overlay is on top). But React runs a child's
     // effects before its parent's, so when a nested overlay mounts already-open in the same commit as the
-    // overlay containing it, the child would be pushed first and end up *under* its own container - so an
-    // entry is placed above every entry at its nesting depth or shallower, never below one of those.
+    // overlay containing it, the child is pushed first and would end up *under* its own container - so an
+    // entry goes below deeper entries pushed *in the same commit* (its not-yet-stacked children). A deeper
+    // entry from an earlier commit stays below it: an overlay opened later is on top regardless of depth
+    // (e.g. a top-level confirm opened while a nested Drawer > Modal is already showing).
     let index = stack.length;
-    while (index > 0 && stack[index - 1].depth > entry.depth) {
+    while (index > 0 && stack[index - 1].depth > entry.depth && stack[index - 1].commit === entry.commit) {
         index--;
     }
     stack.splice(index, 0, entry);

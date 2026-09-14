@@ -17,7 +17,8 @@ import { RequestListParams, buildRequestListQuery } from "../util/apiQuery.js";
 export type { RequestListParams };
 
 export type DataExportFormat = "json" | "mbox";
-export type DataExportStatus = "pending" | "ready" | "failed";
+/** `processing` while a worker is building the export (restapi's `DataExportJob` claims `pending` requests). */
+export type DataExportStatus = "pending" | "processing" | "ready" | "failed";
 
 export interface DataExportRequest {
     uid: string;

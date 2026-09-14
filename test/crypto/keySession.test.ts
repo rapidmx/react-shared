@@ -7,6 +7,7 @@ import { generateKeyPairWithCsr, exportPrivateKeyPkcs8 } from "../../src/crypto/
 import {
     type KeySessionEvent,
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE,
+    KeysLockedError,
     MASTER_KEY_AAD_PURPOSE,
     SIGNING_PRIVATE_KEY_AAD_PURPOSE,
     destroyUnlockedKeys,
@@ -14,7 +15,7 @@ import {
     subscribeKeySession,
     unlockWithPassword,
 } from "../../src/crypto/keySession.js";
-import { buildAad, generateMasterKey, sealWithKey } from "../../src/crypto/masterKey.js";
+import { buildAad, generateMasterKey, openWithKey, sealWithKey } from "../../src/crypto/masterKey.js";
 import { argon2idKdfLabel, deriveFromPassword, generateSalt } from "../../src/crypto/passwordUnlock.js";
 import type { KeyVault, MasterKeyWrap, PublicKey } from "../../src/crypto/keyvaultApi.js";
 
@@ -223,6 +224,25 @@ describe("getUnlockedKeys / destroyUnlockedKeys", () => {
         destroyUnlockedKeys();
         expect(heldA.masterKey.every((x) => x === 0)).toBe(true);
         expect(heldB.masterKey.every((x) => x === 0)).toBe(true);
+    });
+
+    // Round-4 review: a stale `UnlockedKeys` holder kept sealing/opening under the zeroed master key with no
+    // error (AES-GCM accepts any 32 bytes), and kept using the private keys after a lock.
+    it("marks a destroyed UnlockedKeys object, drops its private keys, and makes its master key throw KeysLockedError", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["sign", "encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const held = getUnlockedKeys(MAILBOX_UID)!;
+        expect(held.destroyed).toBeUndefined();
+        const sealed = await sealWithKey(held.masterKey, new Uint8Array([1, 2, 3]), buildAad(MAILBOX_UID, "test"));
+
+        destroyUnlockedKeys(MAILBOX_UID);
+
+        expect(held.destroyed).toBe(true);
+        expect(held.signingPrivateKey).toBeUndefined();
+        expect(held.encryptionPrivateKey).toBeUndefined();
+        await expect(sealWithKey(held.masterKey, new Uint8Array([1]), buildAad(MAILBOX_UID, "test"))).rejects.toBeInstanceOf(KeysLockedError);
+        await expect(openWithKey(held.masterKey, sealed, buildAad(MAILBOX_UID, "test"))).rejects.toMatchObject({ name: "KeysLockedError" });
     });
 
     it("does not zero the previous master key when a re-unlock replaces a session", async () => {

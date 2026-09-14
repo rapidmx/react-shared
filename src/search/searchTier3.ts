@@ -25,18 +25,82 @@ import type { ParsedSearchQuery } from "./queryGrammar.js";
 import { SEARCH_FIELD_WEIGHTS } from "./searchScoring.js";
 import { candidates, SearchResult } from "./searchApi.js";
 
+/** Longest decrypted HTML body `stripHtml()` examines, in UTF-16 code units - content past it is ignored
+ * for Tier 3 matching. A hostile sender controls this input entirely, so it is bounded on top of the
+ * stripper itself being linear-time. */
+export const TIER3_MAX_HTML_LENGTH = 2_000_000;
+
+/** Finds the next `</name` close tag at or after `from`, memoizing per tag name so repeated lookups
+ * across one input never rescan the same text: a cached position still ahead of `from` is reused, and a
+ * cached "no close tag at all" (-1) stays true for every later `from`. Total work is linear in `lower`. */
+function makeCloseTagFinder(lower: string): (name: "script" | "style", from: number) => number {
+    const cache: Record<string, number> = {};
+    return (name, from) => {
+        const cached = cache[name];
+        if (cached === -1 || (cached !== undefined && cached >= from)) {
+            return cached;
+        }
+        const found = lower.indexOf(`</${name}`, from);
+        cache[name] = found;
+        return found;
+    };
+}
+
+/** Which raw-text element (`script`/`style`) a tag body (the text between `<` and `>`) opens, if any. */
+function rawTextElementOf(tagBody: string): "script" | "style" | undefined {
+    const match = /^(script|style)(?=[\s/]|$)/i.exec(tagBody);
+    return match ? (match[1].toLowerCase() as "script" | "style") : undefined;
+}
+
 /** Strips HTML down to plain text for content matching. Deliberately not `dompurify` (used elsewhere
  * in this codebase for sanitizing a decrypted body before it touches a real DOM) - `dompurify` only
  * produces a working `sanitize()` once handed a real `window`, which this module cannot assume: it
  * needs to run identically in a browser tab, an Electron renderer, and this package's own Node-based
  * test suite (no jsdom - `pkijs`'s ECDH key derivation, which every test here depends on, breaks under
  * jsdom's WebCrypto shim). This is not a security boundary - the output only ever feeds a
- * case-insensitive substring match, never rendered back into any DOM - so a plain regex is sufficient
- * and, unlike `dompurify`, behaves identically across every environment this module runs in. */
-function stripHtml(html: string): string {
-    return html
-        .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ")
-        .replace(/<[^>]+>/g, " ")
+ * case-insensitive substring match, never rendered back into any DOM.
+ *
+ * A single left-to-right pass rather than the previous `/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi` regex,
+ * which backtracked quadratically on a body of repeated unclosed `<style>` tags (round-4 review: 280 KB
+ * took over a second, growing 4x per doubling). `<script>`/`<style>` elements are dropped with their
+ * content up to the matching close tag; an unclosed one drops only its own tag (matching the old
+ * behavior); any other `<...>` tag becomes a space; an unterminated `<` is kept as text. */
+export function stripHtml(html: string): string {
+    const input = html.length > TIER3_MAX_HTML_LENGTH ? html.slice(0, TIER3_MAX_HTML_LENGTH) : html;
+    const findClose = makeCloseTagFinder(input.toLowerCase());
+    const pieces: string[] = [];
+    let position = 0;
+    while (position < input.length) {
+        const open = input.indexOf("<", position);
+        if (open === -1) {
+            pieces.push(input.slice(position));
+            break;
+        }
+        pieces.push(input.slice(position, open));
+        const close = input.indexOf(">", open + 1);
+        if (close === -1) {
+            pieces.push(input.slice(open));
+            break;
+        }
+        if (close === open + 1) {
+            // `<>` is not a tag - kept as text, as the old `<[^>]+>` pattern did.
+            pieces.push("<>");
+            position = close + 1;
+            continue;
+        }
+        pieces.push(" ");
+        position = close + 1;
+        const element = rawTextElementOf(input.slice(open + 1, Math.min(close, open + 8)));
+        if (element) {
+            const endTag = findClose(element, position);
+            if (endTag !== -1) {
+                const endTagClose = input.indexOf(">", endTag);
+                position = endTagClose === -1 ? input.length : endTagClose + 1;
+            }
+        }
+    }
+    return pieces
+        .join("")
         .replace(/&nbsp;/gi, " ")
         .replace(/&amp;/gi, "&")
         .replace(/&lt;/gi, "<")
@@ -248,7 +312,7 @@ export interface SearchEncryptedCandidatesOptions {
  * message's own `Message.hasAttachments` (fetched via `getMessage()` before decrypting, so a mismatch
  * never pays for a decrypt). The candidates endpoint accepts neither filter, so both are applied here.
  *
- * Returns `[]` (never throws) when `unlocked` is absent - nothing can be decrypted without it, so
+ * Returns `[]` (never throws) when `unlocked` is absent or already destroyed (`UnlockedKeys.destroyed`) - nothing can be decrypted without it, so
  * there is nothing this tier can contribute - or when the query has no free text and no structured
  * filter at all, mirroring `BaseSearchRoute`'s own "at least one of q or a filter" requirement rather
  * than pulling a pointless full-mailbox candidate set.
@@ -259,7 +323,7 @@ export async function searchEncryptedCandidates(
     limit = 50,
     options: SearchEncryptedCandidatesOptions = {},
 ): Promise<SearchResult[]> {
-    if (!unlocked || !hasAnyFilter(parsed)) {
+    if (!unlocked || unlocked.destroyed || !hasAnyFilter(parsed)) {
         return [];
     }
 

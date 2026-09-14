@@ -9,9 +9,12 @@
  * method"/"regenerate recovery codes" actions - which wrap the *same* MK a second time, not a freshly
  * generated one - can reuse the exact same wrap-construction logic rather than a second, potentially
  * drifting copy of it.
+ *
+ * Every builder throws `KeysLockedError` (`masterKey.ts`) when `mk` is a destroyed (all-zero) master key -
+ * wrapping one would upload a wrap that "unlocks" to a useless key.
  */
 import { toBase64 } from "./encoding.js";
-import { buildAad, sealWithKey } from "./masterKey.js";
+import { assertKeyMaterialUsable, buildAad, sealWithKey } from "./masterKey.js";
 import { MASTER_KEY_AAD_PURPOSE } from "./keySession.js";
 import type { MasterKeyWrap } from "./keyvaultApi.js";
 import { Argon2idParams, DEFAULT_ARGON2ID_PARAMS, argon2idKdfLabel, deriveFromPassword, generateSalt } from "./passwordUnlock.js";
@@ -35,6 +38,7 @@ export async function buildPasswordWrap(
     password: string,
     params: Argon2idParams = DEFAULT_ARGON2ID_PARAMS,
 ): Promise<MasterKeyWrap> {
+    assertKeyMaterialUsable(mk);
     const salt = generateSalt();
     const { wrappingKey } = await deriveFromPassword(password, salt, params);
     const sealed = await sealWithKey(wrappingKey, mk, buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE));
@@ -59,6 +63,7 @@ export async function buildRecoveryWraps(
     mk: Uint8Array,
     count: number = RECOVERY_CODE_COUNT,
 ): Promise<{ wraps: MasterKeyWrap[]; codes: string[] }> {
+    assertKeyMaterialUsable(mk);
     const aad = buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE);
     const codes: string[] = [];
     const wraps: MasterKeyWrap[] = [];
@@ -115,6 +120,7 @@ const ESCROW_SALT_PLACEHOLDER = "n/a";
  * (server-side) can confirm it matches the mailbox's actually-assigned scope before persisting.
  */
 export async function buildEscrowWrap(mk: Uint8Array, escrowScopeId: string, scopePublicKeyCertDer: Uint8Array): Promise<MasterKeyWrap> {
+    assertKeyMaterialUsable(mk);
     const envelopedDer = await encryptForRecipients(mk, [scopePublicKeyCertDer]);
     return {
         method: "escrow",

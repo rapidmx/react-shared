@@ -3,11 +3,17 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { describe, expect, it } from "vitest";
 import {
+    binaryStringToBytes,
+    bytesToBinaryString,
     decodeBase64Text,
     decodeBodyBytes,
     decodeBodyText,
+    decodeHeaderText,
     decodeQuotedPrintable,
+    encodeAddressListHeaderValue,
+    encodeUnstructuredHeaderValue,
     extractAddresses,
+    isBinaryString,
     extractDisplayBody,
     parseMimeEntity,
     parseParameterizedHeader,
@@ -101,8 +107,33 @@ describe("transfer-encoding decoding", () => {
     });
 
     it("decodes quoted-printable soft breaks and hex escapes, leaving invalid escapes literal", () => {
-        const bytes = decodeQuotedPrintable("caf=C3=A9 =\r\nline=ZZ=3dé");
-        expect(new TextDecoder().decode(bytes)).toBe("café line=ZZ=é");
+        const bytes = decodeQuotedPrintable("caf=C3=A9 =\r\nline=ZZ=3d\xc3\xa9=");
+        expect(bytes).toBeInstanceOf(Uint8Array);
+        expect(new TextDecoder().decode(bytes)).toBe("café line=ZZ=é=");
+    });
+
+    // Round-4 review (qp.mts): literal text is written run by run - its own bytes for a binary string, its
+    // UTF-8 encoding otherwise (never one character at a time, which split surrogate pairs into U+FFFD).
+    it("UTF-8 encodes literal runs of already-decoded text without splitting surrogate pairs", () => {
+        expect(new TextDecoder().decode(decodeQuotedPrintable("smile 😀=20ok €"))).toBe("smile 😀 ok €");
+    });
+
+    it("decodes a large quoted-printable body in linear time", () => {
+        const body = "abc=3Ddef ".repeat(300_000);
+        const started = performance.now();
+        const bytes = decodeQuotedPrintable(body);
+        expect(bytes.length).toBe(8 * 300_000);
+        expect(performance.now() - started).toBeLessThan(1500);
+    });
+
+    it("converts between bytes and binary strings, UTF-8 encoding strings that can't be binary", () => {
+        const bytes = new Uint8Array(70_000).map((_, i) => i % 256);
+        const binary = bytesToBinaryString(bytes);
+        expect(binary.length).toBe(70_000);
+        expect(isBinaryString(binary)).toBe(true);
+        expect(binaryStringToBytes(binary)).toEqual(bytes);
+        expect(isBinaryString("€")).toBe(false);
+        expect(binaryStringToBytes("€")).toEqual(new Uint8Array([0xe2, 0x82, 0xac]));
     });
 
     it("decodeBodyBytes dispatches on Content-Transfer-Encoding", () => {
@@ -117,6 +148,78 @@ describe("transfer-encoding decoding", () => {
         expect(decodeBodyText(parseMimeEntity("Content-Type: text/plain; charset=x-bogus\r\nContent-Transfer-Encoding: base64\r\n\r\nw6k="))).toBe("é");
         expect(decodeBodyText(parseMimeEntity("Content-Transfer-Encoding: base64\r\n\r\n!!!"))).toBe("");
         expect(decodeBodyText(parseMimeEntity("Content-Transfer-Encoding: 8bit\r\n\r\nalready text"))).toBe("already text");
+    });
+
+    // Round-4 review: an 8bit body in a binary string (getMessageRawContent()'s Latin-1 decoding) is still raw
+    // bytes, so its declared charset must be applied - previously it was returned undecoded.
+    it("applies the charset to an 8bit body held as a binary string", () => {
+        expect(decodeBodyText(parseMimeEntity("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\ncaf\xc3\xa9"))).toBe("café");
+        expect(decodeBodyText(parseMimeEntity("Content-Type: text/plain; charset=iso-8859-1\r\n\r\ncaf\xe9"))).toBe("café");
+        // No charset: UTF-8.
+        expect(decodeBodyText(parseMimeEntity("\r\nna\xc3\xafve"))).toBe("naïve");
+    });
+
+    it("passes through an 8bit body that was already decoded (not a binary string, or invalid in its charset)", () => {
+        expect(decodeBodyText(parseMimeEntity("Content-Transfer-Encoding: 8bit\r\n\r\n€uro"))).toBe("€uro");
+        expect(decodeBodyText(parseMimeEntity("Content-Type: text/plain; charset=utf-8\r\n\r\ncafé"))).toBe("café");
+        expect(decodeBodyText(parseMimeEntity("Content-Type: text/plain; charset=x-bogus\r\n\r\ncafé"))).toBe("café");
+    });
+
+    it("decodeBodyBytes returns a binary-string body's own bytes", () => {
+        expect(decodeBodyBytes(parseMimeEntity("Content-Transfer-Encoding: 8bit\r\n\r\n\xe9"))).toEqual(new Uint8Array([0xe9]));
+    });
+});
+
+describe("decodeHeaderText", () => {
+    it("decodes B and Q encoded-words, dropping whitespace only between adjacent encoded-words", () => {
+        expect(decodeHeaderText("=?UTF-8?B?Q2Fmw6k=?= =?utf-8?q?_au_lait?= ok")).toBe("Café au lait ok");
+        expect(decodeHeaderText("Re: =?ISO-8859-1?Q?caf=E9?=")).toBe("Re: café");
+        expect(decodeHeaderText("=?UTF-8*en?B?aGk=?=")).toBe("hi");
+    });
+
+    it("leaves an encoded-word with an unknown charset, invalid base64, or undecodable bytes verbatim", () => {
+        expect(decodeHeaderText("=?x-bogus?B?aGk=?=")).toBe("=?x-bogus?B?aGk=?=");
+        expect(decodeHeaderText("=?UTF-8?B?a?=")).toBe("=?UTF-8?B?a?=");
+        expect(decodeHeaderText("=?UTF-8?Q?=FF?=")).toBe("=?UTF-8?Q?=FF?=");
+    });
+
+    it("decodes a raw 8-bit UTF-8 header held as a binary string, keeping non-UTF-8 bytes as Latin-1", () => {
+        expect(decodeHeaderText("caf\xc3\xa9")).toBe("café");
+        expect(decodeHeaderText("caf\xe9")).toBe("café");
+        expect(decodeHeaderText("plain")).toBe("plain");
+    });
+});
+
+describe("header value encoding", () => {
+    it("flattens CR/LF/NUL in an unstructured value so it can't inject a header", () => {
+        expect(encodeUnstructuredHeaderValue("hi\r\nBcc: victim@example.com\0")).toBe("hi Bcc: victim@example.com ");
+        expect(encodeUnstructuredHeaderValue("plain ascii\tsubject")).toBe("plain ascii\tsubject");
+    });
+
+    it("RFC 2047-encodes non-ASCII into folded words of at most 75 characters that round-trip", () => {
+        const subject = `Réunion ${"😀".repeat(30)} fin`;
+        const encoded = encodeUnstructuredHeaderValue(subject);
+        const words = encoded.split("\r\n ");
+        expect(words.length).toBeGreaterThan(1);
+        for (const word of words) {
+            expect(word.length).toBeLessThanOrEqual(75);
+            expect(word).toMatch(/^=\?UTF-8\?B\?[A-Za-z0-9+/=]+\?=$/);
+        }
+        expect(decodeHeaderText(parseMimeEntity(`Subject: ${encoded}\r\n\r\n`).headers["subject"])).toBe(subject);
+    });
+
+    it("encodes only non-ASCII display names in an address list, keeping addr-specs verbatim", () => {
+        expect(encodeAddressListHeaderValue("Bob <bob@example.com>, carol@example.com")).toBe("Bob <bob@example.com>, carol@example.com");
+        const encoded = encodeAddressListHeaderValue('"Doe, Zoë" <zoe@example.com>, Jürgen <j@example.com>, <x@example.com>, plain@example.com, "Ann \\"A\\"" <a@example.com>, José');
+        expect(encoded).not.toMatch(/[^\x20-\x7e\r\n]/);
+        expect(extractAddresses(encoded)).toEqual(["zoe@example.com", "j@example.com", "x@example.com", "plain@example.com", "a@example.com"]);
+        expect(encoded).toContain('"Ann \\"A\\"" <a@example.com>');
+        expect(decodeHeaderText(encoded)).toBe('Doe, Zoë <zoe@example.com>, Jürgen <j@example.com>, <x@example.com>, plain@example.com, "Ann \\"A\\"" <a@example.com>, José');
+    });
+
+    it("flattens CR/LF in an address list", () => {
+        expect(encodeAddressListHeaderValue("a@example.com\r\nBcc: b@example.com")).toBe("a@example.com Bcc: b@example.com");
+        expect(encodeAddressListHeaderValue("Zoë\r\n <z@example.com>")).toMatch(/^=\?UTF-8\?B\?[^?]+\?= <z@example.com>$/);
     });
 });
 

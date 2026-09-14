@@ -560,3 +560,72 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
   each module's doc comments. Known server gaps: restapi list endpoints didn't yet honour
   `limit`/`page`/`matterId`; tier-3 `has:attachment` uses the outer message's `hasAttachments`.
 - web-client's `.yarn/patches/@rapidmx-react-shared-npm-0.4.0-*.patch` was regenerated from this dist.
+
+### 2026-09-14 — Round-4 review fixes (key lifetime, calendar dates, MIME/header hardening, contracts)
+
+Every finding was confirmed first (the reviewer's PoCs `rec.mts`, `drag.mts`, `sec.mts`, `redos.mjs` were run
+against the pre-fix source; the rest by reading) and is pinned by a regression test - the crypto ones live in
+`test/crypto/round4Regressions.test.ts`, the rest next to their module's existing tests. None skipped.
+
+- **Destroyed master key used silently (HIGH).** AES-GCM accepts any 32 bytes, so a stale `UnlockedKeys`
+  holder kept sealing/opening under the zeroed key. New exported `KeysLockedError` (`masterKey.ts`,
+  re-exported from `keySession.ts`) and `assertKeyMaterialUsable()`: `sealWithKey`/`openWithKey`/`hkdfDerive`
+  throw it for an empty/all-zero key, `sealWithKey` also for an all-zero 32-byte *plaintext* (a destroyed MK
+  being re-wrapped), and all three `masterKeyWraps.ts` builders check `mk` up front. `destroyUnlockedKeys()`
+  now also sets `UnlockedKeys.destroyed = true` and deletes the private `CryptoKey` handles;
+  `rewrapPrivateKeysUnderNewMasterKey()` throws `KeysLockedError` and `searchEncryptedCandidates()` returns
+  `[]` for a destroyed object. web-client should re-read `getUnlockedKeys()` at action time. The unwrapped
+  private keys stay extractable (finding 16) - documented in `unlockWithPassword()`: rotation needs it, and an
+  attacker able to call `exportKey()` can equally use the in-memory MK.
+- **All-day events (HIGH/MEDIUM).** They are stored as UTC-midnight dates (web-client `allDay.ts`), so
+  `expandOccurrences()` expands them in UTC (a Monday series in America/New_York had landed on Tuesdays), and
+  `resolveDragAction()` computes an all-day day-drop as `Date.UTC(target) - start`. The round-3 test that
+  assumed local-midnight all-day storage was replaced. New exports `toEventWallClock()`/`fromEventWallClock()`.
+- **DST gap (LOW).** `ianaZone().fromWall()` now resolves per RFC 5545 using the offsets a day either side: a
+  nonexistent time uses the pre-transition offset (02:30 -> 03:30 EDT, end shifted with it), an ambiguous one
+  the earlier instant.
+- **Series edits (MEDIUM).** `saveEventSeries()` - when `fields.startDate` moves the master (or `timezone`/
+  `allDay` changes) - fetches the master, shifts the rule's `exceptions` by the same wall-clock delta, saves,
+  then best-effort re-points each detached occurrence's `recurrenceId` (same `icalUid`, listed from the
+  master's folder; restapi's model constructor accepts `recurrenceId` on update). Failures don't throw: the
+  result is `SeriesSaveResult` = `CalendarEvent & { detachedOccurrenceSyncFailed?: boolean }`. An edit that
+  doesn't move the start still costs one extra GET (to know the master's real start).
+- **Duplicate address headers (HIGH).** `checkSignerBinding()` returns `header_mismatch` when the outer or
+  protected header block repeats `From`/`To`/`Cc`/`Sender` (new optional `outerFields`/`protectedFields`
+  inputs; `ParsedSignedOnlyMessage`/`ParsedEncryptedMessage` gained `protectedHeaderFields`). PoC: a second
+  outer `From: ceo@` was `signed_verified`.
+- **Malformed SAN (LOW).** `extractCertificateEmails()` returns `[]` when pkijs left a SAN unparsed (it threw a
+  TypeError out of `evaluateMessageSecurity()`); result is `signature_failed`/`signer_identity_mismatch`.
+- **Reader addressing (LOW).** `evaluateMessageSecurity(raw, unlocked, pin?, readerAddress?)` sets
+  `notAddressedToReader` when protected To/Cc exist and don't include the reader (informational - Bcc
+  recipients see it too; absent without a reader address or protected recipients).
+- **Header injection / non-ASCII headers (MEDIUM).** `smimeMessage.ts` serializes the protected, `HP-Outer` and
+  outer headers through one `headerLines()`: CR/LF/NUL become spaces (also in Content-Type and
+  `additionalHeaders`), Subject and display names are RFC 2047 `B`-encoded (`mime.ts`
+  `encodeUnstructuredHeaderValue`/`encodeAddressListHeaderValue`; addr-specs never encoded). Deterministic,
+  so `HP-Outer` tamper comparison and From/To binding still compare like with like. Receive side decodes the
+  protected Subject with new `decodeHeaderText()` (encoded-words + raw 8-bit UTF-8).
+- **Binary-string MIME (LOW).** `getMessageRawContent()` now returns the bytes as a Latin-1 *binary string*
+  (`bytesToBinaryString(res.arrayBuffer())` - not `TextDecoder("latin1")`, which is windows-1252). `mime.ts`
+  treats a string with no code unit > 0xFF as bytes: 7bit/8bit bodies get their charset applied
+  (`decodeBodyText`), decrypted content is converted with `bytesToBinaryString`, detached verification tries
+  the latin1 bytes and (for legacy already-decoded callers) the UTF-8 bytes. A string with code units > 0xFF
+  keeps the old "already text" behaviour. Known ambiguity, accepted: an already-decoded string whose only
+  non-ASCII is Latin-1 (e.g. `"café"` from a legacy caller) in a QP literal run is now taken as bytes.
+- **QP decode (LOW).** Linear, preallocated `Uint8Array`, literal runs encoded whole (no surrogate splitting).
+- **Tier-3 HTML strip (MEDIUM).** `stripHtml()` (now exported) is a single pass with memoized close-tag lookup
+  plus a `TIER3_MAX_HTML_LENGTH` (2,000,000) cap; 200k unclosed `<style>` tags strip in milliseconds.
+- **vCard (LOW).** Escapes CR/CRLF, single-pass unescape, unfolding, `item1.`-style group prefixes ignored,
+  `TYPE` normalized (comma/quoted lists, repeated `TYPE=`, vCard 2.1 bare params; work > home > other), `N`/
+  `ADR`/`ORG` split only on unescaped `;`. `parseVCards()`'s signature is unchanged.
+- **Flagged messages (LOW-MED).** Per-folder page cap (`FLAGGED_MAX_PAGES_PER_FOLDER` = 100), stop on a full
+  page with nothing new, dedupe by uid across folders, `FLAGGED_FOLDER_CONCURRENCY` = 4.
+- **Overlay stack (LOW-MED).** `push()` only slots an entry below deeper entries pushed in the *same commit*
+  (a microtask-bumped commit counter), so an overlay opened later is on top regardless of depth.
+- **Contracts.** `EscrowAuditVerificationResult.reason` (`EscrowAuditVerificationFailure` union, open to
+  unknown strings), `EscrowAuditLogEntry.hashAlgorithm` (`"sha256" | "hmac-sha256"`), `DataExportStatus`
+  gains `"processing"`, `IngestQueueEntry` gains `attempts`/`nextAttemptAt`/`scanLeaseExpiresAt` - all checked
+  against restapi's `models/types.ts` / `util/EscrowAuditUtils.ts`.
+- Not a finding but noticed: a certificate with a SAN that has only dNSName entries still falls back to an
+  email-shaped CN (RFC 5280 would treat the SAN as authoritative). Left as-is; worth a look.
+- web-client's react-shared patch was regenerated from this dist.

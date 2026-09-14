@@ -14,9 +14,18 @@
  * through) plus `charset` decoding via `TextDecoder`; and picking the displayable body (text/html
  * preferred, text/plain otherwise) out of a nested multipart.
  *
+ * **Binary strings.** Received message source is handled as a "binary string": one UTF-16 code unit per
+ * byte (0x00-0xFF), which is what `mailApi.ts`'s `getMessageRawContent()` returns (it reads the response
+ * as bytes and decodes them as Latin-1) and what decrypted CMS content is converted to. That keeps an
+ * 8bit body's bytes intact until its own `charset` is known, and keeps signed bytes verifiable exactly.
+ * A string containing any code unit above 0xFF can't be a binary string, so it is treated as already
+ * decoded text and UTF-8 encoded wherever bytes are needed (the pre-round-4 convention) - see
+ * `binaryStringToBytes()`.
+ *
  * Not supported (documented, not silently wrong): RFC 2231 parameter continuations/charset-encoded
- * parameters and RFC 2047 encoded-words in header values - neither is needed to classify, decrypt, or
- * verify a message, and both are left verbatim.
+ * parameters - not needed to classify, decrypt, or verify a message, and left verbatim. RFC 2047
+ * encoded-words are decoded only where text is shown to a user (`decodeHeaderText()`); raw header values
+ * (`MimeEntity.headers`) stay verbatim so header comparisons remain exact.
  */
 
 /** One header field, unfolded, with its name exactly as written and its value trimmed. */
@@ -168,36 +177,108 @@ export function decodeBase64Text(text: string): Uint8Array | undefined {
     }
 }
 
-/** Decodes a quoted-printable body (RFC 2045 §6.7) into bytes. Literal non-ASCII characters (which
- * can't legally appear in QP, but do after an 8-bit-unsafe gateway) are kept as their UTF-8 bytes. */
-export function decodeQuotedPrintable(text: string): Uint8Array {
-    const withoutSoftBreaks = text.replace(/=[ \t]*\r?\n/g, "");
-    const bytes: number[] = [];
-    const encoder = new TextEncoder();
-    for (let i = 0; i < withoutSoftBreaks.length; i++) {
-        const ch = withoutSoftBreaks[i];
-        const hex = withoutSoftBreaks.slice(i + 1, i + 3);
-        if (ch === "=" && /^[0-9A-Fa-f]{2}$/.test(hex)) {
-            bytes.push(parseInt(hex, 16));
-            i += 2;
-        } else {
-            bytes.push(...encoder.encode(ch));
+/** `true` when every code unit of `value` is at most 0xFF - i.e. it can be a binary string (see this
+ * module's doc comment). */
+export function isBinaryString(value: string): boolean {
+    for (let i = 0; i < value.length; i++) {
+        if (value.charCodeAt(i) > 0xff) {
+            return false;
         }
     }
-    return new Uint8Array(bytes);
+    return true;
 }
 
-function decodeCharset(bytes: Uint8Array, charset: string | undefined): string {
+/** Converts a binary string to its bytes, or - for a string that can't be one (a code unit above 0xFF) -
+ * to its UTF-8 encoding. */
+export function binaryStringToBytes(value: string): Uint8Array {
+    if (!isBinaryString(value)) {
+        return new TextEncoder().encode(value);
+    }
+    const bytes = new Uint8Array(value.length);
+    for (let i = 0; i < value.length; i++) {
+        bytes[i] = value.charCodeAt(i);
+    }
+    return bytes;
+}
+
+/** Converts bytes to a binary string (one code unit per byte), in chunks so a large message never exceeds
+ * the engine's argument-count limit. */
+export function bytesToBinaryString(bytes: Uint8Array): string {
+    const CHUNK = 0x8000;
+    const pieces: string[] = [];
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+        pieces.push(String.fromCharCode(...bytes.subarray(i, i + CHUNK)));
+    }
+    return pieces.join("");
+}
+
+function hexValue(code: number): number {
+    if (code >= 0x30 && code <= 0x39) return code - 0x30;
+    if (code >= 0x41 && code <= 0x46) return code - 0x37;
+    if (code >= 0x61 && code <= 0x66) return code - 0x57;
+    return -1;
+}
+
+/** Decodes a quoted-printable body (RFC 2045 §6.7) into bytes, in one linear pass into a preallocated
+ * buffer. Literal text between escapes (which can't legally be non-ASCII in QP, but is after an
+ * 8-bit-unsafe gateway) is written run by run: as the run's own bytes when it is a binary string, else as
+ * its UTF-8 encoding. A run always ends at an ASCII `=`, so a surrogate pair is never split. */
+export function decodeQuotedPrintable(text: string): Uint8Array {
+    const input = text.replace(/=[ \t]*\r?\n/g, "");
+    // At most 3 UTF-8 bytes per UTF-16 code unit, which only a non-binary string can need.
+    const out = new Uint8Array(isBinaryString(input) ? input.length : input.length * 3);
+    const encoder = new TextEncoder();
+    let length = 0;
+    let runStart = 0;
+    const flushRun = (end: number) => {
+        const run = input.slice(runStart, end);
+        if (isBinaryString(run)) {
+            for (let j = 0; j < run.length; j++) {
+                out[length++] = run.charCodeAt(j);
+            }
+        } else {
+            length += encoder.encodeInto(run, out.subarray(length)).written;
+        }
+    };
+    for (let i = 0; i + 2 < input.length; i++) {
+        if (input.charCodeAt(i) !== 0x3d) {
+            continue;
+        }
+        const high = hexValue(input.charCodeAt(i + 1));
+        const low = hexValue(input.charCodeAt(i + 2));
+        if (high < 0 || low < 0) {
+            continue;
+        }
+        flushRun(i);
+        out[length++] = (high << 4) | low;
+        i += 2;
+        runStart = i + 1;
+    }
+    flushRun(input.length);
+    return out.slice(0, length);
+}
+
+/** Decodes `bytes` in `charset` (UTF-8 when absent or unknown). With `fallbackText`, a decode that hits
+ * invalid input returns `fallbackText` instead of replacement characters. */
+function decodeCharset(bytes: Uint8Array, charset: string | undefined, fallbackText?: string): string {
+    const options = { fatal: fallbackText !== undefined };
+    let decoder: TextDecoder;
     try {
-        return new TextDecoder(charset || "utf-8").decode(bytes);
+        decoder = new TextDecoder(charset || "utf-8", options);
     } catch {
         // An unknown/unsupported charset label - UTF-8 is the least-bad fallback (a superset of ASCII).
-        return new TextDecoder("utf-8").decode(bytes);
+        decoder = new TextDecoder("utf-8", options);
+    }
+    try {
+        return decoder.decode(bytes);
+    } catch {
+        return fallbackText as string;
     }
 }
 
 /** Decodes an entity's body into bytes per its `Content-Transfer-Encoding`. 7bit/8bit/binary (or no
- * header) return the body's own UTF-8 bytes. Returns `undefined` only for invalid base64. */
+ * header) return the body's own bytes (see `binaryStringToBytes()`). Returns `undefined` only for invalid
+ * base64. */
 export function decodeBodyBytes(entity: MimeEntity): Uint8Array | undefined {
     const cte = transferEncodingOf(entity);
     if (cte === "base64") {
@@ -206,18 +287,137 @@ export function decodeBodyBytes(entity: MimeEntity): Uint8Array | undefined {
     if (cte === "quoted-printable") {
         return decodeQuotedPrintable(entity.body);
     }
-    return new TextEncoder().encode(entity.body);
+    return binaryStringToBytes(entity.body);
 }
 
-/** Decodes an entity's body to text: transfer encoding first, then its `charset` parameter. */
+/** Decodes an entity's body to text: transfer encoding first, then its `charset` parameter (UTF-8 when
+ * absent). A 7bit/8bit/binary body that isn't a binary string was already decoded by whoever produced the
+ * string and passes through unchanged; so does a binary-string body whose bytes are invalid in its charset
+ * (e.g. legacy already-decoded Latin-1 text under a UTF-8 charset). */
 export function decodeBodyText(entity: MimeEntity): string {
     const cte = transferEncodingOf(entity);
-    if (cte !== "base64" && cte !== "quoted-printable") {
-        // Already text - the raw message was read as a string, so an 8bit body is already decoded.
-        return entity.body;
-    }
     const charset = parseParameterizedHeader(entity.headers["content-type"]).params["charset"];
+    if (cte !== "base64" && cte !== "quoted-printable") {
+        return isBinaryString(entity.body) ? decodeCharset(binaryStringToBytes(entity.body), charset, entity.body) : entity.body;
+    }
     return decodeCharset(decodeBodyBytes(entity) ?? new Uint8Array(), charset);
+}
+
+const ENCODED_WORD = /=\?([^?\s]+)\?([bBqQ])\?([^?\s]*)\?=/g;
+const WHITESPACE_BETWEEN_ENCODED_WORDS = /(=\?[^?\s]+\?[bBqQ]\?[^?\s]*\?=)\s+(?==\?[^?\s]+\?[bBqQ]\?[^?\s]*\?=)/g;
+
+/**
+ * Turns a raw header value into display text: a binary string holding valid UTF-8 (a raw 8-bit header,
+ * RFC 6532) is decoded as UTF-8, then RFC 2047 encoded-words (`=?charset?B|Q?text?=`) are decoded, with
+ * whitespace between adjacent encoded-words dropped (RFC 2047 §6.2). An encoded-word with an unknown
+ * charset or undecodable content is left verbatim.
+ */
+export function decodeHeaderText(value: string): string {
+    let text = value;
+    if (isBinaryString(text) && /[\x80-\xff]/.test(text)) {
+        text = decodeCharset(binaryStringToBytes(text), "utf-8", text);
+    }
+    return text.replace(WHITESPACE_BETWEEN_ENCODED_WORDS, "$1").replace(ENCODED_WORD, (word, charset: string, encoding: string, encoded: string) => {
+        const bytes =
+            encoding.toUpperCase() === "B"
+                ? decodeBase64Text(encoded)
+                : binaryStringToBytes(encoded.replace(/_/g, " ").replace(/=([0-9A-Fa-f]{2})/g, (_match, hex: string) => String.fromCharCode(parseInt(hex, 16))));
+        if (!bytes) {
+            return word;
+        }
+        try {
+            // RFC 2231 §5 allows a language suffix on the charset: `charset*lang`.
+            return new TextDecoder(charset.split("*")[0], { fatal: true }).decode(bytes);
+        } catch {
+            return word;
+        }
+    });
+}
+
+/** Anything outside printable ASCII (space through `~`) and tab - such header text needs RFC 2047 encoding. */
+const NEEDS_ENCODING = /[^\x20-\x7e\t]/;
+
+/** Characters that must never reach a serialized header value: CR/LF (header injection) and NUL. */
+const HEADER_BREAKING = /[\r\n\0]+/g;
+
+/** Encodes `text` as RFC 2047 `B` encoded-words (UTF-8), each at most 75 characters, never splitting a
+ * multi-byte character between words, joined by folding whitespace. */
+function encodeWords(text: string): string {
+    // "=?UTF-8?B?" + "?=" is 12 characters, leaving 63 for base64 - i.e. at most 45 source bytes.
+    const MAX_BYTES_PER_WORD = 45;
+    const encoder = new TextEncoder();
+    const words: string[] = [];
+    let current = "";
+    let currentBytes = 0;
+    for (const ch of text) {
+        const size = encoder.encode(ch).length;
+        if (currentBytes + size > MAX_BYTES_PER_WORD && current) {
+            words.push(current);
+            current = "";
+            currentBytes = 0;
+        }
+        current += ch;
+        currentBytes += size;
+    }
+    words.push(current);
+    return words.map((word) => `=?UTF-8?B?${btoa(bytesToBinaryString(encoder.encode(word)))}?=`).join("\r\n ");
+}
+
+/** Makes an unstructured header value (e.g. `Subject`) safe to serialize: CR/LF/NUL become a space
+ * (never a header break), and a value containing non-ASCII is RFC 2047-encoded. */
+export function encodeUnstructuredHeaderValue(value: string): string {
+    const flattened = value.replace(HEADER_BREAKING, " ");
+    return NEEDS_ENCODING.test(flattened) ? encodeWords(flattened) : flattened;
+}
+
+/**
+ * Makes an address-list header value (`From`/`To`/`Cc`) safe to serialize: CR/LF/NUL become a space, and
+ * each mailbox's non-ASCII display name (`Zoë <z@example.com>`, quoted or not) is RFC 2047-encoded while
+ * its addr-spec is kept verbatim (an internationalized address is left to SMTPUTF8, never encoded -
+ * RFC 2047 §5 forbids encoded-words in an addr-spec).
+ */
+export function encodeAddressListHeaderValue(value: string): string {
+    const flattened = value.replace(HEADER_BREAKING, " ");
+    if (!NEEDS_ENCODING.test(flattened)) {
+        return flattened;
+    }
+    const mailboxes: string[] = [];
+    let current = "";
+    let inQuotes = false;
+    for (let i = 0; i < flattened.length; i++) {
+        const ch = flattened[i];
+        if (inQuotes && ch === "\\" && i + 1 < flattened.length) {
+            current += ch + flattened[++i];
+            continue;
+        }
+        if (ch === '"') {
+            inQuotes = !inQuotes;
+        } else if (ch === "," && !inQuotes) {
+            mailboxes.push(current);
+            current = "";
+            continue;
+        }
+        current += ch;
+    }
+    mailboxes.push(current);
+    return mailboxes
+        .map((mailbox) => {
+            const angle = mailbox.lastIndexOf("<");
+            if (angle === -1) {
+                // A bare addr-spec (possibly internationalized) stays verbatim; stray non-ASCII text that
+                // isn't an address at all is encoded rather than written raw.
+                const bare = mailbox.trim();
+                return bare.includes("@") || !NEEDS_ENCODING.test(bare) ? bare : encodeWords(bare);
+            }
+            const rawName = mailbox.slice(0, angle).trim();
+            const address = mailbox.slice(angle).trim();
+            const name = /^".*"$/.test(rawName) ? rawName.slice(1, -1).replace(/\\(.)/g, "$1") : rawName;
+            if (!name) {
+                return address;
+            }
+            return NEEDS_ENCODING.test(name) ? `${encodeWords(name)} ${address}` : `${rawName} ${address}`;
+        })
+        .join(", ");
 }
 
 /** A message's displayable content: `html` only for a real `text/html` part, `text` only for a

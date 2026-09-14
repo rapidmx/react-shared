@@ -112,6 +112,12 @@ const LOCAL_ZONE: ZoneConverter = {
     },
 };
 
+/** UTC itself - used for all-day events, whose dates are stored as UTC midnight (date-only values). */
+const UTC_ZONE: ZoneConverter = {
+    toWall: (instantMs) => instantMs,
+    fromWall: (wallMs) => wallMs,
+};
+
 function ianaZone(formatter: Intl.DateTimeFormat): ZoneConverter {
     const toWall = (instantMs: number): number => {
         const fields: Record<string, number> = {};
@@ -123,13 +129,15 @@ function ianaZone(formatter: Intl.DateTimeFormat): ZoneConverter {
     };
     return {
         toWall,
-        // Two-pass offset resolution: the offset at the naive guess, then re-evaluated at the first
-        // candidate, which settles on the correct side of a DST transition. An ambiguous (fall-back)
-        // wall time resolves to its first (daylight) instance; a nonexistent (spring-forward) one lands
-        // one hour earlier in standard time.
+        // RFC 5545 §3.3.5 resolution against the offsets in effect a day before and a day after (zones
+        // change offset at most once in that window): an ambiguous (fall-back) wall time resolves to its
+        // first occurrence (the earlier instant); a nonexistent (spring-forward) one is interpreted with
+        // the offset from *before* the transition, so 02:30 on a US spring-forward day becomes 03:30 EDT.
         fromWall(wallMs) {
-            const firstGuess = wallMs - (toWall(wallMs) - wallMs);
-            return wallMs - (toWall(firstGuess) - firstGuess);
+            const offsetBefore = toWall(wallMs - MS_PER_DAY) - (wallMs - MS_PER_DAY);
+            const offsetAfter = toWall(wallMs + MS_PER_DAY) - (wallMs + MS_PER_DAY);
+            const valid = [wallMs - offsetBefore, wallMs - offsetAfter].filter((instant) => toWall(instant) === wallMs);
+            return valid.length > 0 ? Math.min(...valid) : wallMs - offsetBefore;
         },
     };
 }
@@ -177,6 +185,21 @@ export interface CalendarOccurrence extends CalendarEvent {
 }
 
 /**
+ * Converts an instant to the "wall-clock as UTC" milliseconds recurrence expansion works in for an event
+ * with this `timezone`/`allDay` - UTC for an all-day event (stored as UTC-midnight dates), the event's IANA
+ * zone otherwise (the runtime's local zone when empty or unrecognized). Exported for `calendarMutations.ts`,
+ * which shifts a series' exception dates by the same wall-clock delta as its start.
+ */
+export function toEventWallClock(instantMs: number, timezone: string | undefined, allDay: boolean | undefined): number {
+    return (allDay ? UTC_ZONE : resolveZone(timezone)).toWall(instantMs);
+}
+
+/** Inverse of `toEventWallClock()` (DST gaps/overlaps resolved per RFC 5545 - see `ianaZone()`). */
+export function fromEventWallClock(wallMs: number, timezone: string | undefined, allDay: boolean | undefined): number {
+    return (allDay ? UTC_ZONE : resolveZone(timezone)).fromWall(wallMs);
+}
+
+/**
  * Expands `event` into every occurrence whose interval overlaps `[rangeStart, rangeEnd]`. A
  * non-recurring event yields itself (in a one-element array) if it overlaps, or `[]` otherwise —
  * callers don't need to special-case recurring vs. not.
@@ -185,7 +208,11 @@ export interface CalendarOccurrence extends CalendarEvent {
  * value falls back to the runtime's local zone, i.e. floating time), so every occurrence keeps the
  * master's local wall-clock start/end time and local weekday — a weekly Monday 23:00
  * America/New_York event stays on Monday 23:00 New York time across DST changes, rather than being
- * expanded on the UTC weekday/time of its first instance.
+ * expanded on the UTC weekday/time of its first instance. An all-day event is the exception: its dates are
+ * UTC-midnight date-only values, so it expands in UTC regardless of `timezone` - expanding a
+ * `2026-09-14T00:00Z` Monday in America/New_York would otherwise see a Sunday-evening start and put every
+ * occurrence on the wrong date. A timed occurrence that falls in a DST gap starts at the pre-transition
+ * offset (RFC 5545) and keeps its wall-clock duration.
  */
 export function expandOccurrences(event: CalendarEvent, rangeStart: Date, rangeEnd: Date): CalendarOccurrence[] {
     const start = new Date(event.startDate);
@@ -196,7 +223,7 @@ export function expandOccurrences(event: CalendarEvent, rangeStart: Date, rangeE
         return overlaps ? [{ ...event, occurrenceKey: event.uid, isRecurringOccurrence: false }] : [];
     }
 
-    const zone = resolveZone(event.timezone);
+    const zone = event.allDay ? UTC_ZONE : resolveZone(event.timezone);
     const startWall = zone.toWall(start.getTime());
     // The duration in wall-clock terms, so an occurrence also keeps its local end time across DST.
     const wallDurationMs = zone.toWall(end.getTime()) - startWall;
@@ -220,7 +247,9 @@ export function expandOccurrences(event: CalendarEvent, rangeStart: Date, rangeE
     return occurrenceStarts
         .filter((occ) => !exceptions.has(occ.start.getTime()))
         .map(({ start: occStart, wall }) => {
-            const occEnd = new Date(zone.fromWall(wall + wallDurationMs));
+            // Non-zero only when the start fell in a DST gap and was pushed forward - the end moves with it.
+            const gapShiftMs = zone.toWall(occStart.getTime()) - wall;
+            const occEnd = new Date(zone.fromWall(wall + gapShiftMs + wallDurationMs));
             return {
                 ...event,
                 startDate: occStart.toISOString(),

@@ -83,13 +83,20 @@ export function resolveDragAction(
     }
 
     if (overId.startsWith(DAY_ID_PREFIX)) {
-        // Moving to another day keeps the occurrence's local wall-clock start time, so the delta is
+        // Moving a timed event to another day keeps the occurrence's local wall-clock start time, so the delta is
         // "same local time on the target day" minus the original start — a whole number of calendar
         // days, which is not always a multiple of 24h when the move crosses a DST change.
         const [year, month, day] = overId.slice(DAY_ID_PREFIX.length).split("-").map(Number);
+        // An all-day event's start is a UTC-midnight date-only value, so its target is that calendar date's
+        // UTC midnight - never "the same local time", which west of UTC reads the stored midnight as the
+        // previous evening and lands the event a day late.
         const source = new Date(occurrence.startDate);
         const target = new Date(source.getTime());
-        target.setFullYear(year, month - 1, day);
+        if (occurrence.allDay) {
+            target.setTime(Date.UTC(year, month - 1, day));
+        } else {
+            target.setFullYear(year, month - 1, day);
+        }
         if (Number.isNaN(target.getTime())) {
             return null;
         }

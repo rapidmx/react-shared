@@ -108,6 +108,16 @@ describe("rewrapPrivateKeysUnderNewMasterKey", () => {
         expect(await openWithKey(mk, encryptWrap, buildAad(MAILBOX_UID, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE))).toEqual(rawPrivateKeys.encrypt);
     });
 
+    it("throws KeysLockedError for an UnlockedKeys object destroyed since it was read (round-4 review)", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const stale = getUnlockedKeys(MAILBOX_UID)!;
+        destroyUnlockedKeys(MAILBOX_UID);
+
+        await expect(rewrapPrivateKeysUnderNewMasterKey(MAILBOX_UID, stale)).rejects.toMatchObject({ name: "KeysLockedError" });
+    });
+
     it("produces no wrapped entries when nothing is unlocked", async () => {
         const { mk, wrappedKeys } = await rewrapPrivateKeysUnderNewMasterKey(MAILBOX_UID, { masterKey: new Uint8Array(32) });
         expect(wrappedKeys).toEqual([]);

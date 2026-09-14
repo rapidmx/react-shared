@@ -13,6 +13,7 @@
 import { ApiRequestError, apiFetch, apiUrl, authApiFetch } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
+import { bytesToBinaryString } from "../crypto/mime.js";
 
 export type { ListParams };
 export type { EncryptionPreference, PublicKey };
@@ -252,6 +253,13 @@ export interface IngestQueueEntry {
     rawBlobKey: string;
     status: IngestStatus;
     errorMessage?: string;
+    /** How many times scanning has failed for this entry; unset until the first failure. */
+    attempts?: number;
+    /** ISO 8601 - when a `failed` entry becomes eligible for its next retry; unset once retries are exhausted. */
+    nextAttemptAt?: string;
+    /** ISO 8601 - while `scanning`, when the claiming worker's lease expires (after which the entry can be
+     * claimed again). */
+    scanLeaseExpiresAt?: string;
 }
 
 /** Lists ingest-queue entries for a mailbox the caller can access — useful for diagnosing stuck delivery. */
@@ -713,6 +721,12 @@ export function sendMessage(messageUid: string): Promise<Message> {
  * JSON response body): this server-local route (`BaseMessageRawContentRoute.ts` in `server`, mounted
  * alongside `@rapidmx/restapi`'s own `MessageRoute`) returns `message/rfc822`, not JSON — the one thing
  * that library's own `GET /:id/content` deliberately never serves (see that route's own doc comment).
+ *
+ * Returns a *binary string* - the response bytes decoded as Latin-1, exactly one character per byte -
+ * rather than `res.text()`'s UTF-8 decoding, which would replace every invalid byte of a non-UTF-8 8bit
+ * part with U+FFFD before its own `charset` is known and break any signature over those bytes. Pass it
+ * straight to `evaluateMessageSecurity()` (see `crypto/mime.ts`'s doc comment on binary strings); it is
+ * not display text.
  */
 export async function getMessageRawContent(messageUid: string): Promise<string> {
     const res = await fetch(apiUrl(`/mail/messages/${encodeURIComponent(messageUid)}/raw`), { credentials: "include" });
@@ -722,7 +736,9 @@ export async function getMessageRawContent(messageUid: string): Promise<string> 
         const message = (body && (body.message || body.error)) || res.statusText || "Could not load this message's raw content.";
         throw new ApiRequestError(message, res.status, body?.code);
     }
-    return res.text();
+    // Not `new TextDecoder("latin1")`: WHATWG maps that label to windows-1252, which remaps 0x80-0x9F and so
+    // isn't byte-preserving. `bytesToBinaryString()` is an exact byte -> code unit conversion.
+    return bytesToBinaryString(new Uint8Array(await res.arrayBuffer()));
 }
 
 export interface ImpersonationResult {

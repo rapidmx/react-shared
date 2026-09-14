@@ -5,7 +5,7 @@ import "reflect-metadata";
 import * as x509 from "@peculiar/x509";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { TIER3_DECRYPT_CONCURRENCY, searchEncryptedCandidates } from "../../src/search/searchTier3.js";
+import { TIER3_DECRYPT_CONCURRENCY, TIER3_MAX_HTML_LENGTH, searchEncryptedCandidates, stripHtml } from "../../src/search/searchTier3.js";
 import { ParsedSearchQuery } from "../../src/search/queryGrammar.js";
 import { UnlockedKeys } from "../../src/crypto/keySession.js";
 import { ProtectedHeaders, applyBaselineOuterHeaders, assembleOutboundMime, buildEncryptedMessage } from "../../src/crypto/smimeMessage.js";
@@ -62,6 +62,15 @@ describe("searchEncryptedCandidates", () => {
         });
         const result = await searchEncryptedCandidates(baseParsedQuery({ text: "budget" }), undefined);
         expect(result).toEqual([]);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("returns [] without making any request when unlocked was destroyed after it was read (round-4 review)", async () => {
+        const fetchMock = mockFetch(() => {
+            throw new Error("should not be called");
+        });
+        const stale = { masterKey: new Uint8Array(32), destroyed: true } as UnlockedKeys;
+        expect(await searchEncryptedCandidates(baseParsedQuery({ text: "budget" }), stale)).toEqual([]);
         expect(fetchMock).not.toHaveBeenCalled();
     });
 
@@ -572,5 +581,33 @@ describe("searchEncryptedCandidates", () => {
         expect(result.map((r) => r.entityUid)).toEqual(uids);
         expect(maxInFlight).toBeLessThanOrEqual(TIER3_DECRYPT_CONCURRENCY);
         expect(maxInFlight).toBeGreaterThan(1);
+    });
+});
+
+describe("stripHtml (round-4 review)", () => {
+    // PoC redos.mjs: the old `/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi` took over a second on 280 KB of
+    // repeated unclosed `<style>` tags, growing 4x per doubling.
+    it("strips repeated unclosed <style> tags in linear time", () => {
+        const hostile = "<style>".repeat(200_000);
+        const started = performance.now();
+        expect(stripHtml(hostile)).toBe("");
+        expect(performance.now() - started).toBeLessThan(500);
+    });
+
+    it("drops script/style elements with their content, and other tags become spaces", () => {
+        expect(stripHtml('<p>a</p><STYLE type="text/css">p{}</style >b<script>x()</SCRIPT>c<br/>d')).toBe("a b c d");
+        expect(stripHtml("<style>one</style>keep<style>two</style>")).toBe("keep");
+        expect(stripHtml("<scripts>kept</scripts>")).toBe("kept");
+    });
+
+    it("drops only the tag of an unclosed script, keeps `<>` and an unterminated `<` as text, and decodes entities", () => {
+        expect(stripHtml("<script>visible")).toBe("visible");
+        expect(stripHtml("<style>a</style")).toBe("");
+        expect(stripHtml("1 <> 2 &lt;3&gt; &amp; &quot;q&quot; &#039;s&#39; &nbsp;x < 4")).toBe(`1 <> 2 <3> & "q" 's' x < 4`);
+    });
+
+    it("ignores content past TIER3_MAX_HTML_LENGTH", () => {
+        const html = `${"a".repeat(TIER3_MAX_HTML_LENGTH - 1)} tail-marker`;
+        expect(stripHtml(html)).not.toContain("tail-marker");
     });
 });

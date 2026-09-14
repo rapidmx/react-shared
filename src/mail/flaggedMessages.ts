@@ -20,26 +20,56 @@ const MAIL_FOLDER_TYPES = new Set(["inbox", "drafts", "outbox", "sent_items", "j
 /** The server's own per-request `limit` cap - a page shorter than this is the folder's last one. */
 const PAGE_SIZE = 500;
 
-/** Every message in one folder, paging through `listMessages()` until a short page - never silently
- * truncated at a single page's cap the way one `limit: 500` call would be for a large folder. */
-async function listAllMessages(folderUid: string): Promise<Message[]> {
-    const all: Message[] = [];
-    for (let page = 0; ; page += 1) {
+/** Hard cap on pages read per folder (50,000 messages) - guards against paging forever should a server
+ * ignore `page` and keep returning full pages. */
+export const FLAGGED_MAX_PAGES_PER_FOLDER = 100;
+
+/** How many folders are paged through at once, bounding the request burst on a mailbox with many folders. */
+export const FLAGGED_FOLDER_CONCURRENCY = 4;
+
+/** Every flagged message in one folder, paging through `listMessages()` until a short page. Only flagged
+ * messages are kept (a large folder's unflagged pages are dropped as they arrive). Stops early at
+ * `FLAGGED_MAX_PAGES_PER_FOLDER`, or when a full page brings no message not already seen (a server
+ * ignoring `page` and returning the same page again). */
+async function listFlaggedInFolder(folderUid: string, seen: Set<string>): Promise<Message[]> {
+    const flagged: Message[] = [];
+    const seenInFolder = new Set<string>();
+    for (let page = 0; page < FLAGGED_MAX_PAGES_PER_FOLDER; page += 1) {
         const batch = await listMessages(folderUid, { limit: PAGE_SIZE, page });
-        all.push(...batch);
-        if (batch.length < PAGE_SIZE) {
-            return all;
+        let fresh = 0;
+        for (const message of batch) {
+            if (seenInFolder.has(message.uid)) {
+                continue;
+            }
+            seenInFolder.add(message.uid);
+            fresh += 1;
+            // Deduplicated across folders too: a message moved mid-listing can appear in two folders' pages.
+            if (message.flags.flagged && !seen.has(message.uid)) {
+                seen.add(message.uid);
+                flagged.push(message);
+            }
+        }
+        if (batch.length < PAGE_SIZE || fresh === 0) {
+            break;
         }
     }
+    return flagged;
 }
 
-/** Lists every flagged message across all of a mailbox's mail folders (not just Inbox), newest first. */
+/** Lists every flagged message across all of a mailbox's mail folders (not just Inbox), newest first, each
+ * message at most once. */
 export async function listFlaggedMessages(mailboxUid: string): Promise<Message[]> {
     const folders: Folder[] = await listFolders(mailboxUid);
     const mailFolders = folders.filter((f) => MAIL_FOLDER_TYPES.has(f.type));
-    const perFolder = await Promise.all(mailFolders.map((f) => listAllMessages(f.uid)));
-    return perFolder
-        .flat()
-        .filter((m) => m.flags.flagged)
-        .sort((a, b) => new Date(b.receivedDate).getTime() - new Date(a.receivedDate).getTime());
+    const seen = new Set<string>();
+    const perFolder: Message[][] = [];
+    let next = 0;
+    async function worker(): Promise<void> {
+        while (next < mailFolders.length) {
+            const index = next++;
+            perFolder[index] = await listFlaggedInFolder(mailFolders[index].uid, seen);
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(FLAGGED_FOLDER_CONCURRENCY, mailFolders.length) }, () => worker()));
+    return perFolder.flat().sort((a, b) => new Date(b.receivedDate).getTime() - new Date(a.receivedDate).getTime());
 }

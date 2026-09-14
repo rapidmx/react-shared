@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { listFlaggedMessages } from "../../src/mail/flaggedMessages.js";
+import { FLAGGED_FOLDER_CONCURRENCY, FLAGGED_MAX_PAGES_PER_FOLDER, listFlaggedMessages } from "../../src/mail/flaggedMessages.js";
 
 function folder(uid: string, type: string) {
     return {
@@ -108,5 +108,54 @@ describe("listFlaggedMessages", () => {
         const messageCalls = fetchMock.mock.calls.map((c) => c[0] as string).filter((u) => u.startsWith("/api/mail/messages"));
         expect(messageCalls).toHaveLength(2);
         expect(messageCalls[0]).toContain("limit=500");
+    });
+});
+
+describe("listFlaggedMessages paging safety (round-4 review)", () => {
+    it("stops at the per-folder page cap when a server ignores page and never returns a short page, deduping by uid", async () => {
+        let pageCounter = 0;
+        const fetchMock = mockFetch((url) => {
+            if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [folder("f-inbox", "inbox")]);
+            // Every page is full and new, so only the hard cap can end the loop.
+            const page = pageCounter++;
+            return jsonResponse(
+                200,
+                Array.from({ length: 500 }, (_, i) => message(`p${page}-${i}`, i === 0, "2026-01-01T00:00:00.000Z")),
+            );
+        });
+        const result = await listFlaggedMessages("mb1");
+        expect(fetchMock.mock.calls.filter((c) => (c[0] as string).startsWith("/api/mail/messages"))).toHaveLength(FLAGGED_MAX_PAGES_PER_FOLDER);
+        expect(result).toHaveLength(FLAGGED_MAX_PAGES_PER_FOLDER);
+    });
+
+    it("stops as soon as a full page repeats already-seen messages, and lists a message found in two folders once", async () => {
+        const fullPage = Array.from({ length: 500 }, (_, i) => message(`m${i}`, i < 2, `2026-01-0${(i % 9) + 1}T00:00:00.000Z`));
+        const fetchMock = mockFetch((url) => {
+            if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [folder("f-inbox", "inbox"), folder("f-archive", "archive")]);
+            if (url.includes("folderUid=f-inbox")) return jsonResponse(200, fullPage);
+            return jsonResponse(200, [message("m1", true, "2026-01-02T00:00:00.000Z")]);
+        });
+        const result = await listFlaggedMessages("mb1");
+        expect(result.map((m) => m.uid)).toEqual(["m1", "m0"]);
+        expect(fetchMock.mock.calls.filter((c) => (c[0] as string).includes("folderUid=f-inbox"))).toHaveLength(2);
+    });
+
+    it("pages through at most FLAGGED_FOLDER_CONCURRENCY folders at once", async () => {
+        const folders = Array.from({ length: 10 }, (_, i) => folder(`f${i}`, "user"));
+        let inFlight = 0;
+        let maxInFlight = 0;
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string) => {
+                if (url.startsWith("/api/mail/folders")) return jsonResponse(200, folders);
+                inFlight++;
+                maxInFlight = Math.max(maxInFlight, inFlight);
+                await new Promise((resolve) => setTimeout(resolve, 5));
+                inFlight--;
+                return jsonResponse(200, [message(url, true, "2026-01-01T00:00:00.000Z")]);
+            }),
+        );
+        expect(await listFlaggedMessages("mb1")).toHaveLength(10);
+        expect(maxInFlight).toBe(FLAGGED_FOLDER_CONCURRENCY);
     });
 });

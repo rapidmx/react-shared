@@ -86,6 +86,21 @@ describe("local-time day drops (non-UTC runtime zone)", () => {
         const moved = new Date(new Date(occ.startDate).getTime() + (action as { deltaMs: number }).deltaMs);
         expect([moved.getDate(), moved.getHours(), moved.getMinutes()]).toEqual([9, 10, 0]);
     });
+
+    // Round-4 review PoC (drag.mts): west of UTC an all-day event's UTC-midnight start reads as the previous
+    // evening locally, so "same local time on the target day" landed it on the day after the drop target.
+    it.each(["America/Los_Angeles", "Asia/Tokyo", "UTC"])("moves an all-day event to the dropped date's UTC midnight in %s", (tz) => {
+        process.env.TZ = tz;
+        const occ = occurrence({ allDay: true, startDate: "2026-09-14T00:00:00.000Z", endDate: "2026-09-15T00:00:00.000Z" });
+        const action = resolveDragAction("e1", "day:2026-09-20", [occ]);
+        expect(action).toMatchObject({ type: "move", deltaMs: 6 * 24 * 60 * 60 * 1000 });
+        expect(new Date(Date.parse(occ.startDate) + (action as { deltaMs: number }).deltaMs).toISOString()).toBe("2026-09-20T00:00:00.000Z");
+    });
+
+    it("returns null for an all-day drop on an unparseable day id", () => {
+        const occ = occurrence({ allDay: true, startDate: "2026-09-14T00:00:00.000Z" });
+        expect(resolveDragAction("e1", "day:not-a-date", [occ])).toBeNull();
+    });
 });
 
 describe("resolveDragAction", () => {

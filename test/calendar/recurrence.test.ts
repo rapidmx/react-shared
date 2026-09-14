@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it } from "vitest";
 import { CalendarEvent } from "../../src/calendar/calendarApi.js";
-import { buildRRule, describeRecurrence, expandAllOccurrences, expandOccurrences } from "../../src/calendar/recurrence.js";
+import { buildRRule, describeRecurrence, expandAllOccurrences, expandOccurrences, fromEventWallClock, toEventWallClock } from "../../src/calendar/recurrence.js";
 
 function event(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
     return {
@@ -161,18 +161,65 @@ describe("expandOccurrences in the event's own timezone", () => {
         ]);
     });
 
-    it("keeps an all-day event anchored at local midnight across DST", () => {
+    it("expands an all-day event (stored as UTC-midnight dates) in UTC, not its timezone, across DST", () => {
         const recurring = event({
-            startDate: "2026-03-02T05:00:00.000Z", // 00:00 EST
-            endDate: "2026-03-03T05:00:00.000Z",
+            startDate: "2026-03-02T00:00:00.000Z", // Monday 2026-03-02, date-only
+            endDate: "2026-03-03T00:00:00.000Z",
             allDay: true,
             timezone: "America/New_York",
             recurrenceRule: { freq: "weekly", interval: 1, byDay: ["MO"], exceptions: [] },
         });
-        const result = expandOccurrences(recurring, new Date("2026-03-09T12:00:00.000Z"), new Date("2026-03-09T13:00:00.000Z"));
+        const result = expandOccurrences(recurring, new Date("2026-03-09T00:00:00.000Z"), new Date("2026-03-10T00:00:00.000Z"));
         expect(result).toHaveLength(1);
-        expect(result[0].startDate).toBe("2026-03-09T04:00:00.000Z");
-        expect(result[0].endDate).toBe("2026-03-10T04:00:00.000Z");
+        expect(result[0].startDate).toBe("2026-03-09T00:00:00.000Z");
+        expect(result[0].endDate).toBe("2026-03-10T00:00:00.000Z");
+    });
+
+    // Round-4 review PoC (rec.mts): in New York, UTC midnight is the previous evening, so tz expansion put a
+    // Monday all-day series on Tuesdays and a monthly-on-the-14th series on the 15th (01:00Z after DST ended).
+    it.each([
+        ["weekly on Monday", { freq: "weekly", interval: 1, byDay: ["MO"] }, ["2026-09-14", "2026-09-21", "2026-09-28"]],
+        ["monthly on the 14th", { freq: "monthly", interval: 1, byMonthDay: [14] }, ["2026-09-14", "2026-10-14", "2026-11-14"]],
+        ["daily until the 16th", { freq: "daily", interval: 1, until: "2026-09-16T00:00:00.000Z" }, ["2026-09-14", "2026-09-15", "2026-09-16"]],
+    ])("keeps an all-day %s series on its own dates at UTC midnight", (_label, rule, dates) => {
+        const recurring = event({
+            startDate: "2026-09-14T00:00:00.000Z",
+            endDate: "2026-09-15T00:00:00.000Z",
+            allDay: true,
+            timezone: "America/New_York",
+            recurrenceRule: { ...rule, exceptions: [] } as CalendarEvent["recurrenceRule"],
+        });
+        const result = expandOccurrences(recurring, new Date("2026-09-10T00:00:00.000Z"), new Date("2026-11-20T00:00:00.000Z"));
+        expect(result.slice(0, 3).map((o) => o.startDate)).toEqual(dates.map((d) => `${d}T00:00:00.000Z`));
+    });
+
+    // Round-4 review PoC (rec.mts): RFC 5545 §3.3.5 - a nonexistent local time uses the offset from before
+    // the gap, so a daily 02:30 America/New_York event is 03:30 EDT on the spring-forward day (not 01:30
+    // EST), and keeps its one-hour duration.
+    it("resolves a DST-gap occurrence with the pre-transition offset, keeping its duration", () => {
+        const recurring = event({
+            startDate: "2027-03-13T07:30:00.000Z", // 02:30 EST
+            endDate: "2027-03-13T08:30:00.000Z",
+            timezone: "America/New_York",
+            recurrenceRule: { freq: "daily", interval: 1, exceptions: [] },
+        });
+        const result = expandOccurrences(recurring, new Date("2027-03-13T00:00:00.000Z"), new Date("2027-03-16T00:00:00.000Z"));
+        expect(result.map((o) => [o.startDate, o.endDate])).toEqual([
+            ["2027-03-13T07:30:00.000Z", "2027-03-13T08:30:00.000Z"],
+            ["2027-03-14T07:30:00.000Z", "2027-03-14T08:30:00.000Z"], // 03:30-04:30 EDT
+            ["2027-03-15T06:30:00.000Z", "2027-03-15T07:30:00.000Z"], // 02:30 EDT
+        ]);
+    });
+
+    it("resolves an ambiguous fall-back occurrence to its first (daylight) instance", () => {
+        const recurring = event({
+            startDate: "2027-11-06T05:30:00.000Z", // 01:30 EDT
+            endDate: "2027-11-06T06:00:00.000Z",
+            timezone: "America/New_York",
+            recurrenceRule: { freq: "daily", interval: 1, exceptions: [] },
+        });
+        const result = expandOccurrences(recurring, new Date("2027-11-07T00:00:00.000Z"), new Date("2027-11-07T12:00:00.000Z"));
+        expect(result.map((o) => o.startDate)).toEqual(["2027-11-07T05:30:00.000Z"]);
     });
 
     it("interprets until and exceptions as real instants in the event's zone", () => {
@@ -225,6 +272,17 @@ describe("expandOccurrences in the event's own timezone", () => {
             expect(result.map((r) => r.startDate)).toEqual(["2026-03-02T15:00:00.000Z", "2026-03-09T14:00:00.000Z"]);
             expect(result[1].endDate).toBe("2026-03-09T14:30:00.000Z");
         });
+    });
+});
+
+describe("toEventWallClock / fromEventWallClock", () => {
+    it("uses UTC for all-day events and the event's zone for timed ones", () => {
+        const instant = Date.parse("2026-09-14T00:00:00.000Z");
+        expect(toEventWallClock(instant, "America/New_York", true)).toBe(instant);
+        expect(fromEventWallClock(instant, "America/New_York", true)).toBe(instant);
+        const wall = toEventWallClock(instant, "America/New_York", false);
+        expect(new Date(wall).toISOString()).toBe("2026-09-13T20:00:00.000Z");
+        expect(fromEventWallClock(wall, "America/New_York", false)).toBe(instant);
     });
 });
 

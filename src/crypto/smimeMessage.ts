@@ -29,8 +29,14 @@
 import { toBase64 } from "./encoding.js";
 import {
     DisplayBody,
+    binaryStringToBytes,
+    bytesToBinaryString,
     decodeBase64Text,
     decodeBodyText,
+    decodeHeaderText,
+    encodeAddressListHeaderValue,
+    encodeUnstructuredHeaderValue,
+    isBinaryString,
     extractDisplayBody,
     MimeHeaderField,
     parseMimeEntity,
@@ -84,27 +90,37 @@ function generateBoundary(): string {
         .join("")}`;
 }
 
-function protectedHeaderLines(headers: ProtectedHeaders, hpOuter?: ProtectedHeaders): string {
-    const lines = [
-        `From: ${headers.from}`,
-        `To: ${headers.to}`,
-        ...(headers.cc ? [`Cc: ${headers.cc}`] : []),
-        `Date: ${headers.date}`,
-        `Subject: ${headers.subject}`,
-        `Message-ID: ${headers.messageId}`,
+/** Strips CR/LF/NUL from a header value that has no further encoding (Date, Message-ID, Content-Type). */
+function flattenHeaderValue(value: string): string {
+    return value.replace(/[\r\n\0]+/g, " ");
+}
+
+/**
+ * Serializes `headers` as RFC 5322 header lines, safely: CR/LF/NUL in any value become a space (so a
+ * caller-supplied Subject or display name can never inject an extra header or end the header block), and
+ * non-ASCII Subject text / display names are RFC 2047-encoded (`mime.ts`'s `encode*HeaderValue()`). The
+ * protected copy, the `HP-Outer` copy and the outer envelope all go through this same deterministic
+ * encoding, so the receive-side comparisons between them still compare like with like.
+ */
+function headerLines(headers: ProtectedHeaders, prefix = ""): string[] {
+    return [
+        `${prefix}From: ${encodeAddressListHeaderValue(headers.from)}`,
+        `${prefix}To: ${encodeAddressListHeaderValue(headers.to)}`,
+        ...(headers.cc ? [`${prefix}Cc: ${encodeAddressListHeaderValue(headers.cc)}`] : []),
+        `${prefix}Date: ${flattenHeaderValue(headers.date)}`,
+        `${prefix}Subject: ${encodeUnstructuredHeaderValue(headers.subject)}`,
+        ...(prefix ? [] : [`Message-ID: ${flattenHeaderValue(headers.messageId)}`]),
     ];
+}
+
+function protectedHeaderLines(headers: ProtectedHeaders, hpOuter?: ProtectedHeaders): string {
+    const lines = headerLines(headers);
     if (hpOuter) {
         // RFC 9788 Section 2.2.1's `hp-outer` field: the literal string "HP-Outer:" followed by the
         // original field name and its (outer, possibly-obscured) value. Written on every encrypted
         // message per the spec, and compared against the actual outer envelope on receipt by
         // parseEncryptedMessage() (see ParsedEncryptedMessage.headerTamperDetected).
-        lines.push(`HP-Outer: From: ${hpOuter.from}`);
-        lines.push(`HP-Outer: To: ${hpOuter.to}`);
-        if (hpOuter.cc) {
-            lines.push(`HP-Outer: Cc: ${hpOuter.cc}`);
-        }
-        lines.push(`HP-Outer: Date: ${hpOuter.date}`);
-        lines.push(`HP-Outer: Subject: ${hpOuter.subject}`);
+        lines.push(...headerLines(hpOuter, "HP-Outer: "));
     }
     return lines.join(CRLF);
 }
@@ -137,7 +153,7 @@ export async function buildSignedOnlyMessage(
     // MTAs rewrap past 998 characters and so break the detached signature.
     const innerEntity = [
         protectedHeaderLines(protectedHeaders),
-        `Content-Type: ${bodyContentType}; hp="clear"`,
+        `Content-Type: ${flattenHeaderValue(bodyContentType)}; hp="clear"`,
         `Content-Transfer-Encoding: base64`,
         "",
         base64Wrapped(new TextEncoder().encode(bodyText)),
@@ -165,6 +181,9 @@ export interface ParsedSignedOnlyMessage {
     /** The certificate pkijs matched to the verified SignerInfo (not merely the first embedded one). */
     signerCertificateDer?: Uint8Array;
     protectedHeaders?: ProtectedHeaders;
+    /** Every header field of the signed entity, in order, repeats included - lets a caller reject a
+     * message carrying more than one protected `From`/`To`/`Cc`/`Sender` (see `messageSecurity.ts`). */
+    protectedHeaderFields?: MimeHeaderField[];
     bodyContentType?: string;
     /** The inner entity's body with its Content-Transfer-Encoding/charset decoded (for a multipart inner
      * entity this is the raw multipart text - use `displayBody` for what to render). */
@@ -202,10 +221,24 @@ export async function parseSignedOnlyMessage(contentType: string, body: string):
         return { verified: false };
     }
 
-    let result = await verifyDetached(new TextEncoder().encode(innerText), signatureDer);
+    // The signed part's exact bytes: a binary string (see `mime.ts`) maps back to them one code unit per
+    // byte; a string that was already decoded as text is UTF-8 encoded instead. A binary string holding
+    // non-ASCII is also tried as UTF-8 text, for a caller that decoded an all-Latin-1 message itself. Each
+    // form is retried in canonical CRLF form. Trying several byte forms is safe: each must still verify.
     const canonical = innerText.replace(/\r?\n/g, CRLF);
-    if (!result.valid && canonical !== innerText) {
-        result = await verifyDetached(new TextEncoder().encode(canonical), signatureDer);
+    const candidates: Uint8Array[] = [];
+    for (const text of canonical === innerText ? [innerText] : [innerText, canonical]) {
+        candidates.push(binaryStringToBytes(text));
+        if (isBinaryString(text) && /[\x80-\xff]/.test(text)) {
+            candidates.push(new TextEncoder().encode(text));
+        }
+    }
+    let result: Awaited<ReturnType<typeof verifyDetached>> = { valid: false };
+    for (const candidate of candidates) {
+        result = await verifyDetached(candidate, signatureDer);
+        if (result.valid) {
+            break;
+        }
     }
     if (!result.valid) {
         return { verified: false };
@@ -216,6 +249,7 @@ export async function parseSignedOnlyMessage(contentType: string, body: string):
         verified: true,
         signerCertificateDer: result.signerCertificateDer,
         protectedHeaders: headersToProtectedHeaders(inner.headers),
+        protectedHeaderFields: inner.fields,
         bodyContentType: inner.headers["content-type"],
         bodyText: decodeBodyText(inner),
         displayBody: extractDisplayBody(inner),
@@ -238,7 +272,7 @@ export async function buildEncryptedMessage(
 ): Promise<MimePart> {
     const plaintextEntity = [
         protectedHeaderLines(protectedHeaders, outerHeaders),
-        `Content-Type: ${bodyContentType}; hp="cipher"`,
+        `Content-Type: ${flattenHeaderValue(bodyContentType)}; hp="cipher"`,
         "",
         bodyText,
     ].join(CRLF);
@@ -273,19 +307,15 @@ export async function buildEncryptedMessage(
  * (`applyBaselineOuterHeaders()`'s output) - this function does no obscuring itself, it only serializes
  * whatever headers it's given. Deliberately excludes `Bcc`: that recipient list is submission-only and
  * must never appear as a message header (see `AssembleDraftRawInput`'s own doc comment - `bcc` is passed
- * to that call separately, never baked into `rawMime`).
+ * to that call separately, never baked into `rawMime`). Header values are sanitized and RFC 2047-encoded
+ * the same way as the protected headers (see `headerLines()`).
  */
 export function assembleOutboundMime(outerHeaders: ProtectedHeaders, part: MimePart): string {
     const lines = [
-        `From: ${outerHeaders.from}`,
-        `To: ${outerHeaders.to}`,
-        ...(outerHeaders.cc ? [`Cc: ${outerHeaders.cc}`] : []),
-        `Date: ${outerHeaders.date}`,
-        `Subject: ${outerHeaders.subject}`,
-        `Message-ID: ${outerHeaders.messageId}`,
+        ...headerLines(outerHeaders),
         `MIME-Version: 1.0`,
-        `Content-Type: ${part.contentType}`,
-        ...Object.entries(part.additionalHeaders ?? {}).map(([key, value]) => `${key}: ${value}`),
+        `Content-Type: ${flattenHeaderValue(part.contentType)}`,
+        ...Object.entries(part.additionalHeaders ?? {}).map(([key, value]) => `${flattenHeaderValue(key)}: ${flattenHeaderValue(value)}`),
         "",
         part.body,
     ];
@@ -299,6 +329,8 @@ export interface ParsedEncryptedMessage {
     signatureVerified?: boolean;
     signerCertificateDer?: Uint8Array;
     protectedHeaders?: ProtectedHeaders;
+    /** Every header field of the decrypted (and unwrapped) protected entity, in order, repeats included. */
+    protectedHeaderFields?: MimeHeaderField[];
     bodyContentType?: string;
     bodyText?: string;
     /** `true` when `actualOuterHeaders` was supplied and disagrees with the `HP-Outer:` field copies
@@ -383,7 +415,8 @@ export async function parseEncryptedMessage(
         return !outerHeadersMatch(hpOuter, actualOuterHeaders);
     }
 
-    let entity = parseMimeEntity(new TextDecoder().decode(decrypted));
+    // Binary strings (see `mime.ts`), so an 8bit body's charset is applied to its real bytes.
+    let entity = parseMimeEntity(bytesToBinaryString(decrypted));
     const wrapper = parseParameterizedHeader(entity.headers["content-type"]);
     let signature: Pick<ParsedEncryptedMessage, "signatureVerified" | "signerCertificateDer"> = {};
 
@@ -397,7 +430,7 @@ export async function parseEncryptedMessage(
             return { decrypted: true, signatureVerified: false };
         }
         // verifyOpaque() always returns `content` alongside `valid: true`.
-        entity = parseMimeEntity(new TextDecoder().decode(verifyResult.content));
+        entity = parseMimeEntity(bytesToBinaryString(verifyResult.content as Uint8Array));
         signature = { signatureVerified: true, signerCertificateDer: verifyResult.signerCertificateDer };
     }
 
@@ -405,6 +438,7 @@ export async function parseEncryptedMessage(
         decrypted: true,
         ...signature,
         protectedHeaders: headersToProtectedHeaders(entity.headers),
+        protectedHeaderFields: entity.fields,
         bodyContentType: entity.headers["content-type"],
         bodyText: decodeBodyText(entity),
         displayBody: extractDisplayBody(entity),
@@ -427,7 +461,9 @@ function headersToProtectedHeaders(headers: Record<string, string>): ProtectedHe
         to: headers["to"] ?? "",
         cc: headers["cc"],
         date: headers["date"] ?? "",
-        subject: headers["subject"] ?? "",
+        // Display text: RFC 2047 encoded-words / raw UTF-8 decoded. The address fields stay raw - they are
+        // only ever compared (via `extractAddresses()`), never shown.
+        subject: decodeHeaderText(headers["subject"] ?? ""),
         messageId: headers["message-id"] ?? "",
     };
 }

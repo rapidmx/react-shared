@@ -128,3 +128,65 @@ describe("parseVCards", () => {
         expect(parsed[0].surname).toBeUndefined();
     });
 });
+
+describe("vCard escaping and parsing fixes (round-4 review)", () => {
+    it("escapes CR and CRLF line breaks so a value can't start a new content line", () => {
+        const vcard = contactToVCard({ ...baseContact, notes: "line1\r\nline2\rline3\nEND:VCARD", emails: [], phones: [], addresses: [] });
+        expect(vcard).toContain("NOTE:line1\\nline2\\nline3\\nEND:VCARD");
+        expect(vcard.split("\r\n").filter((line) => line === "END:VCARD")).toHaveLength(1);
+        expect(parseVCards(vcard)[0].notes).toBe("line1\nline2\nline3\nEND:VCARD");
+    });
+
+    it("unescapes in a single pass, so an escaped backslash before 'n' stays a literal backslash", () => {
+        const contact = { ...baseContact, notes: "C:\\new\\folder; a,b", company: "Back\\slash; Inc" };
+        const vcard = contactToVCard(contact);
+        expect(vcard).toContain("NOTE:C:\\\\new\\\\folder\\; a\\,b");
+        const [parsed] = parseVCards(vcard);
+        expect(parsed.notes).toBe("C:\\new\\folder; a,b");
+        expect(parsed.company).toBe("Back\\slash; Inc");
+        expect(parseVCards("BEGIN:VCARD\r\nNOTE:a\\Nb\\:c\\\r\nEND:VCARD")[0].notes).toBe("a\nb:c\\");
+    });
+
+    it("splits N and ADR only on unescaped semicolons", () => {
+        const [parsed] = parseVCards(contactToVCard({ ...baseContact, surname: "Doe; Jr.", addresses: [{ street: "1 Main St; Apt 2", city: "X", type: "home" }] }));
+        expect(parsed.surname).toBe("Doe; Jr.");
+        expect(parsed.givenName).toBe("Jane");
+        expect(parsed.addresses![0]).toMatchObject({ street: "1 Main St; Apt 2", city: "X" });
+    });
+
+    it("unfolds folded lines (CRLF, LF, or CR followed by a space or tab)", () => {
+        const parsed = parseVCards("BEGIN:VCARD\r\nFN:Jane\r\n  Doe\r\nNOTE:first\n\tsecond\r third\r\nEND:VCARD");
+        expect(parsed[0].displayName).toBe("Jane Doe");
+        expect(parsed[0].notes).toBe("firstsecondthird");
+    });
+
+    it("ignores property group prefixes and normalizes TYPE values from vCard 2.1, 3.0 and 4.0 exporters", () => {
+        const parsed = parseVCards(
+            [
+                "BEGIN:VCARD",
+                "VERSION:3.0",
+                "FN:Apple Export",
+                "item1.EMAIL;type=INTERNET;type=WORK;type=pref:work@example.com",
+                "item2.EMAIL;TYPE=internet,HOME:home@example.com",
+                'EMAIL;TYPE="work,voice":quoted@example.com',
+                "EMAIL;WORK:legacy21@example.com",
+                "TEL;TYPE=CELL;PREF=1:555",
+                'item3.ADR;LABEL="a:b";TYPE=home:;;1 Main;Town;;;',
+                "END:VCARD",
+            ].join("\r\n"),
+        );
+        expect(parsed[0].emails).toEqual([
+            { address: "work@example.com", type: "work" },
+            { address: "home@example.com", type: "home" },
+            { address: "quoted@example.com", type: "work" },
+            { address: "legacy21@example.com", type: "work" },
+        ]);
+        expect(parsed[0].phones).toEqual([{ phoneNumber: "555", type: "other" }]);
+        expect(parsed[0].addresses![0]).toMatchObject({ street: "1 Main", city: "Town", type: "home" });
+    });
+
+    it("skips a line whose only colon is inside a quoted parameter", () => {
+        const parsed = parseVCards('BEGIN:VCARD\r\nFN:Test\r\nEMAIL;X-LABEL="a:b"\r\nEND:VCARD');
+        expect(parsed[0].emails).toEqual([]);
+    });
+});

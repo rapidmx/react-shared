@@ -39,8 +39,10 @@ export interface EscrowAuditLogEntry {
     /** The immediately-preceding entry's `hash` — `undefined` only for the very first entry
      * (`sequence === 0`). */
     previousHash?: string;
-    /** SHA-256 hex digest over this entry's own content plus `previousHash`. */
+    /** Hex digest over this entry's own content plus `previousHash`, computed with `hashAlgorithm`. */
     hash: string;
+    /** The scheme `hash` was computed with. Absent = a legacy entry verified with plain SHA-256. */
+    hashAlgorithm?: EscrowAuditHashAlgorithm;
     action: EscrowAuditAction;
     holderUserUid: string;
     matterId: string;
@@ -59,10 +61,32 @@ export function getAuditLogEntry(uid: string): Promise<EscrowAuditLogEntry> {
     return apiFetch(`/escrow/audit-log/${encodeURIComponent(uid)}`);
 }
 
+/** Mirrors `@rapidmx/restapi`'s `EscrowAuditHashAlgorithm` enum values. */
+export type EscrowAuditHashAlgorithm = "sha256" | "hmac-sha256";
+
+/** Why the chain failed verification - mirrors `@rapidmx/restapi`'s `EscrowAuditVerificationFailure`
+ * (`util/EscrowAuditUtils.ts`): `link_mismatch` (an entry deleted/inserted/reordered), `hash_mismatch` (an
+ * entry edited), `unknown_algorithm`, `algorithm_downgrade` (an unkeyed entry after an HMAC one),
+ * `hmac_key_unavailable` (server can't check HMAC entries), `truncated` (entries deleted from the tail),
+ * `head_mismatch`, `head_mac_mismatch` (forged/edited head record), `head_missing`. */
+export type EscrowAuditVerificationFailure =
+    | "link_mismatch"
+    | "hash_mismatch"
+    | "unknown_algorithm"
+    | "algorithm_downgrade"
+    | "hmac_key_unavailable"
+    | "truncated"
+    | "head_mismatch"
+    | "head_mac_mismatch"
+    | "head_missing";
+
 export interface EscrowAuditVerificationResult {
     valid: boolean;
     /** The lowest `sequence` at which the chain breaks, if `valid` is `false`. */
     brokenAtSequence?: number;
+    /** Why the chain is invalid, when `valid` is `false`. A newer server may add values - treat an
+     * unrecognized one as a generic verification failure. */
+    reason?: EscrowAuditVerificationFailure | (string & {});
 }
 
 /** Walks the entire hash chain end to end. `@RequiresTrustedRole()`-only server-side, deliberately not

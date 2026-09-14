@@ -187,6 +187,35 @@ describe("overlay stacking", () => {
         expect(opener).toHaveFocus();
     });
 
+    it("puts a shallower overlay opened in a later commit on top of an already-open nested one (round-4 review)", async () => {
+        const nestedClose = vi.fn();
+        const laterClose = vi.fn();
+        function Harness({ laterOpen }: { laterOpen: boolean }) {
+            return (
+                <>
+                    <Drawer open={true} onClose={vi.fn()} title="Folders">
+                        <Modal open={true} onClose={nestedClose} title="Nested">
+                            <div />
+                        </Modal>
+                    </Drawer>
+                    <Modal open={laterOpen} onClose={laterClose} title="Later">
+                        <div />
+                    </Modal>
+                </>
+            );
+        }
+        const user = userEvent.setup();
+        const { rerender } = render(<Harness laterOpen={false} />);
+        // Let the first commit's microtask pass, so the next open is a separate commit.
+        await Promise.resolve();
+        rerender(<Harness laterOpen={true} />);
+        expect(screen.getByRole("dialog", { name: "Later" })).toHaveFocus();
+
+        await user.keyboard("{Escape}");
+        expect(laterClose).toHaveBeenCalledTimes(1);
+        expect(nestedClose).not.toHaveBeenCalled();
+    });
+
     it("an overlay closing out of order leaves the remaining top overlay in charge", async () => {
         const lowerClose = vi.fn();
         const upperClose = vi.fn();

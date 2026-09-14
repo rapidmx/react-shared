@@ -30,7 +30,34 @@ export function generateMasterKey(): Uint8Array {
     return crypto.getRandomValues(new Uint8Array(MASTER_KEY_LENGTH_BYTES));
 }
 
+/**
+ * Thrown when key material handed to this module has already been destroyed - `keySession.ts`'s
+ * `destroyUnlockedKeys()` zeroes a master key in place, so a caller still holding a stale `UnlockedKeys`
+ * object (captured before an idle lock or logout) would otherwise keep sealing/opening under an all-zero
+ * AES key *without any error*: AES-GCM accepts any 32 bytes, so a zeroed key "works" and silently produces
+ * ciphertext anyone can open. Callers should catch this and re-read `getUnlockedKeys()` (prompting for the
+ * unlock credential again when that returns `undefined`) rather than retrying with the same object.
+ */
+export class KeysLockedError extends Error {
+    constructor(message = "The encryption keys for this mailbox are locked. Unlock them again to continue.") {
+        super(message);
+        this.name = "KeysLockedError";
+    }
+}
+
+/**
+ * Throws `KeysLockedError` for key material that can't be a live key: empty, or every byte zero (what a
+ * destroyed master key looks like). A genuine 32-byte random key or KDF output is all-zero with
+ * probability 2^-256, so this never rejects real key material.
+ */
+export function assertKeyMaterialUsable(rawKey: Uint8Array): void {
+    if (rawKey.length === 0 || rawKey.every((byte) => byte === 0)) {
+        throw new KeysLockedError();
+    }
+}
+
 async function importAeadKey(rawKey: Uint8Array): Promise<CryptoKey> {
+    assertKeyMaterialUsable(rawKey);
     return crypto.subtle.importKey("raw", rawKey as BufferSource, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
@@ -53,9 +80,14 @@ export function buildAad(mailboxUid: string, purpose: string): Uint8Array {
 
 /** AEAD-encrypts `plaintext` under `rawKey` (32 bytes — MK when sealing a private key, or a
  * KDF-derived wrapping key when sealing MK itself). A fresh random nonce is generated per call — GCM
- * requires a unique nonce per key, never reused. */
+ * requires a unique nonce per key, never reused. Throws `KeysLockedError` for a destroyed (all-zero) key,
+ * and also for an all-zero `plaintext` of master-key length - that is a destroyed master key being
+ * re-wrapped (e.g. by `masterKeyWraps.ts`), which would otherwise persist a wrap of a useless key. */
 export async function sealWithKey(rawKey: Uint8Array, plaintext: Uint8Array, aad: Uint8Array): Promise<Sealed> {
     const key = await importAeadKey(rawKey);
+    if (plaintext.length === MASTER_KEY_LENGTH_BYTES) {
+        assertKeyMaterialUsable(plaintext);
+    }
     const nonce = crypto.getRandomValues(new Uint8Array(GCM_NONCE_LENGTH_BYTES));
     const ciphertext = await crypto.subtle.encrypt(
         { name: "AES-GCM", iv: nonce as BufferSource, additionalData: aad as BufferSource },
@@ -67,7 +99,7 @@ export async function sealWithKey(rawKey: Uint8Array, plaintext: Uint8Array, aad
 
 /** Inverse of `sealWithKey()`. Throws (WebCrypto's own `OperationError`) if `rawKey`/`aad` don't match
  * what the value was sealed under, or if the ciphertext was tampered with — GCM's authentication tag
- * covers both the ciphertext and the AAD. */
+ * covers both the ciphertext and the AAD. Throws `KeysLockedError` for a destroyed (all-zero) key. */
 export async function openWithKey(rawKey: Uint8Array, sealed: Sealed, aad: Uint8Array): Promise<Uint8Array> {
     const key = await importAeadKey(rawKey);
     const plaintext = await crypto.subtle.decrypt(
@@ -83,8 +115,10 @@ export async function openWithKey(rawKey: Uint8Array, sealed: Sealed, aad: Uint8
  * WebAuthn PRF secret, a recovery code) into an independent key for a specific purpose — never the raw
  * material directly. `info` binds the derived key to what it's for (e.g. `"wrap"` vs. an auth proof),
  * so the same input material never accidentally produces the same output for two different purposes.
+ * Throws `KeysLockedError` for empty or all-zero `ikm` (destroyed/zeroed input material).
  */
 export async function hkdfDerive(ikm: Uint8Array, salt: Uint8Array, info: string, lengthBytes = 32): Promise<Uint8Array> {
+    assertKeyMaterialUsable(ikm);
     const baseKey = await crypto.subtle.importKey("raw", ikm as BufferSource, "HKDF", false, ["deriveBits"]);
     const bits = await crypto.subtle.deriveBits(
         {

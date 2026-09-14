@@ -742,6 +742,15 @@ describe("getMessageRawContent", () => {
         expect(result).toBe("From: a@example.com\r\n\r\nbody");
     });
 
+    // Round-4 review: `res.text()` UTF-8-decoded the whole message, replacing a non-UTF-8 8bit part's bytes
+    // with U+FFFD before its charset was known. The result is now a binary string: one code unit per byte.
+    it("returns the body as a byte-preserving binary string, not UTF-8-decoded text", async () => {
+        const bytes = new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x20, 0xc3, 0xa9, 0x80, 0xff]);
+        mockFetch(() => new Response(bytes, { status: 200, headers: { "content-type": "message/rfc822" } }));
+        const result = await getMessageRawContent("m1");
+        expect(Array.from(result, (ch) => ch.charCodeAt(0))).toEqual(Array.from(bytes));
+    });
+
     it("targets the configured API base URL", async () => {
         configureApiBaseUrl("https://mail.example.com");
         const fetchMock = mockFetch(() => new Response("raw", { status: 200 }));

@@ -166,7 +166,9 @@ async function verifySignerZero(signedData: pkijs.SignedData, data?: ArrayBuffer
  * certificate has any (RFC 5280 §4.2.1.6 - SAN is authoritative when present), otherwise the subject's
  * legacy `emailAddress` attributes plus a `CN` that is itself an email address (how this deployment's
  * own self-signed/test certificates and many older CAs name a mailbox). Used by `messageSecurity.ts` to
- * bind a signer certificate to the message's claimed sender. Returns `[]` for unparseable input.
+ * bind a signer certificate to the message's claimed sender. Returns `[]` for unparseable input -
+ * including a certificate whose SubjectAlternativeName extension pkijs couldn't parse (no `parsedValue`),
+ * which then fails the identity check (`signature_failed`) rather than throwing out of message evaluation.
  */
 export function extractCertificateEmails(certDer: Uint8Array): string[] {
     let cert: pkijs.Certificate;
@@ -177,8 +179,15 @@ export function extractCertificateEmails(certDer: Uint8Array): string[] {
     }
     const sanEmails: string[] = [];
     for (const extension of cert.extensions ?? []) {
-        // pkijs parses a SubjectAlternativeName extension's value into an AltName automatically.
-        const altNames = extension.extnID === "2.5.29.17" ? (extension.parsedValue as pkijs.AltName).altNames : [];
+        if (extension.extnID !== "2.5.29.17") {
+            continue;
+        }
+        // pkijs parses a well-formed SubjectAlternativeName into an AltName automatically, and leaves
+        // `parsedValue` unset for a malformed one - a certificate asserting an unreadable SAN names nobody.
+        const altNames = (extension.parsedValue as pkijs.AltName | undefined)?.altNames;
+        if (!Array.isArray(altNames)) {
+            return [];
+        }
         for (const name of altNames) {
             // GeneralName type 1 = rfc822Name (an IA5String value).
             if (name.type === 1) {

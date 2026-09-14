@@ -23,7 +23,7 @@
 import { type KeyVault, type PublicKey, findActivePublicKey, getKeyVault } from "./keyvaultApi.js";
 import { fromBase64 } from "./encoding.js";
 import { importPrivateKeyPkcs8 } from "./keys.js";
-import { buildAad, openWithKey } from "./masterKey.js";
+import { KeysLockedError, buildAad, openWithKey } from "./masterKey.js";
 import { deriveFromPassword, parseArgon2idKdfLabel } from "./passwordUnlock.js";
 
 /** AAD purpose labels — MUST exactly match what `KeyEnrollmentGate.tsx` used when it originally
@@ -33,7 +33,14 @@ export const MASTER_KEY_AAD_PURPOSE = "master-key";
 export const SIGNING_PRIVATE_KEY_AAD_PURPOSE = "sign-private-key";
 export const ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE = "encrypt-private-key";
 
+export { KeysLockedError };
+
 export interface UnlockedKeys {
+    /** `true` once `destroyUnlockedKeys()` has destroyed this object's keys (master key zeroed, private key
+     * handles dropped). A caller holding an `UnlockedKeys` across an `await` or a user action must treat a
+     * destroyed object as locked and re-read `getUnlockedKeys()` instead - `masterKey.ts`'s helpers throw
+     * `KeysLockedError` when handed its zeroed master key. Never set on an object still in the store. */
+    destroyed?: boolean;
     masterKey: Uint8Array;
     signingPrivateKey?: CryptoKey;
     signingCertDer?: Uint8Array;
@@ -98,8 +105,10 @@ export function getUnlockedKeys(mailboxUid: string): UnlockedKeys | undefined {
  *
  * The master key's bytes are overwritten with zeros in place before the entry is dropped, so any
  * `UnlockedKeys` object a caller is still holding no longer carries usable key material either (and the
- * bytes don't linger until garbage collection). The private keys themselves are `CryptoKey` handles
- * whose material WebCrypto never exposes to JS, so there is nothing to zero there.
+ * bytes don't linger until garbage collection). That object is also marked `destroyed: true` and its
+ * private key `CryptoKey` handles are removed (their material is never exposed to JS, so there is nothing
+ * to zero - but a stale holder must not keep signing/decrypting with them after a lock). Sealing/opening
+ * with the zeroed master key throws `KeysLockedError` (see `masterKey.ts`).
  */
 export function destroyUnlockedKeys(mailboxUid?: string): void {
     const uids = mailboxUid ? [mailboxUid] : [...sessions.keys()];
@@ -109,6 +118,9 @@ export function destroyUnlockedKeys(mailboxUid?: string): void {
             continue;
         }
         unlocked.masterKey.fill(0);
+        unlocked.destroyed = true;
+        delete unlocked.signingPrivateKey;
+        delete unlocked.encryptionPrivateKey;
         sessions.delete(uid);
         notify({ mailboxUid: uid, state: "locked" });
     }
@@ -154,7 +166,10 @@ export async function unlockWithPassword(mailboxUid: string, mailboxKeys: Public
     // for exactly one consumer: `keyRotation.ts`'s `rewrapPrivateKeysUnderNewMasterKey()`, which re-seals
     // these session keys' PKCS#8 bytes under a new master key via `crypto.subtle.exportKey()` (web-client's
     // Settings > Encryption "rotate keys"). Nothing else exports them. Making them non-extractable would
-    // first require that function to re-open the vault's wraps with `masterKey` instead. The transient
+    // first require that function to re-open the vault's wraps with `masterKey` instead (round-4 review
+    // re-flagged this; deliberately left as-is - an XSS that can call `exportKey()` on these handles can
+    // equally call `openWithKey()` with the in-memory master key, so non-extractability would not remove
+    // that attacker's access, only complicate rotation). The transient
     // PKCS#8 plaintext buffers are zeroed as soon as WebCrypto has copied them into a `CryptoKey`.
     try {
         const signingPublicKey = findActivePublicKey(mailboxKeys, "sign");

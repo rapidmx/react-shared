@@ -55,6 +55,97 @@ describe("saveEventSeries", () => {
         );
         expect(result.title).toBe("Renamed");
     });
+
+    // Round-4 review: moving a series left its exceptions (and detached occurrences' recurrenceIds) at the
+    // old occurrence starts - a deleted occurrence reappeared and the override pairing broke.
+    describe("when the series start moves", () => {
+        const master = occurrence({
+            startDate: "2026-06-01T13:00:00.000Z", // Mon 09:00 EDT
+            endDate: "2026-06-01T13:30:00.000Z",
+            timezone: "America/New_York",
+            recurrenceRule: { freq: "weekly", interval: 1, byDay: ["MO"], exceptions: ["2026-06-08T13:00:00.000Z", "2026-11-02T14:00:00.000Z"] },
+            recurrenceId: undefined,
+        });
+        const detached = occurrence({ uid: "d1", version: 4, recurrenceRule: undefined, recurrenceId: "2026-11-09T14:00:00.000Z", startDate: "2026-11-10T20:00:00.000Z" });
+
+        function routes(overrides: { listFails?: boolean; detachedPutFails?: boolean; events?: unknown[] } = {}) {
+            return mockFetch((url, init) => {
+                if (url === "/api/mail/calendar-events/e1" && !init?.method) return jsonResponse(200, master);
+                if (url.startsWith("/api/mail/calendar-events?")) {
+                    return overrides.listFails
+                        ? jsonResponse(500, { message: "boom" })
+                        : jsonResponse(200, overrides.events ?? [master, detached, occurrence({ uid: "other", icalUid: "zzz", recurrenceId: "2026-06-08T13:00:00.000Z" })]);
+                }
+                if (url === "/api/mail/calendar-events/e1" && init?.method === "PUT") return jsonResponse(200, { ...master, ...JSON.parse(init.body as string) });
+                if (url === "/api/mail/calendar-events/d1" && init?.method === "PUT") {
+                    return overrides.detachedPutFails ? jsonResponse(409, { message: "conflict" }) : jsonResponse(200, detached);
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+        }
+
+        const putBody = (fetchMock: ReturnType<typeof mockFetch>, uid: string) =>
+            JSON.parse(fetchMock.mock.calls.find(([url, init]) => url === `/api/mail/calendar-events/${uid}` && init?.method === "PUT")![1]!.body as string);
+
+        it("shifts exceptions and detached occurrences' recurrenceIds by the same wall-clock delta, across DST", async () => {
+            const fetchMock = routes();
+            // 09:00 -> 10:30 local: +1h30 wall clock, which is 14:30Z in summer but 15:30Z in winter.
+            const result = await saveEventSeries(occurrence(), { startDate: "2026-06-01T14:30:00.000Z", endDate: "2026-06-01T15:00:00.000Z" });
+
+            expect(putBody(fetchMock, "e1")).toMatchObject({
+                uid: "e1",
+                version: 2,
+                startDate: "2026-06-01T14:30:00.000Z",
+                recurrenceRule: { freq: "weekly", exceptions: ["2026-06-08T14:30:00.000Z", "2026-11-02T15:30:00.000Z"] },
+            });
+            expect(putBody(fetchMock, "d1")).toEqual({ uid: "d1", version: 4, recurrenceId: "2026-11-09T15:30:00.000Z" });
+            expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(2);
+            expect(result).not.toHaveProperty("detachedOccurrenceSyncFailed");
+        });
+
+        it("shifts in UTC for an all-day series converted to timed, and prefers the edited rule's own exceptions", async () => {
+            const allDayMaster = { ...master, allDay: true, startDate: "2026-06-01T00:00:00.000Z", endDate: "2026-06-02T00:00:00.000Z" };
+            const fetchMock = mockFetch((url, init) => {
+                if (url === "/api/mail/calendar-events/e1" && !init?.method) return jsonResponse(200, allDayMaster);
+                if (url.startsWith("/api/mail/calendar-events?")) return jsonResponse(200, []);
+                return jsonResponse(200, allDayMaster);
+            });
+            await saveEventSeries(occurrence(), {
+                allDay: false,
+                startDate: "2026-06-01T13:00:00.000Z", // 09:00 EDT on the same date
+                recurrenceRule: { freq: "weekly", interval: 1, exceptions: ["2026-12-07T00:00:00.000Z"] },
+            });
+            expect(putBody(fetchMock, "e1").recurrenceRule.exceptions).toEqual(["2026-12-07T14:00:00.000Z"]); // 09:00 EST
+        });
+
+        it("reports detachedOccurrenceSyncFailed (without throwing) when a detached occurrence can't be updated or listed", async () => {
+            routes({ detachedPutFails: true });
+            const failedPut = await saveEventSeries(occurrence(), { startDate: "2026-06-01T14:00:00.000Z" });
+            expect(failedPut).toMatchObject({ uid: "e1", detachedOccurrenceSyncFailed: true });
+            vi.unstubAllGlobals();
+
+            routes({ listFails: true });
+            expect((await saveEventSeries(occurrence(), { startDate: "2026-06-01T14:00:00.000Z" })).detachedOccurrenceSyncFailed).toBe(true);
+        });
+
+        it("makes one plain PUT when the start doesn't actually move, and sends no rule for a non-recurring master", async () => {
+            const fetchMock = routes();
+            await saveEventSeries(occurrence(), { startDate: master.startDate, title: "Renamed" });
+            expect(fetchMock.mock.calls.map(([url, init]) => `${init?.method ?? "GET"} ${url}`)).toEqual([
+                "GET /api/mail/calendar-events/e1",
+                "PUT /api/mail/calendar-events/e1",
+            ]);
+            vi.unstubAllGlobals();
+
+            const plain = { ...master, recurrenceRule: undefined };
+            const plainFetch = mockFetch((url, init) => {
+                if (url.startsWith("/api/mail/calendar-events?")) return jsonResponse(200, []);
+                return jsonResponse(200, init?.method ? { ...plain, ...JSON.parse(init.body as string) } : plain);
+            });
+            await saveEventSeries(occurrence(), { startDate: "2026-06-01T14:00:00.000Z" });
+            expect(putBody(plainFetch, "e1")).not.toHaveProperty("recurrenceRule");
+        });
+    });
 });
 
 describe("detachOccurrence", () => {

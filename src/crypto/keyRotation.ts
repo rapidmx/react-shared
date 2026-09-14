@@ -12,7 +12,7 @@
  * left permanently unable to unwrap anything useful, even if an attacker later recovers a captured
  * wrap's secret.
  */
-import { buildAad, generateMasterKey, sealWithKey } from "./masterKey.js";
+import { KeysLockedError, buildAad, generateMasterKey, sealWithKey } from "./masterKey.js";
 import { ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE, SIGNING_PRIVATE_KEY_AAD_PURPOSE, UnlockedKeys } from "./keySession.js";
 import type { WrappedPrivateKey } from "./keyvaultApi.js";
 
@@ -30,9 +30,13 @@ export interface RewrappedPrivateKeys {
  * reused unchanged, only its protection changes. A mailbox with only an encryption key (signing keys
  * have no real enrolment path yet — see `KeyEnrollmentGate.tsx`'s own doc comment) simply produces one
  * `WrappedPrivateKey`, not two; this function never invents key material `unlocked` doesn't already
- * have decrypted.
+ * have decrypted. Throws `KeysLockedError` for an `UnlockedKeys` object that `destroyUnlockedKeys()` has
+ * since destroyed (its private keys are gone, so a rotation would silently wrap nothing).
  */
 export async function rewrapPrivateKeysUnderNewMasterKey(mailboxUid: string, unlocked: UnlockedKeys): Promise<RewrappedPrivateKeys> {
+    if (unlocked.destroyed) {
+        throw new KeysLockedError();
+    }
     const mk = generateMasterKey();
     const wrappedKeys: WrappedPrivateKey[] = [];
 

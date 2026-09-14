@@ -17,7 +17,9 @@
  * email-shaped CN) equals the single address in the protected `From` (or the outer `From` when the signed
  * content carries no protected headers, as with non-RFC 9788 senders); (4) the protected `From`/`To`
  * address sets (when present) equal the outer envelope's - the outer envelope is what the mail list and
- * reading pane display as the sender. Any failure downgrades to `"signature_failed"`, with `signatureFailureReason` saying which check failed.
+ * reading pane display as the sender - and neither the outer envelope nor the protected headers carry more
+ * than one `From`/`To`/`Cc`/`Sender` field (a duplicate lets a forged second `From` be what a client
+ * displays while the first one is what was checked). Any failure downgrades to `"signature_failed"`, with `signatureFailureReason` saying which check failed.
  * The state union itself is unchanged (a distinct identity-mismatch state would break existing
  * exhaustive consumers); the reason is an additive, optional field.
  *
@@ -26,7 +28,7 @@
  * `pinnedSignerFingerprint`, check 2 is skipped and a self-issued certificate naming the sender's address
  * passes checks 1, 3 and 4 - callers that have a pinned Contact key MUST pass it.
  */
-import { DisplayBody, extractAddresses, parseMimeEntity, parseParameterizedHeader, plainTextToHtml } from "./mime.js";
+import { DisplayBody, MimeHeaderField, extractAddresses, parseMimeEntity, parseParameterizedHeader, plainTextToHtml } from "./mime.js";
 import { computeCertFingerprint, extractCertificateEmails } from "./smime.js";
 import { ComparableOuterHeaders, ProtectedHeaders, parseEncryptedMessage, parseSignedOnlyMessage } from "./smimeMessage.js";
 
@@ -37,7 +39,7 @@ export type MessageSecurityState = "encrypted" | "signed_verified" | "encrypted_
  * certificate doesn't match it (or no signer certificate could be resolved at all).
  * `signer_identity_mismatch`: the signer certificate doesn't name the message's `From` address (or `From`
  * doesn't hold exactly one address). `header_mismatch`: the signed/protected `From`/`To` disagree with
- * the outer envelope's. */
+ * the outer envelope's, or either header block repeats a `From`/`To`/`Cc`/`Sender` field. */
 export type SignatureFailureReason = "invalid_signature" | "untrusted_signer" | "signer_identity_mismatch" | "header_mismatch";
 
 export interface MessageSecurityResult {
@@ -51,6 +53,12 @@ export interface MessageSecurityResult {
     html?: string;
     /** The raw plain text, present only when the recovered body was `text/plain` (not `text/html`). */
     text?: string;
+    /** `true` when `evaluateMessageSecurity()` was given a `readerAddress` and recovered protected `To`/`Cc`
+     * headers that don't include it - e.g. a genuinely signed message re-sent verbatim to someone it was
+     * never addressed to. Informational, orthogonal to `state` (a Bcc recipient legitimately sees this
+     * too), so a UI can say "this message wasn't addressed to you" next to an otherwise valid signature.
+     * `undefined` when no reader address was given or nothing protected was recovered. */
+    notAddressedToReader?: boolean;
     /** Present only for `"signature_failed"`: which verification step failed. */
     signatureFailureReason?: SignatureFailureReason;
     /** Present only when the message was encrypted but this device couldn't decrypt it (a wrong or
@@ -114,7 +122,24 @@ export interface SignerBindingInput {
     protectedHeaders: Pick<ProtectedHeaders, "from" | "to"> | undefined;
     /** The received message's outer header map (lowercased names), as `parseMimeEntity()` returns it. */
     outerHeaders: Record<string, string>;
+    /** Every outer header field in order (`parseMimeEntity()`'s `fields`) - checked for repeated
+     * `From`/`To`/`Cc`/`Sender`. Omitted, only the first-occurrence map above is available. */
+    outerFields?: MimeHeaderField[];
+    /** Every protected header field in order - checked for repeats the same way. */
+    protectedFields?: MimeHeaderField[];
     pinnedSignerFingerprint?: string;
+}
+
+/** Address header fields a message must carry at most once (RFC 5322 §3.6 allows exactly zero or one). */
+const SINGLETON_ADDRESS_FIELDS = ["from", "to", "cc", "sender"];
+
+function hasRepeatedAddressField(fields: MimeHeaderField[] | undefined): boolean {
+    const counts = new Map<string, number>();
+    for (const { name } of fields ?? []) {
+        const key = name.toLowerCase();
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return SINGLETON_ADDRESS_FIELDS.some((name) => (counts.get(name) ?? 0) > 1);
 }
 
 /** Checks 2-4 from this module's doc comment for an already cryptographically verified signature.
@@ -125,6 +150,9 @@ export async function checkSignerBinding(input: SignerBindingInput): Promise<Sig
     const certDer = input.signerCertificateDer ?? new Uint8Array();
     if (pinnedSignerFingerprint !== undefined && (await computeCertFingerprint(certDer)) !== pinnedSignerFingerprint.toLowerCase()) {
         return "untrusted_signer";
+    }
+    if (hasRepeatedAddressField(input.outerFields) || hasRepeatedAddressField(input.protectedFields)) {
+        return "header_mismatch";
     }
     const outerFrom = extractAddresses(outerHeaders["from"]);
     const protectedFrom = extractAddresses(protectedHeaders?.from);
@@ -143,13 +171,16 @@ export async function checkSignerBinding(input: SignerBindingInput): Promise<Sig
  * Evaluates one received message's raw MIME source (see `mailApi.ts`'s `getMessageRawContent()`) into
  * a security state + recovered plaintext. Never throws — a parse failure, wrong key, or unrecognized
  * content type all degrade to a result the caller can render directly.
+ *
+ * `readerAddress` - the unlocked mailbox's own address - enables `notAddressedToReader`.
  */
 export async function evaluateMessageSecurity(
     rawMime: string,
     unlocked: { encryptionPrivateKey?: CryptoKey; encryptionCertDer?: Uint8Array } | undefined,
     pinnedSignerFingerprint?: string,
+    readerAddress?: string,
 ): Promise<MessageSecurityResult> {
-    const { headers, body } = parseMimeEntity(rawMime);
+    const { headers, body, fields } = parseMimeEntity(rawMime);
     const rawContentType = headers["content-type"];
     if (!rawContentType) {
         return { state: "unprotected" };
@@ -166,19 +197,35 @@ export async function evaluateMessageSecurity(
         subject: headers["subject"],
     };
 
-    const checkSigner = (signerCertificateDer: Uint8Array | undefined, protectedHeaders: ProtectedHeaders | undefined) =>
-        checkSignerBinding({ signerCertificateDer, protectedHeaders, outerHeaders: headers, pinnedSignerFingerprint });
+    const checkSigner = (
+        signerCertificateDer: Uint8Array | undefined,
+        protectedHeaders: ProtectedHeaders | undefined,
+        protectedFields: MimeHeaderField[] | undefined,
+    ) => checkSignerBinding({ signerCertificateDer, protectedHeaders, outerHeaders: headers, outerFields: fields, protectedFields, pinnedSignerFingerprint });
+
+    const addressing = (protectedHeaders: ProtectedHeaders | undefined): Pick<MessageSecurityResult, "notAddressedToReader"> => {
+        const recipients = [...extractAddresses(protectedHeaders?.to), ...extractAddresses(protectedHeaders?.cc)];
+        if (!readerAddress || recipients.length === 0) {
+            return {};
+        }
+        return { notAddressedToReader: !recipients.includes(readerAddress.trim().toLowerCase()) };
+    };
 
     if (isSignedOnlyContentType(contentType.value)) {
         const parsed = await parseSignedOnlyMessage(rawContentType, body);
         if (!parsed.verified) {
             return { state: "signature_failed", signatureFailureReason: "invalid_signature" };
         }
-        const failure = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders);
+        const failure = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields);
         if (failure) {
             return { state: "signature_failed", signatureFailureReason: failure };
         }
-        return { state: "signed_verified", ...renderDisplayBody(parsed.displayBody), subject: parsed.protectedHeaders?.subject || undefined };
+        return {
+            state: "signed_verified",
+            ...renderDisplayBody(parsed.displayBody),
+            subject: parsed.protectedHeaders?.subject || undefined,
+            ...addressing(parsed.protectedHeaders),
+        };
     }
 
     if (isEncryptedContentType(contentType)) {
@@ -193,6 +240,7 @@ export async function evaluateMessageSecurity(
             ...renderDisplayBody(parsed.displayBody),
             headerTamperDetected: parsed.headerTamperDetected,
             subject: parsed.protectedHeaders?.subject || undefined,
+            ...addressing(parsed.protectedHeaders),
         };
         if (parsed.signatureVerified === undefined) {
             return { state: "encrypted", ...content };
@@ -200,7 +248,7 @@ export async function evaluateMessageSecurity(
         if (!parsed.signatureVerified) {
             return { state: "signature_failed", signatureFailureReason: "invalid_signature", ...content };
         }
-        const failure = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders);
+        const failure = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields);
         if (failure) {
             return { state: "signature_failed", signatureFailureReason: failure, ...content };
         }
