@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
 import {
     addPlugin,
+    expectedPlanOf,
     getPluginStatus,
     getPluginUpdates,
     listPluginNamespaces,
@@ -52,6 +53,28 @@ describe("pluginsApi", () => {
             expect.objectContaining({ method: "PUT", body: JSON.stringify({ version: 2, enabled: false, settings: { "mail:x": null } }) }),
         );
         expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/p1", expect.objectContaining({ method: "DELETE" }));
+    });
+
+    it("sends the confirmed plan with an add or update", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { uid: "p1" }));
+        const expectedPlan = expectedPlanOf({
+            install: [{ name: "@rapidmx/mapi", version: "1.0.0", integrity: "sha512-x", manifest: { apiVersion: 1, displayName: "MAPI" } }],
+            enable: ["@rapidmx/activesync"],
+        });
+        expect(expectedPlan).toEqual({ install: [{ name: "@rapidmx/mapi", version: "1.0.0" }], enable: ["@rapidmx/activesync"] });
+        await addPlugin("@rapidmx/autodiscover-plugin", "2.0.0", expectedPlan);
+        await updatePlugin("p1", { version: 2, enabled: true, expectedPlan: { install: [], enable: [] } });
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/system/plugins",
+            expect.objectContaining({
+                method: "POST",
+                body: JSON.stringify({ name: "@rapidmx/autodiscover-plugin", packageVersion: "2.0.0", expectedPlan }),
+            }),
+        );
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/system/plugins/p1",
+            expect.objectContaining({ method: "PUT", body: JSON.stringify({ version: 2, enabled: true, expectedPlan: { install: [], enable: [] } }) }),
+        );
     });
 
     it("plans a change, optionally at a version", async () => {

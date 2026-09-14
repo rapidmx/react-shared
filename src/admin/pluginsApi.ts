@@ -128,6 +128,19 @@ export interface AddPluginResult {
     dependencies: Plugin[];
 }
 
+/** The other plugins a previewed change was confirmed to install and enable (from its `PluginChangePlan`). The server
+ * refuses the change (409) when what it would do now differs, e.g. because a new dependency appeared since. Send empty
+ * lists to require that nothing else is installed or enabled. */
+export interface PluginExpectedPlan {
+    install: { name: string; version: string }[];
+    enable: string[];
+}
+
+/** The `expectedPlan` to send for a change previewed as `plan`. */
+export function expectedPlanOf(plan: Pick<PluginChangePlan, "install" | "enable">): PluginExpectedPlan {
+    return { install: plan.install.map(({ name, version }) => ({ name, version })), enable: [...plan.enable] };
+}
+
 export interface UpdatePluginInput {
     /** The row's optimistic-lock counter. */
     version?: number;
@@ -135,6 +148,8 @@ export interface UpdatePluginInput {
     enabled?: boolean;
     /** A `null` value clears a setting back to the plugin's own default. */
     settings?: Record<string, PluginSettingValue | null>;
+    /** What a previewed version change or enable was confirmed to also install and enable. */
+    expectedPlan?: PluginExpectedPlan;
 }
 
 const BASE = "/system/plugins";
@@ -180,9 +195,10 @@ export function planPluginChange(name: string, packageVersion?: string): Promise
 }
 
 /** Adds a plugin, at its latest version unless `packageVersion` is given, installing and enabling the plugins it
- * requires first. Refused (409) when a requirement conflicts with an installed plugin's version. */
-export function addPlugin(name: string, packageVersion?: string): Promise<AddPluginResult> {
-    return apiFetch(BASE, { method: "POST", body: JSON.stringify({ name, packageVersion }) });
+ * requires first. Refused (409) when a requirement conflicts with an installed plugin's version, or when
+ * `expectedPlan` is given and no longer matches what adding it would install and enable. */
+export function addPlugin(name: string, packageVersion?: string, expectedPlan?: PluginExpectedPlan): Promise<AddPluginResult> {
+    return apiFetch(BASE, { method: "POST", body: JSON.stringify({ name, packageVersion, expectedPlan }) });
 }
 
 export function updatePlugin(uid: string, input: UpdatePluginInput): Promise<Plugin> {
