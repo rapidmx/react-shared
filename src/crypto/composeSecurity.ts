@@ -19,8 +19,7 @@
  * not a guarantee. A real fix would be a restapi endpoint exposing which domains a server actually
  * controls; until then this is a disclosed approximation, not a silent one.
  */
-import type { EncryptionPolicy, KeyLookupResult, PolicyState, PublicKey } from "./keyvaultApi.js";
-import { findActivePublicKey } from "./keyvaultApi.js";
+import { findActivePublicKey, type EncryptionPolicy, type KeyLookupResult, type PolicyState, type PublicKey } from "./keyvaultApi.js";
 
 export type RecipientTier = "sameOrg" | "federated" | "external";
 

@@ -41,7 +41,6 @@ import {
     setMessageLabels,
     setMessageRead,
     setMessageRequestReceipt,
-    setMessageScheduledSendTime,
     stopImpersonating,
     updateFolder,
     updateMailbox,
@@ -490,20 +489,6 @@ describe("setMessageLabels", () => {
     });
 });
 
-describe("setMessageScheduledSendTime", () => {
-    it("PUTs the message's uid/version with the scheduled time", async () => {
-        const fetchMock = mockFetch(() => jsonResponse(200, { ...message, scheduledSendTime: "2026-06-01T09:00:00.000Z" }));
-        await setMessageScheduledSendTime(message, "2026-06-01T09:00:00.000Z");
-        expect(fetchMock).toHaveBeenCalledWith(
-            "/api/mail/messages/m1",
-            expect.objectContaining({
-                method: "PUT",
-                body: JSON.stringify({ uid: "m1", version: 0, scheduledSendTime: "2026-06-01T09:00:00.000Z" }),
-            }),
-        );
-    });
-});
-
 describe("cancelScheduledSend", () => {
     it("PUTs the message's uid/version, clearing scheduledSendTime and moving it into the given Drafts folder", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, { ...message, folderUid: "f-drafts", scheduledSendTime: undefined }));
@@ -795,6 +780,16 @@ describe("sendMessage", () => {
         const result = await sendMessage("m/1");
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m%2F1/send", expect.objectContaining({ method: "POST" }));
         expect(result).toEqual(message);
+        expect(fetchMock.mock.calls[0][1]).not.toHaveProperty("body");
+    });
+
+    it("sends a scheduled time in the send request's body", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { ...message, scheduledSendTime: "2026-06-01T09:00:00.000Z" }));
+        await sendMessage("m1", { scheduledSendTime: "2026-06-01T09:00:00.000Z" });
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/messages/m1/send",
+            expect.objectContaining({ method: "POST", body: JSON.stringify({ scheduledSendTime: "2026-06-01T09:00:00.000Z" }) }),
+        );
     });
 });
 

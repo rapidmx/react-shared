@@ -23,7 +23,7 @@ interface TestIdentity {
 }
 
 async function generateTestIdentity(cn: string, keyUsage: "sign" | "encrypt"): Promise<TestIdentity> {
-    const keys = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
+    const keys = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]));
     const cert = await x509.X509CertificateGenerator.createSelfSigned({
         serialNumber: "01",
         name: `CN=${cn}`,

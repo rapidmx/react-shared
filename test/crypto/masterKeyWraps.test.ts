@@ -89,7 +89,7 @@ describe("buildRecoveryWraps", () => {
 });
 
 async function generateEscrowScopeIdentity(): Promise<{ certDer: Uint8Array; privateKey: CryptoKey }> {
-    const keys = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
+    const keys = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]));
     const cert = await x509.X509CertificateGenerator.createSelfSigned({
         serialNumber: "01",
         name: "CN=Escrow Scope",

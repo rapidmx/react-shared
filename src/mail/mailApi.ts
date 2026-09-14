@@ -419,8 +419,8 @@ export interface Message {
      * best-effort (see that function's own doc comment), so this is the only signal a caller gets;
      * there is no separate "recalled successfully"/"failed" outcome synced onto the record itself. */
     recallRequestedAt?: string;
-    /** When set to a future time, `sendMessage()` defers relay until then instead of sending
-     * immediately — mirrors Outlook's "Do not deliver before". The message sits in the mailbox's
+    /** Set by `sendMessage()` with a future `scheduledSendTime` option, which defers relay until then instead of
+     * sending immediately — mirrors Outlook's "Do not deliver before". The message sits in the mailbox's
      * `outbox` folder (lazily created on the first scheduled send — never eagerly provisioned the way
      * Drafts/Sent Items are) until `@rapidmx/restapi`'s own `ScheduledSendJob` relays it and clears
      * this field. */
@@ -536,26 +536,9 @@ export function setMessageLabels(message: Message, labelUids: string[]): Promise
 }
 
 /**
- * Sets a draft's `scheduledSendTime` ahead of calling `sendMessage()` — `send()` itself is what actually
- * checks the field and defers relay (moving the message into Outbox) instead of sending immediately,
- * per `@rapidmx/restapi`'s own `BaseMessageRoute.send()`; this is an ordinary `PUT`, no dedicated
- * "schedule" endpoint exists.
- */
-export function setMessageScheduledSendTime(message: Message, scheduledSendTime: string): Promise<Message> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
-        method: "PUT",
-        body: JSON.stringify({ uid: message.uid, version: message.version, scheduledSendTime }),
-    });
-}
-
-/**
- * Cancels a scheduled send — clears `scheduledSendTime` and moves the message back into `folderUid`
- * (the mailbox's Drafts folder) in the same `PUT`. Clearing the field alone does not revert the earlier
- * move into Outbox — that only ever happened as a side effect of `send()`'s own deferred branch, never
- * automatically undone (confirmed directly in restapi's own source, not assumed) — so the caller must
- * resolve the Drafts folder uid itself and include it here. `scheduledSendTime` is sent as `null`, not
- * omitted: this framework's `PUT` merges only the fields present in the body, so an absent field would
- * leave the old value in place instead of clearing it.
+ * Cancels a scheduled send by moving the message out of Outbox into `draftsFolderUid` (the mailbox's Drafts
+ * folder, which the caller resolves). The server clears `scheduledSendTime` itself on any move out of Outbox;
+ * the `null` sent here is accepted and ignored.
  */
 export function cancelScheduledSend(message: Message, draftsFolderUid: string): Promise<Message> {
     return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
@@ -567,7 +550,7 @@ export function cancelScheduledSend(message: Message, draftsFolderUid: string): 
 /**
  * Sets a draft's `requestReceipt` ahead of calling `sendMessage()`, overriding the mailbox's own
  * `alwaysRequestReceiptInternal`/`External` defaults for this one message — same ordinary-`PUT`-before-
- * `send()` convention as `setMessageScheduledSendTime()`.
+ * `send()` convention.
  */
 export function setMessageRequestReceipt(message: Message, requestReceipt: boolean): Promise<Message> {
     return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
@@ -710,9 +693,22 @@ export function assembleDraftRaw(messageUid: string, input: AssembleDraftRawInpu
     });
 }
 
-/** Scans, relays, and moves an already-assembled draft into Sent Items. */
-export function sendMessage(messageUid: string): Promise<Message> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(messageUid)}/send`, { method: "POST" });
+/** Options for `sendMessage()`. */
+export interface SendMessageOptions {
+    /** A future time (ISO 8601) to queue the message in Outbox until, instead of sending now. */
+    scheduledSendTime?: string;
+}
+
+/**
+ * Scans, relays, and moves an already-assembled draft into Sent Items - or, with a future
+ * `scheduledSendTime`, queues it in Outbox for `@rapidmx/restapi`'s `ScheduledSendJob`. A message already in
+ * Outbox or Sent Items is refused (409); move it back to Drafts first.
+ */
+export function sendMessage(messageUid: string, options?: SendMessageOptions): Promise<Message> {
+    return apiFetch(`/mail/messages/${encodeURIComponent(messageUid)}/send`, {
+        method: "POST",
+        ...(options?.scheduledSendTime ? { body: JSON.stringify({ scheduledSendTime: options.scheduledSendTime }) } : {}),
+    });
 }
 
 /**

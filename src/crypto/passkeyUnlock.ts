@@ -65,7 +65,7 @@ export async function registerPasskeyForUnlock(rpId: string, userId: Uint8Array,
             // ES256 - matches this system's P-256 default elsewhere (see crypto/keys.ts).
             pubKeyCredParams: [{ type: "public-key", alg: -7 }],
             authenticatorSelection: { residentKey: "preferred", userVerification: "required" },
-            extensions: { prf: {} } as AuthenticationExtensionsClientInputs,
+            extensions: { prf: {} },
         },
     })) as PublicKeyCredential;
 
@@ -90,7 +90,7 @@ export async function deriveFromPasskey(rpId: string, credentialId: string, salt
             challenge: challenge as BufferSource,
             allowCredentials: [{ id: fromBase64Url(credentialId) as BufferSource, type: "public-key" }],
             userVerification: "required",
-            extensions: { prf: { eval: { first: salt as BufferSource } } } as AuthenticationExtensionsClientInputs,
+            extensions: { prf: { eval: { first: salt as BufferSource } } },
         },
     })) as PublicKeyCredential;
 
