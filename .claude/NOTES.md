@@ -629,3 +629,59 @@ against the pre-fix source; the rest by reading) and is pinned by a regression t
 - Not a finding but noticed: a certificate with a SAN that has only dNSName entries still falls back to an
   email-shaped CN (RFC 5280 would treat the SAN as authoritative). Left as-is; worth a look.
 - web-client's react-shared patch was regenerated from this dist.
+
+### 2026-09-14 — Round-5 review fixes (S/MIME trust, signed-part scope, key session lockout/races, contracts)
+
+Every finding was re-checked against the source first; none turned out false, none skipped. S/MIME regressions
+live in `test/crypto/round5Regressions.test.ts`, the rest next to each module's tests. Final full run: 81 files /
+910 tests, coverage 100% statements/functions/lines, 99.39% branches (threshold 98); `tsc` and `yarn lint` clean.
+
+- **Self-signed "Signed & verified" (HIGH).** There is no chain validation, so a valid signature + a certificate
+  naming `From` proves nothing without a pin. `MessageSecurityState` gains `"signed_unverified_signer"` and
+  `"encrypted_unverified_signer"` (BREAKING for exhaustive `Record<MessageSecurityState, ...>` maps - web-client's
+  `STATE_BADGE` must add both). Verified states now require a pin match: the caller's
+  `pinnedSignerFingerprints` (3rd param, now `string | string[]`) or the unlocked mailbox's own
+  `signingFingerprint` (the `unlocked` param type gained that optional field; `UnlockedKeys` already has it). A
+  supplied pin that doesn't match is still `signature_failed`/`untrusted_signer`; the mailbox's own key alone never
+  makes a mismatch a failure. Results carry `signerFingerprint`/`signerEmails` whenever the signature itself was
+  valid. Pin sources: `keyvaultApi.signingKeyFingerprints(keys)` (unrevoked sign keys, expired kept, lowercased;
+  re-exported from `messageSecurity.ts`), `contactsApi.pinnedSigningFingerprintsFor(contacts, address)` and
+  `contactsApi.fetchPinnedSigningFingerprints(folderUids, address)` (pages `listContacts`, 500/page, max 20 pages
+  per folder). Contact `keys` are writable only by restapi key discovery (`BaseContactRoute` rejects client
+  writes), so they are genuine TOFU pins; the helper never calls `lookupKeys()` (no Discovery on receipt). There
+  is no server endpoint to pin a signer from the client, so "trust this signer" needs restapi work.
+  `checkSignerBinding()` keeps "no pin = pin check skipped" (documented as not establishing trust).
+- **Unsigned content under the badge (HIGH).** `parseSignedOnlyMessage()` requires exactly two parts (a third
+  part is `invalid_signature`). With RFC 9788 protected headers present, `checkSignerBinding()` now also compares
+  the Cc address set (both paths) and - with new `compareSubject: true`, used for signed-only - the Subject
+  (RFC 2047-decoded, whitespace-normalized); a difference is `header_mismatch`. Mailing lists that tag subjects
+  will now show those as failed. Results expose `protectedHeaders` (`MessageProtectedHeaders`: from/to/cc?/
+  subject; absent for legacy senders, whose outer headers were never signed) and `attachments` (new
+  `mime.extractAttachments()` / `MimeAttachment` with lazy `decode()`; also on `ParsedSignedOnlyMessage`/
+  `ParsedEncryptedMessage`).
+- **Unlock lockout (HIGH).** `unlockWithPassword()` now resolves `UnlockResult { unopenableKeys }`: a signing key
+  that won't open/import under the (correct) master key is skipped and listed. The password wrap is opened
+  first, so its failure stays the wrong-password signal (unchanged rejection); an encryption key that won't open
+  rejects with new `UnopenableEncryptionKeyError { fingerprint, cause }` instead of the raw AEAD error.
+- **Stale objects after lock / unlock racing a lock (MEDIUM/LOW).** The store tracks every `UnlockedKeys` it handed
+  out per mailbox; `destroyUnlockedKeys()` destroys all of them (still no zeroing on a plain re-unlock). A
+  per-mailbox lock generation (plus a destroy-all generation) is snapshotted at unlock start; if it moved, the
+  unlock zeroes its master key and throws `KeysLockedError`.
+- **Destroyed mid-await (LOW).** `rewrapPrivateKeysUnderNewMasterKey()` copies the handles first and re-checks
+  `destroyed` before returning (zeroes the new MK, throws). `searchEncryptedCandidates()` re-checks before each
+  decrypt and before building results.
+- **DST-gap exception shift (LOW).** `saveEventSeries()` shifts an exception/`recurrenceId` from its nominal wall
+  time (occurrence date + master's time of day, verified by round-tripping to the stored instant), falling back
+  to the instant's own wall time for an instant the rule couldn't generate.
+- **MIME (LOW).** QP decode decides bytes-vs-UTF-8 once per input. `encodeAddressListHeaderValue()` keeps group
+  syntax (`label:` ... `;`, label encoded as a phrase; a `:` only opens a group when a `;` follows; `:` inside
+  `<>` ignored).
+- **vCard (LOW).** Unfold first, then split on `^[ \t]*BEGIN:VCARD[ \t]*$` (multiline, case-insensitive).
+- **Contracts.** `Message` gains `scheduledSendAttempts`/`scheduledSendError`/`scheduledSendRelayedAt`/
+  `scheduledSendLeaseExpiresAt`; `DataSubjectErasureStatus` += `in_progress`; `MatterExportStatus` += `processing`;
+  `QuarantineReason` += `transport_rule`; `processingAttempts?` on matter-export/data-export/mailbox-import
+  requests. Other unions checked against restapi `models/types.ts` - no further drift. `getBookingSlots` already
+  passes `from`/`to`. `listAttachments` still sends `folderUid` + `messageUid` (restapi now lists by message and
+  ignores `folderUid`). `enrollKey()` rejects with new `VaultAlreadyInitializedError` (extends `ApiRequestError`,
+  status 409) when wraps were supplied, the server answered 409, and a re-read of the vault confirms it has wraps
+  (so a lost optimistic-lock 409 isn't misreported).

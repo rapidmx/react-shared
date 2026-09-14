@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
+import { ApiRequestError } from "../../src/util/api.js";
 import {
     addMasterKeyWrap,
     checkSignEnrollmentStatus,
@@ -16,6 +17,7 @@ import {
     removeMasterKeyWrap,
     startSignEnrollment,
     updateEncryptionPolicy,
+    VaultAlreadyInitializedError,
 } from "../../src/crypto/keyvaultApi.js";
 
 afterEach(() => {
@@ -51,6 +53,42 @@ describe("enrollKey", () => {
             "/api/mail/mailboxes/mb1/keyvault/keys",
             expect.objectContaining({ method: "POST", body: JSON.stringify(input) }),
         );
+    });
+
+    describe("a 409 (round-5: vault already set up)", () => {
+        const wrap = { method: "password" as const, ciphertext: "c", nonce: "n", salt: "s", kdf: "k", schemeVersion: 1, createdAt: 1 };
+        const input = { useType: "encrypt" as const, csr: "csr-pem", wrappedKey: { ciphertext: "c", nonce: "n", algorithm: "AES-256-GCM" }, masterKeyWraps: [wrap] };
+
+        function routes(vault: () => Response) {
+            return mockFetch((url, init) =>
+                init.method === "POST" ? jsonResponse(409, { message: "already initialized", code: "IDENTIFIER_EXISTS" }) : vault(),
+            );
+        }
+
+        it("rejects with VaultAlreadyInitializedError when wraps were supplied and the vault really has wraps", async () => {
+            routes(() => jsonResponse(200, { wrappedKeys: [], masterKeyWraps: [wrap] }));
+            const err = await enrollKey("mb1", input).catch((e: unknown) => e);
+            expect(err).toBeInstanceOf(VaultAlreadyInitializedError);
+            expect(err).toBeInstanceOf(ApiRequestError);
+            expect(err).toMatchObject({ status: 409, code: "IDENTIFIER_EXISTS", message: "already initialized", name: "VaultAlreadyInitializedError" });
+        });
+
+        it("rethrows the plain ApiRequestError when the vault has no wraps, can't be read, or no wraps were supplied", async () => {
+            routes(() => jsonResponse(200, { wrappedKeys: [], masterKeyWraps: [] }));
+            const noWraps = await enrollKey("mb1", input).catch((e: unknown) => e);
+            expect(noWraps).toBeInstanceOf(ApiRequestError);
+            expect(noWraps).not.toBeInstanceOf(VaultAlreadyInitializedError);
+            vi.unstubAllGlobals();
+
+            routes(() => jsonResponse(404, { message: "no vault" }));
+            expect(await enrollKey("mb1", input).catch((e: unknown) => e)).not.toBeInstanceOf(VaultAlreadyInitializedError);
+            vi.unstubAllGlobals();
+
+            const fetchMock = routes(() => jsonResponse(200, { wrappedKeys: [], masterKeyWraps: [wrap] }));
+            const err = await enrollKey("mb1", { ...input, masterKeyWraps: undefined }).catch((e: unknown) => e);
+            expect(err).toMatchObject({ status: 409, name: "ApiRequestError" });
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+        });
     });
 });
 

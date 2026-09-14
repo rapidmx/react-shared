@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
-import { CalendarOccurrence } from "../../src/calendar/recurrence.js";
+import { CalendarOccurrence, expandOccurrences } from "../../src/calendar/recurrence.js";
 import {
     deleteEventOccurrence,
     deleteEventSeries,
@@ -116,6 +116,32 @@ describe("saveEventSeries", () => {
                 recurrenceRule: { freq: "weekly", interval: 1, exceptions: ["2026-12-07T00:00:00.000Z"] },
             });
             expect(putBody(fetchMock, "e1").recurrenceRule.exceptions).toEqual(["2026-12-07T14:00:00.000Z"]); // 09:00 EST
+        });
+
+        // Round-5 review: an exception for an occurrence pushed forward by a DST gap was shifted by its pushed
+        // instant, not the rule's wall-clock time, so the deleted occurrence reappeared after the move.
+        it("shifts a DST-gap exception by the rule's wall-clock time, so it still matches the moved rule's occurrence", async () => {
+            const gapMaster = {
+                ...master,
+                startDate: "2026-03-01T07:30:00.000Z", // Sun 02:30 EST
+                endDate: "2026-03-01T08:00:00.000Z",
+                // 2026-03-08 02:30 doesn't exist in New York; the generated occurrence is 03:30 EDT (07:30Z).
+                // 2026-03-15T10:00Z is a hand-made exception no occurrence has (06:00 EDT) - shifted by its own wall time.
+                recurrenceRule: { freq: "weekly" as const, interval: 1, byDay: ["SU" as const], exceptions: ["2026-03-08T07:30:00.000Z", "2026-03-15T10:00:00.000Z"] },
+            };
+            const fetchMock = mockFetch((url, init) => {
+                if (url === "/api/mail/calendar-events/e1" && !init?.method) return jsonResponse(200, gapMaster);
+                if (url.startsWith("/api/mail/calendar-events?")) return jsonResponse(200, []);
+                return jsonResponse(200, { ...gapMaster, ...JSON.parse(init.body as string) });
+            });
+            const saved = await saveEventSeries(occurrence(), { startDate: "2026-03-01T08:30:00.000Z", endDate: "2026-03-01T09:00:00.000Z" }); // 03:30 EST
+
+            const exceptions: string[] = putBody(fetchMock, "e1").recurrenceRule.exceptions;
+            expect(exceptions).toEqual(["2026-03-08T07:30:00.000Z", "2026-03-15T11:00:00.000Z"]);
+            // The moved series really does generate (and so now suppresses) the 2026-03-08 occurrence at that instant.
+            const generated = expandOccurrences({ ...saved, recurrenceRule: { ...saved.recurrenceRule!, exceptions: [] } }, new Date("2026-03-07T00:00:00Z"), new Date("2026-03-09T00:00:00Z"));
+            expect(generated.map((o) => o.startDate)).toEqual(["2026-03-08T07:30:00.000Z"]);
+            expect(expandOccurrences(saved, new Date("2026-03-07T00:00:00Z"), new Date("2026-03-09T00:00:00Z"))).toEqual([]);
         });
 
         it("reports detachedOccurrenceSyncFailed (without throwing) when a detached occurrence can't be updated or listed", async () => {

@@ -7,7 +7,7 @@
 
 import { apiFetch } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
-import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
+import { type EncryptionPreference, type PublicKey, signingKeyFingerprints } from "../crypto/keyvaultApi.js";
 
 export type ContactAddressKind = "home" | "work" | "other";
 
@@ -80,8 +80,44 @@ export function listContacts(folderUid: string, params: ListParams = {}): Promis
     return apiFetch(`/mail/contacts?${buildQuery(params, { folderUid, sort: JSON.stringify({ displayName: "ASC" }) })}`);
 }
 
+/** The pinned signing-key fingerprints of every contact in `contacts` with an email equal (case-insensitively) to
+ * `address` - see `keyvaultApi.ts`'s `signingKeyFingerprints()`. De-duplicated; `[]` when no contact matches or none
+ * has a pinned signing key. */
+export function pinnedSigningFingerprintsFor(contacts: Contact[], address: string): string[] {
+    const wanted = address.trim().toLowerCase();
+    const matching = contacts.filter((contact) => contact.emails.some((email) => email.address.trim().toLowerCase() === wanted));
+    return [...new Set(matching.flatMap((contact) => signingKeyFingerprints(contact.keys)))];
+}
+
+/** Page size and page cap for `fetchPinnedSigningFingerprints()` (500 is restapi's own `limit` cap). */
+export const PINNED_FINGERPRINT_PAGE_SIZE = 500;
+export const PINNED_FINGERPRINT_MAX_PAGES = 20;
+
 /**
- * Lists a folder's soft-deleted contacts (for an Outlook-style "Deleted" view) — `deleted` is an ordinary
+ * Fetches the pinned signing-key fingerprints for a message sender's `address` from the contacts in `folderUids`
+ * (the reader's contacts folders), for `evaluateMessageSecurity()`'s `pinnedSignerFingerprints`. Reads only what key
+ * discovery already stored on the reader's own contacts - never triggers a Discovery lookup, which must not happen
+ * on message receipt (it would leak read timing to the sender's server). Pages through each folder
+ * (`PINNED_FINGERPRINT_PAGE_SIZE`, at most `PINNED_FINGERPRINT_MAX_PAGES` pages per folder). A caller rendering many
+ * messages should cache the contact list and use `pinnedSigningFingerprintsFor()` instead.
+ */
+export async function fetchPinnedSigningFingerprints(folderUids: string[], address: string): Promise<string[]> {
+    const contacts: Contact[] = [];
+    for (const folderUid of folderUids) {
+        for (let page = 0; page < PINNED_FINGERPRINT_MAX_PAGES; page++) {
+            const batch = await listContacts(folderUid, { limit: PINNED_FINGERPRINT_PAGE_SIZE, page });
+            contacts.push(...batch);
+            if (batch.length < PINNED_FINGERPRINT_PAGE_SIZE) {
+                break;
+            }
+        }
+    }
+    return pinnedSigningFingerprintsFor(contacts, address);
+}
+
+/**
+ * Lists a folder's soft-deleted contacts
+ (for an Outlook-style "Deleted" view) — `deleted` is an ordinary
  * queryable field on `Contact` (a `RecoverableBaseEntity`), so this is the same `find()` the plain listing
  * above uses, just constrained to `deleted: true` instead of the framework's own default of excluding them.
  *

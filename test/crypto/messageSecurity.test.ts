@@ -58,7 +58,7 @@ describe("evaluateMessageSecurity", () => {
             const part = await buildSignedOnlyMessage("text/plain; charset=utf-8", "Hello, Bob.", HEADERS, alice.certDer, alice.privateKey);
             const rawMime = assembleOutboundMime(HEADERS, part);
 
-            const result = await evaluateMessageSecurity(rawMime, undefined);
+            const result = await evaluateMessageSecurity(rawMime, undefined, await computeCertFingerprint(alice.certDer));
             expect(result.state).toBe("signed_verified");
             expect(result.text).toBe("Hello, Bob.");
             expect(result.html).toBe('<pre style="white-space: pre-wrap; word-wrap: break-word; font-family: inherit">Hello, Bob.</pre>');
@@ -83,7 +83,7 @@ describe("evaluateMessageSecurity", () => {
             const rawMime = assembleOutboundMime(HEADERS, part);
 
             const wrongFingerprint = await computeCertFingerprint(someoneElse.certDer);
-            expect(await evaluateMessageSecurity(rawMime, undefined, wrongFingerprint)).toEqual({ state: "signature_failed", signatureFailureReason: "untrusted_signer" });
+            expect(await evaluateMessageSecurity(rawMime, undefined, wrongFingerprint)).toMatchObject({ state: "signature_failed", signatureFailureReason: "untrusted_signer" });
         });
 
         it("is signed_verified when a pinned fingerprint is supplied and matches the signer", async () => {
@@ -147,8 +147,12 @@ describe("evaluateMessageSecurity", () => {
             });
             const rawMime = assembleOutboundMime(HEADERS, part);
 
-            const result = await evaluateMessageSecurity(rawMime, { encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer });
+            const result = await evaluateMessageSecurity(rawMime, { encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer }, [
+                "0000",
+                await computeCertFingerprint(alice.certDer),
+            ]);
             expect(result.state).toBe("encrypted_verified");
+
             expect(result.text).toBe("Secret body.");
         });
 

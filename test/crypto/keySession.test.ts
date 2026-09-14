@@ -10,6 +10,7 @@ import {
     KeysLockedError,
     MASTER_KEY_AAD_PURPOSE,
     SIGNING_PRIVATE_KEY_AAD_PURPOSE,
+    UnopenableEncryptionKeyError,
     destroyUnlockedKeys,
     getUnlockedKeys,
     subscribeKeySession,
@@ -379,5 +380,130 @@ describe("subscribeKeySession", () => {
         microtaskSpy.mockRestore();
         unsubA();
         unsubB();
+    });
+});
+
+// Round-5 review: lockout support, stale objects surviving a lock, and an in-flight unlock restoring keys.
+describe("unlockWithPassword - round 5", () => {
+    function corruptWrap(vault: KeyVault, useType: "sign" | "encrypt"): KeyVault {
+        return {
+            ...vault,
+            wrappedKeys: vault.wrappedKeys.map((k) => (k.useType === useType ? { ...k, ciphertext: toBase64(new Uint8Array(64)) } : k)),
+        };
+    }
+
+    it("still unlocks when the signing key won't open, reporting it in unopenableKeys", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["sign", "encrypt"]);
+        getKeyVault.mockResolvedValue(corruptWrap(vault, "sign"));
+
+        const result = await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+
+        expect(result).toEqual({ unopenableKeys: ["fp-sign"] });
+        const unlocked = getUnlockedKeys(MAILBOX_UID)!;
+        expect(unlocked.signingPrivateKey).toBeUndefined();
+        expect(unlocked.signingFingerprint).toBeUndefined();
+        expect(unlocked.encryptionPrivateKey).toBeDefined();
+    });
+
+    it("skips a signing key whose wrap opens but isn't a valid PKCS#8 key", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["sign", "encrypt"]);
+        const unlockedVault = await (async () => {
+            // Re-seal garbage bytes under the real master key by unlocking once to recover it.
+            getKeyVault.mockResolvedValue(vault);
+            await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+            const mk = new Uint8Array(getUnlockedKeys(MAILBOX_UID)!.masterKey);
+            destroyUnlockedKeys();
+            const sealed = await sealWithKey(mk, new Uint8Array([9, 9, 9]), buildAad(MAILBOX_UID, SIGNING_PRIVATE_KEY_AAD_PURPOSE));
+            return { ...vault, wrappedKeys: vault.wrappedKeys.map((k) => (k.useType === "sign" ? { ...k, ...sealed } : k)) };
+        })();
+        getKeyVault.mockResolvedValue(unlockedVault);
+
+        await expect(unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD)).resolves.toEqual({ unopenableKeys: ["fp-sign"] });
+    });
+
+    it("returns an empty unopenableKeys when everything opens", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["sign", "encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        await expect(unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD)).resolves.toEqual({ unopenableKeys: [] });
+    });
+
+    it("fails with UnopenableEncryptionKeyError (not a wrong-password error) when the encryption key won't open", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["sign", "encrypt"]);
+        getKeyVault.mockResolvedValue(corruptWrap(vault, "encrypt"));
+
+        const err = await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(UnopenableEncryptionKeyError);
+        expect((err as UnopenableEncryptionKeyError).fingerprint).toBe("fp-encrypt");
+        expect((err as UnopenableEncryptionKeyError).cause).toBeDefined();
+        expect(getUnlockedKeys(MAILBOX_UID)).toBeUndefined();
+
+        const wrong = await unlockWithPassword(MAILBOX_UID, mailboxKeys, "the wrong password").catch((e: unknown) => e);
+        expect(wrong).not.toBeInstanceOf(UnopenableEncryptionKeyError);
+    });
+
+    it("destroys every object handed out for a mailbox, including ones a re-unlock replaced", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["sign", "encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const first = getUnlockedKeys(MAILBOX_UID)!;
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const second = getUnlockedKeys(MAILBOX_UID)!;
+        const listener = vi.fn();
+        const unsubscribe = subscribeKeySession(listener);
+
+        destroyUnlockedKeys(MAILBOX_UID);
+
+        for (const held of [first, second]) {
+            expect(held.destroyed).toBe(true);
+            expect(held.masterKey.every((b) => b === 0)).toBe(true);
+            expect(held.signingPrivateKey).toBeUndefined();
+            expect(held.encryptionPrivateKey).toBeUndefined();
+        }
+        expect(listener).toHaveBeenCalledTimes(1);
+        unsubscribe();
+    });
+
+    it.each([
+        ["this mailbox", () => destroyUnlockedKeys(MAILBOX_UID)],
+        ["every mailbox", () => destroyUnlockedKeys()],
+    ])("throws KeysLockedError and zeroes the master key when %s is locked mid-unlock", async (_label, lock) => {
+        const { vault, mailboxKeys } = await enrollForTest(["sign", "encrypt"]);
+        let release!: () => void;
+        getKeyVault.mockImplementation(
+            () =>
+                new Promise((resolve) => {
+                    release = () => resolve(vault);
+                }),
+        );
+        const fills = vi.spyOn(Uint8Array.prototype, "fill");
+        const pending = unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        await Promise.resolve();
+        lock();
+        release();
+
+        await expect(pending).rejects.toBeInstanceOf(KeysLockedError);
+        expect(getUnlockedKeys(MAILBOX_UID)).toBeUndefined();
+        const zeroed = fills.mock.contexts.filter((target, i) => fills.mock.calls[i][0] === 0 && (target as Uint8Array).length === 32);
+        expect(zeroed.length).toBe(1);
+        expect((zeroed[0] as Uint8Array).every((b) => b === 0)).toBe(true);
+        fills.mockRestore();
+    });
+
+    it("a lock of another mailbox doesn't cancel an in-flight unlock", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["encrypt"]);
+        let release!: () => void;
+        getKeyVault.mockImplementation(
+            () =>
+                new Promise((resolve) => {
+                    release = () => resolve(vault);
+                }),
+        );
+        const pending = unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        await Promise.resolve();
+        destroyUnlockedKeys("some-other-mailbox");
+        release();
+
+        await expect(pending).resolves.toEqual({ unopenableKeys: [] });
+        expect(getUnlockedKeys(MAILBOX_UID)).toBeDefined();
     });
 });

@@ -312,7 +312,8 @@ export interface SearchEncryptedCandidatesOptions {
  * message's own `Message.hasAttachments` (fetched via `getMessage()` before decrypting, so a mismatch
  * never pays for a decrypt). The candidates endpoint accepts neither filter, so both are applied here.
  *
- * Returns `[]` (never throws) when `unlocked` is absent or already destroyed (`UnlockedKeys.destroyed`) - nothing can be decrypted without it, so
+ * Returns `[]` (never throws) when `unlocked` is absent or destroyed (`UnlockedKeys.destroyed`, checked on
+ * entry, before each decrypt and again before building results) - nothing can be decrypted without it, so
  * there is nothing this tier can contribute - or when the query has no free text and no structured
  * filter at all, mirroring `BaseSearchRoute`'s own "at least one of q or a filter" requirement rather
  * than pulling a pointless full-mailbox candidate set.
@@ -352,11 +353,18 @@ export async function searchEncryptedCandidates(
                 }
             }
             const rawMime = await getMessageRawContent(candidate.entityUid);
+            if (unlocked.destroyed) {
+                return undefined;
+            }
             const security: MessageSecurityResult = await evaluateMessageSecurity(rawMime, unlocked);
             return { entityUid: candidate.entityUid, security };
         },
     );
 
+    if (unlocked.destroyed) {
+        // Locked while candidates were being fetched/decrypted - don't surface decrypted content after a lock.
+        return [];
+    }
     const subjectFilter = parsed.subject?.toLowerCase();
     const results: SearchResult[] = [];
     for (const outcome of settled) {

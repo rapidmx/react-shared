@@ -10,7 +10,7 @@
  * certificates — the server never sees an unwrapped private key or master key; see `crypto/masterKey.ts`
  * and `crypto/keys.ts` for the client-side cryptography that produces the values passed here.
  */
-import { apiFetch } from "../util/api.js";
+import { ApiRequestError, apiFetch } from "../util/api.js";
 
 /** A cryptographic public key used to sign or encrypt messages — safe to expose publicly. Mirrors
  * `@rapidmx/restapi`'s `PublicKey` type exactly. */
@@ -96,7 +96,16 @@ export function findActivePublicKey(keys: PublicKey[], useType: "sign" | "encryp
         .sort((a, b) => b.notBefore - a.notBefore)[0];
 }
 
+/** The fingerprints (lowercased) of every signing key in `keys` that hasn't been revoked - the trusted pins to pass
+ * to `messageSecurity.ts`'s `evaluateMessageSecurity()` for a `Contact` (its TOFU-pinned `keys`, which only key
+ * discovery can write) or a `Mailbox` (its own `keys`). Expired keys are kept: mail signed while a key was valid
+ * stays verifiable after it expires. */
+export function signingKeyFingerprints(keys: PublicKey[] | undefined): string[] {
+    return (keys ?? []).filter((key) => key.useType === "sign" && !key.revokedAt).map((key) => key.fingerprint.toLowerCase());
+}
+
 export interface EnrollKeyInput {
+
     useType: "sign" | "encrypt";
     /** PEM-encoded PKCS#10 CSR — required (and only meaningful) for `useType: "encrypt"`; the server
      * calls its own internal CA against this CSR. */
@@ -108,13 +117,38 @@ export interface EnrollKeyInput {
     masterKeyWraps?: MasterKeyWrap[];
 }
 
+/**
+ * Thrown by `enrollKey()` when `masterKeyWraps` were supplied (a first-time vault setup) but the mailbox's vault
+ * already has master-key wraps - e.g. another device or tab finished setting it up first. restapi answers `409`;
+ * this subclass (still an `ApiRequestError` with `status` 409) is only used once a re-read of the vault confirms it
+ * really has wraps, so an unrelated `409` (a lost optimistic-lock race) isn't mistaken for it. A caller should
+ * unlock the existing vault instead of enrolling a new master key.
+ */
+export class VaultAlreadyInitializedError extends ApiRequestError {
+    constructor(message: string, code?: string) {
+        super(message, 409, code);
+        this.name = "VaultAlreadyInitializedError";
+    }
+}
+
 /** Enrolls a new signing or encryption key. See `EnrollKeyInput`'s own doc comments for which fields
- * matter for which `useType`. */
-export function enrollKey(mailboxUid: string, input: EnrollKeyInput): Promise<KeyVault> {
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys`, {
-        method: "POST",
-        body: JSON.stringify(input),
-    });
+ * matter for which `useType`. Rejects with `VaultAlreadyInitializedError` when `masterKeyWraps` were supplied
+ * but the vault is already set up (see that class). */
+export async function enrollKey(mailboxUid: string, input: EnrollKeyInput): Promise<KeyVault> {
+    try {
+        return await apiFetch<KeyVault>(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys`, {
+            method: "POST",
+            body: JSON.stringify(input),
+        });
+    } catch (err) {
+        if (err instanceof ApiRequestError && err.status === 409 && input.masterKeyWraps?.length) {
+            const vault = await getKeyVault(mailboxUid).catch(() => undefined);
+            if (vault && vault.masterKeyWraps.length > 0) {
+                throw new VaultAlreadyInitializedError(err.message, err.code);
+            }
+        }
+        throw err;
+    }
 }
 
 export interface SignEnrollmentRequest {

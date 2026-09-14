@@ -37,7 +37,9 @@ import {
     encodeAddressListHeaderValue,
     encodeUnstructuredHeaderValue,
     isBinaryString,
+    extractAttachments,
     extractDisplayBody,
+    MimeAttachment,
     MimeHeaderField,
     parseMimeEntity,
     parseParameterizedHeader,
@@ -190,6 +192,8 @@ export interface ParsedSignedOnlyMessage {
     bodyText?: string;
     /** The displayable body: `html` only for a real text/html part, `text` for text/plain. */
     displayBody?: DisplayBody;
+    /** The attachments inside the *signed* entity - the only ones the signature covers. */
+    attachments?: MimeAttachment[];
 }
 
 const SIGNATURE_CONTENT_TYPES = new Set(["application/pkcs7-signature", "application/x-pkcs7-signature"]);
@@ -199,14 +203,16 @@ const PKCS7_MIME_CONTENT_TYPES = new Set(["application/pkcs7-mime", "application
  * throws) for anything malformed — same "degrade to a failed-signature state, don't crash" contract as
  * `smime.ts`'s own verify functions. Accepts foreign-MUA framing: unquoted/case-varied parameters,
  * preamble/epilogue, transport padding, and a signed part stored with bare-LF line endings (retried in
- * canonical CRLF form, which is what RFC 8551 §3.1.1 says was actually signed). */
+ * canonical CRLF form, which is what RFC 8551 §3.1.1 says was actually signed). The body must hold exactly two
+ * parts (RFC 1847 §2.1): a third part isn't covered by the signature, so a message carrying one is rejected
+ * rather than shown - partly unsigned - under a verified badge. */
 export async function parseSignedOnlyMessage(contentType: string, body: string): Promise<ParsedSignedOnlyMessage> {
     const boundary = parseParameterizedHeader(contentType).params["boundary"];
     if (!boundary) {
         return { verified: false };
     }
     const parts = splitMultipart(body, boundary);
-    if (parts.length < 2) {
+    if (parts.length !== 2) {
         return { verified: false };
     }
     const [innerText, signaturePartText] = parts;
@@ -253,6 +259,7 @@ export async function parseSignedOnlyMessage(contentType: string, body: string):
         bodyContentType: inner.headers["content-type"],
         bodyText: decodeBodyText(inner),
         displayBody: extractDisplayBody(inner),
+        attachments: extractAttachments(inner),
     };
 }
 
@@ -346,6 +353,8 @@ export interface ParsedEncryptedMessage {
     /** `true` when decryption was refused because the content encryption isn't AEAD (see `smime.ts`'s
      * `UnsupportedContentEncryptionError`) - lets the caller explain that instead of "wrong key". */
     unsupportedContentEncryption?: boolean;
+    /** The attachments inside the decrypted (and, when signed, verified) entity. */
+    attachments?: MimeAttachment[];
 }
 
 /** RFC 9788's `HP-Outer:` field-copy fields to actually compare - a subset of `ProtectedHeaders`
@@ -442,6 +451,7 @@ export async function parseEncryptedMessage(
         bodyContentType: entity.headers["content-type"],
         bodyText: decodeBodyText(entity),
         displayBody: extractDisplayBody(entity),
+        attachments: extractAttachments(entity),
         headerTamperDetected: compareTamper(entity.fields),
     };
 }

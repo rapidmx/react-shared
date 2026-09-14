@@ -118,6 +118,29 @@ describe("rewrapPrivateKeysUnderNewMasterKey", () => {
         await expect(rewrapPrivateKeysUnderNewMasterKey(MAILBOX_UID, stale)).rejects.toMatchObject({ name: "KeysLockedError" });
     });
 
+    it("throws KeysLockedError and zeroes the new MK when the keys are destroyed mid-rotation (round-5 review)", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["sign", "encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const unlocked = getUnlockedKeys(MAILBOX_UID)!;
+        const realExport = crypto.subtle.exportKey.bind(crypto.subtle);
+        const generated: Uint8Array[] = [];
+        const randomSpy = vi.spyOn(crypto, "getRandomValues");
+        const exportSpy = vi.spyOn(crypto.subtle, "exportKey").mockImplementation(async (format, key) => {
+            destroyUnlockedKeys(MAILBOX_UID);
+            return realExport(format as "pkcs8", key);
+        });
+
+        await expect(rewrapPrivateKeysUnderNewMasterKey(MAILBOX_UID, unlocked)).rejects.toMatchObject({ name: "KeysLockedError" });
+        // Both exports still ran on the handles captured up front, and the generated MK was zeroed.
+        expect(exportSpy).toHaveBeenCalledTimes(2);
+        generated.push(...randomSpy.mock.results.map((r) => r.value as Uint8Array).filter((v) => v.length === 32));
+        expect(generated.length).toBeGreaterThan(0);
+        expect(generated[0].every((b) => b === 0)).toBe(true);
+        exportSpy.mockRestore();
+        randomSpy.mockRestore();
+    });
+
     it("produces no wrapped entries when nothing is unlocked", async () => {
         const { mk, wrappedKeys } = await rewrapPrivateKeysUnderNewMasterKey(MAILBOX_UID, { masterKey: new Uint8Array(32) });
         expect(wrappedKeys).toEqual([]);

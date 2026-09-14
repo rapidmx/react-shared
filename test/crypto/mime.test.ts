@@ -118,6 +118,13 @@ describe("transfer-encoding decoding", () => {
         expect(new TextDecoder().decode(decodeQuotedPrintable("smile 😀=20ok €"))).toBe("smile 😀 ok €");
     });
 
+    // Round-5 review: the bytes-vs-UTF-8 choice was made per literal run, so in already-decoded text a run
+    // holding only Latin-1 (`é`) was written as a lone 0xE9 byte while a run with an emoji was UTF-8.
+    it("decides bytes vs UTF-8 once for the whole input, not per literal run", () => {
+        expect(new TextDecoder().decode(decodeQuotedPrintable("café=20😀"))).toBe("café 😀");
+        expect(Array.from(decodeQuotedPrintable("caf\xe9=20ok"))).toEqual([0x63, 0x61, 0x66, 0xe9, 0x20, 0x6f, 0x6b]);
+    });
+
     it("decodes a large quoted-printable body in linear time", () => {
         const body = "abc=3Ddef ".repeat(300_000);
         const started = performance.now();
@@ -215,6 +222,20 @@ describe("header value encoding", () => {
         expect(extractAddresses(encoded)).toEqual(["zoe@example.com", "j@example.com", "x@example.com", "plain@example.com", "a@example.com"]);
         expect(encoded).toContain('"Ann \\"A\\"" <a@example.com>');
         expect(decodeHeaderText(encoded)).toBe('Doe, Zoë <zoe@example.com>, Jürgen <j@example.com>, <x@example.com>, plain@example.com, "Ann \\"A\\"" <a@example.com>, José');
+    });
+
+    // Round-5 review: group syntax was split on commas only, so the label and `;` ended up inside mailboxes.
+    it("keeps RFC 5322 group syntax intact, encoding the group label as its own phrase", () => {
+        const encoded = encodeAddressListHeaderValue("Équipe: Zoë <z@example.com>, b@example.com;, c@example.com");
+        expect(encoded).not.toMatch(/[^\x20-\x7e\r\n]/);
+        expect(encoded).toMatch(/^=\?UTF-8\?B\?[^?]+\?=: =\?UTF-8\?B\?[^?]+\?= <z@example.com>, b@example.com;, c@example.com$/);
+        expect(decodeHeaderText(encoded)).toBe("Équipe: Zoë <z@example.com>, b@example.com;, c@example.com");
+        expect(extractAddresses(encoded)).toEqual(["z@example.com", "b@example.com", "c@example.com"]);
+        // An ASCII label is kept as written, an empty group stays empty, and a quoted label is unquoted to encode.
+        expect(encodeAddressListHeaderValue('Team: Zoë <z@example.com>; "Ünd, Co":;')).toMatch(/^Team: =\?UTF-8\?B\?[^?]+\?= <z@example.com>; =\?UTF-8\?B\?[^?]+\?=:;$/);
+        // A colon with no closing `;` is not a group, and a colon inside an angle-addr never opens one.
+        expect(decodeHeaderText(encodeAddressListHeaderValue("Dr: Zoë <z@example.com>"))).toBe("Dr: Zoë <z@example.com>");
+        expect(encodeAddressListHeaderValue("Zoë <@route:z@example.com>; x")).toMatch(/^=\?UTF-8\?B\?[^?]+\?= <@route:z@example.com>; x$/);
     });
 
     it("flattens CR/LF in an address list", () => {

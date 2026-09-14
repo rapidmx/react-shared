@@ -155,8 +155,8 @@ describe("PoC 2: signer certificate substitution via certificates[0]", () => {
         const raw = signedMime(["From: alice@example.com"], inner, signature, 'Content-Type: multipart/signed; boundary="b1"');
 
         const pin = await computeCertFingerprint(alice.certDer);
-        expect(await evaluateMessageSecurity(raw, undefined, pin)).toEqual({ state: "signature_failed", signatureFailureReason: "untrusted_signer" });
-        expect(await evaluateMessageSecurity(raw, undefined)).toEqual({ state: "signature_failed", signatureFailureReason: "signer_identity_mismatch" });
+        expect(await evaluateMessageSecurity(raw, undefined, pin)).toMatchObject({ state: "signature_failed", signatureFailureReason: "untrusted_signer" });
+        expect(await evaluateMessageSecurity(raw, undefined)).toMatchObject({ state: "signature_failed", signatureFailureReason: "signer_identity_mismatch" });
     });
 });
 
@@ -228,14 +228,22 @@ describe("signer identity binding", () => {
         const raw = assembleOutboundMime(headers, await buildSignedOnlyMessage("text/html", "<p>hi</p>", headers, alice.certDer, alice.privateKey));
         const pin = (await computeCertFingerprint(alice.certDer)).toUpperCase();
 
-        expect(await evaluateMessageSecurity(raw, undefined, pin)).toEqual({ state: "signed_verified", html: "<p>hi</p>", subject: "Real subject" });
+        expect(await evaluateMessageSecurity(raw, undefined, pin)).toEqual({
+            state: "signed_verified",
+            html: "<p>hi</p>",
+            subject: "Real subject",
+            protectedHeaders: { from: '"Alice, Example" <ALICE@example.com>', to: HEADERS.to, subject: "Real subject" },
+            attachments: [],
+            signerFingerprint: pin.toLowerCase(),
+            signerEmails: ["alice@example.com"],
+        });
     });
 
     it("is signer_identity_mismatch when the certificate doesn't name the From address", async () => {
         const alice = await generateIdentity("CN=alice@example.com");
         const headers = { ...HEADERS, from: "carol@example.com" };
         const raw = assembleOutboundMime(headers, await buildSignedOnlyMessage("text/plain", "hi", headers, alice.certDer, alice.privateKey));
-        expect(await evaluateMessageSecurity(raw, undefined)).toEqual({ state: "signature_failed", signatureFailureReason: "signer_identity_mismatch" });
+        expect(await evaluateMessageSecurity(raw, undefined)).toMatchObject({ state: "signature_failed", signatureFailureReason: "signer_identity_mismatch" });
     });
 
     it("is signer_identity_mismatch when From holds more than one address", async () => {
@@ -249,7 +257,7 @@ describe("signer identity binding", () => {
         const alice = await generateIdentity("CN=alice@example.com");
         const part = await buildSignedOnlyMessage("text/plain", "hi", HEADERS, alice.certDer, alice.privateKey);
         const raw = assembleOutboundMime({ ...HEADERS, from: "eve@example.com" }, part);
-        expect(await evaluateMessageSecurity(raw, undefined)).toEqual({ state: "signature_failed", signatureFailureReason: "header_mismatch" });
+        expect(await evaluateMessageSecurity(raw, undefined)).toMatchObject({ state: "signature_failed", signatureFailureReason: "header_mismatch" });
     });
 
     it("binds to the outer From for a foreign signed message without protected headers", async () => {
@@ -257,10 +265,15 @@ describe("signer identity binding", () => {
         const inner = ["Content-Type: text/plain; charset=utf-8", "", "<b>not markup</b>"].join(CRLF);
         const signature = await signDetached(new TextEncoder().encode(inner), alice.certDer, alice.privateKey);
 
-        const good = await evaluateMessageSecurity(signedMime(["From: Alice <alice@example.com>", "To: bob@example.com"], inner, signature), undefined);
+        const good = await evaluateMessageSecurity(signedMime(["From: Alice <alice@example.com>", "To: bob@example.com"], inner, signature), undefined, [
+            await computeCertFingerprint(alice.certDer),
+        ]);
         expect(good).toEqual({
             state: "signed_verified",
             text: "<b>not markup</b>",
+            attachments: [],
+            signerFingerprint: await computeCertFingerprint(alice.certDer),
+            signerEmails: ["alice@example.com"],
             html: '<pre style="white-space: pre-wrap; word-wrap: break-word; font-family: inherit">&lt;b&gt;not markup&lt;/b&gt;</pre>',
         });
         const spoofed = await evaluateMessageSecurity(signedMime(["From: carol@example.com"], inner, signature), undefined);
@@ -281,7 +294,7 @@ describe("signer identity binding", () => {
 
         it("is encrypted_verified when protected and outer From/To agree, even if only the Subject was rewritten", async () => {
             const result = await encryptedSigned(HEADERS, { ...HEADERS, subject: "[...]" });
-            expect(result).toMatchObject({ state: "encrypted_verified", html: "<p>secret</p>", subject: "Real subject" });
+            expect(result).toMatchObject({ state: "encrypted_unverified_signer", html: "<p>secret</p>", subject: "Real subject", signerEmails: ["alice@example.com"] });
         });
 
         it("is header_mismatch when the protected To disagrees with the outer To", async () => {
@@ -356,13 +369,13 @@ describe("foreign MIME framing", () => {
             "--xyz--",
             "epilogue",
         ].join(CRLF);
-        expect(await evaluateMessageSecurity(raw, undefined)).toEqual({ state: "signed_verified", html: "<p>café</p>" });
+        expect(await evaluateMessageSecurity(raw, undefined)).toMatchObject({ state: "signed_unverified_signer", html: "<p>café</p>" });
     });
 
     it("verifies a message whose line endings were converted to bare LF in storage", async () => {
         const alice = await generateIdentity("CN=alice@example.com");
         const raw = assembleOutboundMime(HEADERS, await buildSignedOnlyMessage("text/plain", "line 1\r\nline 2", HEADERS, alice.certDer, alice.privateKey));
-        const result = await evaluateMessageSecurity(raw.replace(/\r\n/g, "\n"), undefined);
+        const result = await evaluateMessageSecurity(raw.replace(/\r\n/g, "\n"), undefined, await computeCertFingerprint(alice.certDer));
         expect(result.state).toBe("signed_verified");
         // The body travels base64-encoded, so the storage conversion doesn't reach its own line endings.
         expect(result.text).toBe("line 1\r\nline 2");
@@ -387,7 +400,9 @@ describe("foreign MIME framing", () => {
     it("renders nothing (but still verifies) when the signed content has no displayable part", async () => {
         const alice = await generateIdentity("CN=alice@example.com");
         const raw = assembleOutboundMime(HEADERS, await buildSignedOnlyMessage("application/octet-stream", "AAAA", HEADERS, alice.certDer, alice.privateKey));
-        expect(await evaluateMessageSecurity(raw, undefined)).toEqual({ state: "signed_verified", subject: "Real subject" });
+        expect(await evaluateMessageSecurity(raw, undefined)).toMatchObject({ state: "signed_unverified_signer", subject: "Real subject", attachments: [{ contentType: "application/octet-stream" }] });
+        expect(await evaluateMessageSecurity(raw, undefined)).not.toHaveProperty("html");
+
     });
 });
 

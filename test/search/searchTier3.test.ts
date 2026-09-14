@@ -74,6 +74,28 @@ describe("searchEncryptedCandidates", () => {
         expect(fetchMock).not.toHaveBeenCalled();
     });
 
+    it("returns [] when unlocked is destroyed while candidates are being fetched/decrypted (round-5 review)", async () => {
+        const bob = await generateTestIdentity("bob@example.com");
+        const unlocked = { masterKey: new Uint8Array(32), encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer } as UnlockedKeys;
+        const raw = await buildEncryptedRawMime("Here is the quarterly budget figures.", HEADERS, bob);
+        mockFetch((url) => {
+            if (url.includes("/search/candidates")) {
+                return jsonResponse(200, {
+                    candidates: [
+                        { entityType: "message", entityUid: "m1" },
+                        { entityType: "message", entityUid: "m2" },
+                    ],
+                });
+            }
+            if (url.includes("/messages/m2/raw")) {
+                unlocked.destroyed = true;
+            }
+            return new Response(raw, { status: 200 });
+        });
+
+        expect(await searchEncryptedCandidates(baseParsedQuery({ text: "budget" }), unlocked)).toEqual([]);
+    });
+
     it("returns [] without making any request when the query has no free text and no structured filter", async () => {
         const bob = await generateTestIdentity("bob@example.com");
         const fetchMock = mockFetch(() => {

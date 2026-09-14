@@ -28,6 +28,12 @@ import {
 } from "./calendarApi.js";
 import { CalendarOccurrence, fromEventWallClock, toEventWallClock } from "./recurrence.js";
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function positiveModulo(value: number, modulus: number): number {
+    return ((value % modulus) + modulus) % modulus;
+}
+
 function addException(event: CalendarEvent, occurrenceStart: string): Promise<CalendarEvent> {
     const rule = event.recurrenceRule!;
     return updateCalendarEvent({
@@ -72,8 +78,18 @@ export async function saveEventSeries(occurrence: CalendarOccurrence, fields: Pa
     if (deltaWallMs === 0 && newTimezone === master.timezone && newAllDay === master.allDay) {
         return updateCalendarEvent(update);
     }
-    const shift = (instant: string) =>
-        new Date(fromEventWallClock(toEventWallClock(Date.parse(instant), master.timezone, master.allDay) + deltaWallMs, newTimezone, newAllDay)).toISOString();
+    // An occurrence is identified by its nominal wall-clock start (the rule's date + the master's time of day),
+    // not by the instant's own wall time: one that fell in a DST gap was pushed forward (02:30 -> 03:30 EDT),
+    // so shifting that pushed wall time would miss the occurrence the moved rule generates on that date.
+    const masterTimeOfDay = positiveModulo(oldStartWall, MS_PER_DAY);
+    const nominalWall = (instantMs: number): number => {
+        const wall = toEventWallClock(instantMs, master.timezone, master.allDay);
+        const dayStart = wall - positiveModulo(wall, MS_PER_DAY);
+        const candidates = [dayStart + masterTimeOfDay, dayStart - MS_PER_DAY + masterTimeOfDay];
+        // An instant the rule couldn't have generated (e.g. a hand-edited exception) shifts by its own wall time.
+        return candidates.find((candidate) => fromEventWallClock(candidate, master.timezone, master.allDay) === instantMs) ?? wall;
+    };
+    const shift = (instant: string) => new Date(fromEventWallClock(nominalWall(Date.parse(instant)) + deltaWallMs, newTimezone, newAllDay)).toISOString();
 
     const rule = fields.recurrenceRule ?? master.recurrenceRule;
     if (rule) {

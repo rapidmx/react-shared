@@ -31,38 +31,50 @@ export interface RewrappedPrivateKeys {
  * have no real enrolment path yet — see `KeyEnrollmentGate.tsx`'s own doc comment) simply produces one
  * `WrappedPrivateKey`, not two; this function never invents key material `unlocked` doesn't already
  * have decrypted. Throws `KeysLockedError` for an `UnlockedKeys` object that `destroyUnlockedKeys()` has
- * since destroyed (its private keys are gone, so a rotation would silently wrap nothing).
+ * since destroyed (its private keys are gone, so a rotation would silently wrap nothing) - checked on entry
+ * and again before returning, so a lock during the export/seal awaits also fails (the new master key is
+ * zeroed first).
  */
 export async function rewrapPrivateKeysUnderNewMasterKey(mailboxUid: string, unlocked: UnlockedKeys): Promise<RewrappedPrivateKeys> {
     if (unlocked.destroyed) {
         throw new KeysLockedError();
     }
+    // Captured before the first await: `destroyUnlockedKeys()` deletes these handles from `unlocked`, so
+    // re-reading them after an await would silently skip a key that was present when rotation started.
+    const { signingPrivateKey, signingFingerprint, encryptionPrivateKey, encryptionFingerprint } = unlocked;
     const mk = generateMasterKey();
     const wrappedKeys: WrappedPrivateKey[] = [];
 
-    if (unlocked.signingPrivateKey && unlocked.signingFingerprint) {
-        const raw = new Uint8Array(await crypto.subtle.exportKey("pkcs8", unlocked.signingPrivateKey));
+    if (signingPrivateKey && signingFingerprint) {
+        const raw = new Uint8Array(await crypto.subtle.exportKey("pkcs8", signingPrivateKey));
         const sealed = await sealWithKey(mk, raw, buildAad(mailboxUid, SIGNING_PRIVATE_KEY_AAD_PURPOSE));
+        raw.fill(0);
         wrappedKeys.push({
             ciphertext: sealed.ciphertext,
             nonce: sealed.nonce,
             algorithm: "AES-256-GCM",
-            fingerprint: unlocked.signingFingerprint,
+            fingerprint: signingFingerprint,
             useType: "sign",
         });
     }
 
-    if (unlocked.encryptionPrivateKey && unlocked.encryptionFingerprint) {
-        const raw = new Uint8Array(await crypto.subtle.exportKey("pkcs8", unlocked.encryptionPrivateKey));
+    if (encryptionPrivateKey && encryptionFingerprint) {
+        const raw = new Uint8Array(await crypto.subtle.exportKey("pkcs8", encryptionPrivateKey));
         const sealed = await sealWithKey(mk, raw, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));
+        raw.fill(0);
         wrappedKeys.push({
             ciphertext: sealed.ciphertext,
             nonce: sealed.nonce,
             algorithm: "AES-256-GCM",
-            fingerprint: unlocked.encryptionFingerprint,
+            fingerprint: encryptionFingerprint,
             useType: "encrypt",
         });
     }
 
+    if (unlocked.destroyed) {
+        // Locked mid-rotation: don't hand back a new master key wrapping keys the user just locked away.
+        mk.fill(0);
+        throw new KeysLockedError();
+    }
     return { mk, wrappedKeys };
 }

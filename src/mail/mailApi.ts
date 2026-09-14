@@ -208,7 +208,7 @@ export function deleteMailbox(uid: string, version: number): Promise<void> {
     return apiFetch(`/mail/mailboxes/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 }
 
-export type QuarantineReason = "infected" | "spam_policy" | "other";
+export type QuarantineReason = "infected" | "spam_policy" | "transport_rule" | "other";
 
 export interface QuarantineEntry {
     uid: string;
@@ -425,6 +425,18 @@ export interface Message {
      * Drafts/Sent Items are) until `@rapidmx/restapi`'s own `ScheduledSendJob` relays it and clears
      * this field. */
     scheduledSendTime?: string;
+    /** Consecutive failed `ScheduledSendJob` attempts for the current scheduled send - each failure pushes
+     * `scheduledSendTime` forward; cleared on success and when the job gives up. */
+    scheduledSendAttempts?: number;
+    /** Why `ScheduledSendJob` gave up on (or refused) this scheduled send. Set together with clearing
+     * `scheduledSendTime`, so the message stays in Outbox unsent - show it so the user can fix and resend.
+     * Cleared on a successful send. */
+    scheduledSendError?: string;
+    /** Set once the transport accepted this message; cleared when it is filed into Sent Items. */
+    scheduledSendRelayedAt?: string;
+    /** The in-flight marker of a send (the claim's lease expiry). While it lies in the future the message can't be
+     * moved out of Outbox. */
+    scheduledSendLeaseExpiresAt?: string;
     /** Absent means Focused — see `classifyMessage()` and `@rapidmx/restapi`'s own
      * `FocusedInboxUtils.classifyMessage()` doc comment for the full precedence rule this reflects. */
     inferenceClassification?: MessageClassification;

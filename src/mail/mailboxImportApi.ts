@@ -31,6 +31,9 @@ export interface MailboxImportRequest {
     importedCount?: number;
     failedCount?: number;
     errorMessage?: string;
+    /** How many times the server job has claimed this request into `"processing"` (a stalled claim is reclaimed
+     * back to `"pending"` until the job's max attempts, then marked `"failed"`). */
+    processingAttempts?: number;
 }
 
 export interface UploadMailboxImportInput {

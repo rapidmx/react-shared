@@ -4,43 +4,67 @@
 ///////////////////////////////////////////////////////////////////////////////
 /**
  * Evaluates a *received* message's raw MIME source into one of `specs/end-to-end_encryption.md`'s
- * "Message Security Indicators" five states, and recovers the plaintext body when applicable. Reads the
+ * "Message Security Indicators" states, and recovers the plaintext body when applicable. Reads the
  * outer envelope's own `Content-Type` (via `mime.ts`'s `parseMimeEntity()`) to decide whether the message
  * is `multipart/signed`, `application/pkcs7-mime; smime-type="enveloped-data"`, or neither.
  *
  * **What a verified state means.** `"signed_verified"`/`"encrypted_verified"` require ALL of: (1) a
  * cryptographically valid CMS signature (`smime.ts` - detached signatures carrying their own eContent are
- * rejected, and the signer certificate is the one matched to the SignerInfo, never simply the first
- * embedded certificate); (2) when `pinnedSignerFingerprint` is supplied, that signer certificate's
- * fingerprint matches it - and a supplied pin with no resolvable certificate fails closed; (3) the signer
+ * rejected, the signer certificate is the one matched to the SignerInfo, never simply the first embedded
+ * certificate, and a `multipart/signed` body must hold exactly the signed part and the signature); (2) the
+ * signer certificate's fingerprint is one the reader already trusts - a pinned `Contact` signing key passed
+ * as `pinnedSignerFingerprints`, or the unlocked mailbox's own `signingFingerprint`; (3) the signer
  * certificate names the sender: one of its email addresses (SAN rfc822Name, else subject emailAddress /
  * email-shaped CN) equals the single address in the protected `From` (or the outer `From` when the signed
- * content carries no protected headers, as with non-RFC 9788 senders); (4) the protected `From`/`To`
- * address sets (when present) equal the outer envelope's - the outer envelope is what the mail list and
- * reading pane display as the sender - and neither the outer envelope nor the protected headers carry more
- * than one `From`/`To`/`Cc`/`Sender` field (a duplicate lets a forged second `From` be what a client
- * displays while the first one is what was checked). Any failure downgrades to `"signature_failed"`, with `signatureFailureReason` saying which check failed.
- * The state union itself is unchanged (a distinct identity-mismatch state would break existing
- * exhaustive consumers); the reason is an additive, optional field.
+ * content carries no protected headers, as with non-RFC 9788 senders); (4) the protected `From`/`To`/`Cc`
+ * address sets (when present) equal the outer envelope's, a signed-only message's protected `Subject` equals
+ * its outer one (what the mail list shows), and neither header block carries more than one
+ * `From`/`To`/`Cc`/`Sender` field.
  *
- * **Trust Model gap, disclosed not silent**: the spec's own Trust Model requires validating a signature
- * "against the known public key in the Contact's record" (TOFU pinning). Without a
- * `pinnedSignerFingerprint`, check 2 is skipped and a self-issued certificate naming the sender's address
- * passes checks 1, 3 and 4 - callers that have a pinned Contact key MUST pass it.
+ * **No trust anchor, no verified badge.** Certificates aren't chain-validated (there is no trust store), so
+ * checks 1, 3 and 4 alone prove only that *someone* holding a certificate naming the sender signed it - a
+ * self-issued certificate with SAN `ceo@victim.com` passes them. Without a matching pin the result is
+ * `"signed_unverified_signer"`/`"encrypted_unverified_signer"` instead, carrying `signerFingerprint` and
+ * `signerEmails` so a UI can show "signed by an unverified certificate" and offer to trust it. A pin that was
+ * supplied but doesn't match is `"signature_failed"` (`untrusted_signer`), and a failure of checks 1, 3 or 4
+ * is `"signature_failed"` with `signatureFailureReason` saying which check failed.
  */
-import { DisplayBody, MimeHeaderField, extractAddresses, parseMimeEntity, parseParameterizedHeader, plainTextToHtml } from "./mime.js";
+import { DisplayBody, MimeAttachment, MimeHeaderField, decodeHeaderText, extractAddresses, parseMimeEntity, parseParameterizedHeader, plainTextToHtml } from "./mime.js";
 import { computeCertFingerprint, extractCertificateEmails } from "./smime.js";
 import { ComparableOuterHeaders, ProtectedHeaders, parseEncryptedMessage, parseSignedOnlyMessage } from "./smimeMessage.js";
 
-export type MessageSecurityState = "encrypted" | "signed_verified" | "encrypted_verified" | "signature_failed" | "unprotected";
+export { signingKeyFingerprints } from "./keyvaultApi.js";
+
+
+/** `"signed_unverified_signer"`/`"encrypted_unverified_signer"`: the signature is valid and its certificate
+ * names the sender, but the certificate isn't one the reader trusts (no pinned key matched) - see this module's
+ * doc comment. The encrypted variant's content was decrypted like `"encrypted_verified"`'s. */
+export type MessageSecurityState =
+    | "encrypted"
+    | "signed_verified"
+    | "encrypted_verified"
+    | "signed_unverified_signer"
+    | "encrypted_unverified_signer"
+    | "signature_failed"
+    | "unprotected";
 
 /** Why a message is `"signature_failed"`. `invalid_signature`: the CMS signature itself is malformed or
- * doesn't verify over the content. `untrusted_signer`: a pinned fingerprint was supplied and the signer
- * certificate doesn't match it (or no signer certificate could be resolved at all).
- * `signer_identity_mismatch`: the signer certificate doesn't name the message's `From` address (or `From`
- * doesn't hold exactly one address). `header_mismatch`: the signed/protected `From`/`To` disagree with
- * the outer envelope's, or either header block repeats a `From`/`To`/`Cc`/`Sender` field. */
+ * doesn't verify over the content (or a `multipart/signed` body doesn't hold exactly two parts).
+ * `untrusted_signer`: pinned fingerprints were supplied and the signer certificate matches none of them (or no
+ * signer certificate could be resolved at all). `signer_identity_mismatch`: the signer certificate doesn't name
+ * the message's `From` address (or `From` doesn't hold exactly one address). `header_mismatch`: the
+ * signed/protected `From`/`To`/`Cc` (or a signed-only message's `Subject`) disagree with the outer envelope's,
+ * or either header block repeats a `From`/`To`/`Cc`/`Sender` field. */
 export type SignatureFailureReason = "invalid_signature" | "untrusted_signer" | "signer_identity_mismatch" | "header_mismatch";
+
+/** The header fields recovered from inside the signed/encrypted entity (RFC 9788 header protection), decoded
+ * for display where they are text. */
+export interface MessageProtectedHeaders {
+    from: string;
+    to: string;
+    cc?: string;
+    subject: string;
+}
 
 export interface MessageSecurityResult {
     state: MessageSecurityState;
@@ -72,8 +96,22 @@ export interface MessageSecurityResult {
     headerTamperDetected?: boolean;
     /** The real subject recovered from the message's protected headers - RFC 9788 header protection
      * obscures the outer envelope's own `Subject` to `"[...]"`. Populated only when content was actually
-     * recovered (`signed_verified`/`encrypted`/`encrypted_verified`/`signature_failed` after decrypt). */
+     * recovered and it carried a protected Subject. */
     subject?: string;
+    /** Every protected header recovered from inside the signed/decrypted entity - present only when that entity
+     * carries RFC 9788 protected headers (a protected `From`). Absent for a legacy S/MIME sender's signed-only
+     * message: its outer Subject/To/Cc were then never signed, and a UI should not present them as verified. */
+    protectedHeaders?: MessageProtectedHeaders;
+    /** The attachments inside the verified/decrypted entity - for a signed-only message the only attachments the
+     * signature covers, so a UI showing a verified badge should list these rather than the server's attachment
+     * records (which include anything outside the signed part). Present whenever content was recovered. */
+    attachments?: MimeAttachment[];
+    /** SHA-256 fingerprint (hex) of the certificate that produced a cryptographically valid signature - present
+     * for `"signed_verified"`, `"encrypted_verified"`, the `*_unverified_signer` states and a `"signature_failed"`
+     * whose signature itself was valid. Compare against / pin as a `PublicKey.fingerprint`. */
+    signerFingerprint?: string;
+    /** The email addresses that signer certificate asserts (lowercased), alongside `signerFingerprint`. */
+    signerEmails?: string[];
 }
 
 function isSignedOnlyContentType(contentTypeValue: string): boolean {
@@ -115,11 +153,19 @@ function sameAddressSet(a: string[], b: string[]): boolean {
     return left.size === right.size && [...left].every((address) => right.has(address));
 }
 
+/** Normalizes whitespace runs, so a Subject refolded in transit still compares equal. */
+function normalizeSubject(value: string | undefined): string {
+    return decodeHeaderText(value ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+
 export interface SignerBindingInput {
     /** The certificate matched to the verified SignerInfo; `undefined` fails closed. */
     signerCertificateDer: Uint8Array | undefined;
     /** Headers recovered from inside the signed content (RFC 9788), if any. */
-    protectedHeaders: Pick<ProtectedHeaders, "from" | "to"> | undefined;
+    protectedHeaders: (Pick<ProtectedHeaders, "from" | "to"> & Partial<Pick<ProtectedHeaders, "cc" | "subject">>) | undefined;
     /** The received message's outer header map (lowercased names), as `parseMimeEntity()` returns it. */
     outerHeaders: Record<string, string>;
     /** Every outer header field in order (`parseMimeEntity()`'s `fields`) - checked for repeated
@@ -127,7 +173,11 @@ export interface SignerBindingInput {
     outerFields?: MimeHeaderField[];
     /** Every protected header field in order - checked for repeats the same way. */
     protectedFields?: MimeHeaderField[];
-    pinnedSignerFingerprint?: string;
+    /** One trusted fingerprint or several (any match is accepted). An empty array counts as none supplied. */
+    pinnedSignerFingerprint?: string | string[];
+    /** Also require the protected `Subject` (when protected headers are present) to equal the outer one - right for
+     * a signed-only (`hp="clear"`) message, wrong for an encrypted one whose outer Subject is obscured. */
+    compareSubject?: boolean;
 }
 
 /** Address header fields a message must carry at most once (RFC 5322 §3.6 allows exactly zero or one). */
@@ -142,13 +192,22 @@ function hasRepeatedAddressField(fields: MimeHeaderField[] | undefined): boolean
     return SINGLETON_ADDRESS_FIELDS.some((name) => (counts.get(name) ?? 0) > 1);
 }
 
+function normalizePins(pins: string | string[] | undefined): string[] {
+    return (Array.isArray(pins) ? pins : pins === undefined ? [] : [pins]).map((pin) => pin.toLowerCase());
+}
+
 /** Checks 2-4 from this module's doc comment for an already cryptographically verified signature.
- * Returns `undefined` when the signer is accepted, otherwise the failure reason. */
+ * Returns `undefined` when the signer is accepted, otherwise the failure reason.
+ *
+ * With no `pinnedSignerFingerprint` (or an empty array), check 2 is skipped and `undefined` means only that the
+ * certificate names the sender consistently - NOT that the signer is trusted. Use `evaluateMessageSecurity()`
+ * (which reports that case as `*_unverified_signer`) unless you enforce a pin yourself. */
 export async function checkSignerBinding(input: SignerBindingInput): Promise<SignatureFailureReason | undefined> {
-    const { protectedHeaders, outerHeaders, pinnedSignerFingerprint } = input;
+    const { protectedHeaders, outerHeaders } = input;
+    const pins = normalizePins(input.pinnedSignerFingerprint);
     // Fail closed: an absent certificate hashes/extracts as empty, which can never match a pin or From.
     const certDer = input.signerCertificateDer ?? new Uint8Array();
-    if (pinnedSignerFingerprint !== undefined && (await computeCertFingerprint(certDer)) !== pinnedSignerFingerprint.toLowerCase()) {
+    if (pins.length > 0 && !pins.includes(await computeCertFingerprint(certDer))) {
         return "untrusted_signer";
     }
     if (hasRepeatedAddressField(input.outerFields) || hasRepeatedAddressField(input.protectedFields)) {
@@ -164,6 +223,16 @@ export async function checkSignerBinding(input: SignerBindingInput): Promise<Sig
     if (!sameAddressSet(senderAddresses, outerFrom) || (protectedTo.length > 0 && !sameAddressSet(protectedTo, extractAddresses(outerHeaders["to"])))) {
         return "header_mismatch";
     }
+    if (protectedFrom.length > 0) {
+        // RFC 9788 protected headers are present, so Cc (possibly absent on both sides) and - for a signed-only
+        // message - Subject were signed: an outer copy that differs was changed (or added) after signing.
+        if (!sameAddressSet(extractAddresses(protectedHeaders?.cc), extractAddresses(outerHeaders["cc"]))) {
+            return "header_mismatch";
+        }
+        if (input.compareSubject && normalizeSubject(protectedHeaders?.subject) !== normalizeSubject(outerHeaders["subject"])) {
+            return "header_mismatch";
+        }
+    }
     return undefined;
 }
 
@@ -172,12 +241,16 @@ export async function checkSignerBinding(input: SignerBindingInput): Promise<Sig
  * a security state + recovered plaintext. Never throws — a parse failure, wrong key, or unrecognized
  * content type all degrade to a result the caller can render directly.
  *
- * `readerAddress` - the unlocked mailbox's own address - enables `notAddressedToReader`.
+ * `pinnedSignerFingerprints` - the sender's trusted signing-key fingerprint(s): `signingKeyFingerprints()` of the
+ * sender's `Contact.keys` (see `contactsApi.ts`'s `fetchPinnedSigningFingerprints()`). The unlocked mailbox's own
+ * `signingFingerprint` is always trusted too (mail this mailbox signed itself). Omitted or empty, a valid signature
+ * from any other certificate is `*_unverified_signer`, never verified. `readerAddress` - the unlocked mailbox's own
+ * address - enables `notAddressedToReader`.
  */
 export async function evaluateMessageSecurity(
     rawMime: string,
-    unlocked: { encryptionPrivateKey?: CryptoKey; encryptionCertDer?: Uint8Array } | undefined,
-    pinnedSignerFingerprint?: string,
+    unlocked: { encryptionPrivateKey?: CryptoKey; encryptionCertDer?: Uint8Array; signingFingerprint?: string } | undefined,
+    pinnedSignerFingerprints?: string | string[],
     readerAddress?: string,
 ): Promise<MessageSecurityResult> {
     const { headers, body, fields } = parseMimeEntity(rawMime);
@@ -186,6 +259,7 @@ export async function evaluateMessageSecurity(
         return { state: "unprotected" };
     }
     const contentType = parseParameterizedHeader(rawContentType);
+    const callerPins = normalizePins(pinnedSignerFingerprints);
 
     // The received message's own *real* outer envelope - what `HP-Outer`'s field copies (written at
     // send time, inside the encrypted content) are compared against to detect post-send tampering.
@@ -197,11 +271,29 @@ export async function evaluateMessageSecurity(
         subject: headers["subject"],
     };
 
-    const checkSigner = (
+    /** Runs checks 2-4 and resolves the trust outcome: a failure reason, or whether a pin matched. */
+    const checkSigner = async (
         signerCertificateDer: Uint8Array | undefined,
         protectedHeaders: ProtectedHeaders | undefined,
         protectedFields: MimeHeaderField[] | undefined,
-    ) => checkSignerBinding({ signerCertificateDer, protectedHeaders, outerHeaders: headers, outerFields: fields, protectedFields, pinnedSignerFingerprint });
+        compareSubject: boolean,
+    ): Promise<{ failure?: SignatureFailureReason; trusted: boolean; signer: Pick<MessageSecurityResult, "signerFingerprint" | "signerEmails"> }> => {
+        const certDer = signerCertificateDer ?? new Uint8Array();
+        const fingerprint = await computeCertFingerprint(certDer);
+        const signer = signerCertificateDer ? { signerFingerprint: fingerprint, signerEmails: extractCertificateEmails(certDer) } : {};
+        const trustedPins = unlocked?.signingFingerprint ? [...callerPins, unlocked.signingFingerprint.toLowerCase()] : callerPins;
+        const failure = await checkSignerBinding({
+            signerCertificateDer,
+            protectedHeaders,
+            outerHeaders: headers,
+            outerFields: fields,
+            protectedFields,
+            // Only pins the caller supplied make a mismatch a failure; the mailbox's own key alone never does.
+            pinnedSignerFingerprint: callerPins.length > 0 ? trustedPins : undefined,
+            compareSubject,
+        });
+        return { failure, trusted: trustedPins.includes(fingerprint), signer };
+    };
 
     const addressing = (protectedHeaders: ProtectedHeaders | undefined): Pick<MessageSecurityResult, "notAddressedToReader"> => {
         const recipients = [...extractAddresses(protectedHeaders?.to), ...extractAddresses(protectedHeaders?.cc)];
@@ -211,19 +303,30 @@ export async function evaluateMessageSecurity(
         return { notAddressedToReader: !recipients.includes(readerAddress.trim().toLowerCase()) };
     };
 
+    const exposedHeaders = (protectedHeaders: ProtectedHeaders | undefined): Pick<MessageSecurityResult, "protectedHeaders"> => {
+        if (!protectedHeaders || extractAddresses(protectedHeaders.from).length === 0) {
+            return {};
+        }
+        const { from, to, cc, subject } = protectedHeaders;
+        return { protectedHeaders: { from, to, ...(cc !== undefined ? { cc } : {}), subject } };
+    };
+
     if (isSignedOnlyContentType(contentType.value)) {
         const parsed = await parseSignedOnlyMessage(rawContentType, body);
         if (!parsed.verified) {
             return { state: "signature_failed", signatureFailureReason: "invalid_signature" };
         }
-        const failure = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields);
+        const { failure, trusted, signer } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, true);
         if (failure) {
-            return { state: "signature_failed", signatureFailureReason: failure };
+            return { state: "signature_failed", signatureFailureReason: failure, ...signer };
         }
         return {
-            state: "signed_verified",
+            state: trusted ? "signed_verified" : "signed_unverified_signer",
             ...renderDisplayBody(parsed.displayBody),
             subject: parsed.protectedHeaders?.subject || undefined,
+            ...exposedHeaders(parsed.protectedHeaders),
+            attachments: parsed.attachments,
+            ...signer,
             ...addressing(parsed.protectedHeaders),
         };
     }
@@ -240,6 +343,8 @@ export async function evaluateMessageSecurity(
             ...renderDisplayBody(parsed.displayBody),
             headerTamperDetected: parsed.headerTamperDetected,
             subject: parsed.protectedHeaders?.subject || undefined,
+            ...exposedHeaders(parsed.protectedHeaders),
+            attachments: parsed.attachments,
             ...addressing(parsed.protectedHeaders),
         };
         if (parsed.signatureVerified === undefined) {
@@ -248,11 +353,11 @@ export async function evaluateMessageSecurity(
         if (!parsed.signatureVerified) {
             return { state: "signature_failed", signatureFailureReason: "invalid_signature", ...content };
         }
-        const failure = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields);
+        const { failure, trusted, signer } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, false);
         if (failure) {
-            return { state: "signature_failed", signatureFailureReason: failure, ...content };
+            return { state: "signature_failed", signatureFailureReason: failure, ...content, ...signer };
         }
-        return { state: "encrypted_verified", ...content };
+        return { state: trusted ? "encrypted_verified" : "encrypted_unverified_signer", ...content, ...signer };
     }
 
     return { state: "unprotected" };

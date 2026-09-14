@@ -20,7 +20,7 @@
  * but no UI calls them yet — a real follow-up, not a silent gap: a mailbox enrolled *only* with a
  * passkey has no way to unlock through this module today.
  */
-import { type KeyVault, type PublicKey, findActivePublicKey, getKeyVault } from "./keyvaultApi.js";
+import { type KeyVault, type PublicKey, type WrappedPrivateKey, findActivePublicKey, getKeyVault } from "./keyvaultApi.js";
 import { fromBase64 } from "./encoding.js";
 import { importPrivateKeyPkcs8 } from "./keys.js";
 import { KeysLockedError, buildAad, openWithKey } from "./masterKey.js";
@@ -51,6 +51,18 @@ export interface UnlockedKeys {
 }
 
 const sessions = new Map<string, UnlockedKeys>();
+/** Every `UnlockedKeys` object this store has handed out per mailbox and not yet destroyed - a re-unlock
+ * replaces the store entry but leaves the previous object usable for in-flight consumers, so a lock must
+ * reach all of them, not only the newest. */
+const issued = new Map<string, Set<UnlockedKeys>>();
+/** Bumped by every `destroyUnlockedKeys()` call for that mailbox (`lockAllGeneration` for a destroy-all),
+ * so an unlock still awaiting the vault/KDF when a lock happens can tell and discard what it unwrapped. */
+const lockGenerations = new Map<string, number>();
+let lockAllGeneration = 0;
+
+function lockGeneration(mailboxUid: string): string {
+    return `${lockAllGeneration}:${lockGenerations.get(mailboxUid) ?? 0}`;
+}
 
 /** What changed in the session store — passed to every `subscribeKeySession()` listener. */
 export interface KeySessionEvent {
@@ -109,26 +121,87 @@ export function getUnlockedKeys(mailboxUid: string): UnlockedKeys | undefined {
  * private key `CryptoKey` handles are removed (their material is never exposed to JS, so there is nothing
  * to zero - but a stale holder must not keep signing/decrypting with them after a lock). Sealing/opening
  * with the zeroed master key throws `KeysLockedError` (see `masterKey.ts`).
+ *
+ * Every object handed out for the mailbox is destroyed - including ones a re-unlock already replaced in the
+ * store - and an `unlockWithPassword()` still in flight for it when this runs throws `KeysLockedError`
+ * instead of restoring keys after the lock.
  */
 export function destroyUnlockedKeys(mailboxUid?: string): void {
-    const uids = mailboxUid ? [mailboxUid] : [...sessions.keys()];
+    if (mailboxUid) {
+        lockGenerations.set(mailboxUid, (lockGenerations.get(mailboxUid) ?? 0) + 1);
+    } else {
+        lockAllGeneration++;
+    }
+    const uids = mailboxUid ? [mailboxUid] : [...issued.keys()];
     for (const uid of uids) {
-        const unlocked = sessions.get(uid);
-        if (!unlocked) {
+        const objects = issued.get(uid);
+        if (!objects) {
             continue;
         }
-        unlocked.masterKey.fill(0);
-        unlocked.destroyed = true;
-        delete unlocked.signingPrivateKey;
-        delete unlocked.encryptionPrivateKey;
+        for (const unlocked of objects) {
+            destroyObject(unlocked);
+        }
+        issued.delete(uid);
         sessions.delete(uid);
         notify({ mailboxUid: uid, state: "locked" });
     }
 }
 
+function destroyObject(unlocked: UnlockedKeys): void {
+    unlocked.masterKey.fill(0);
+    unlocked.destroyed = true;
+    delete unlocked.signingPrivateKey;
+    delete unlocked.encryptionPrivateKey;
+}
+
 /** Finds the wrapped private key whose fingerprint matches a given published public key. */
 function findWrappedPrivateKey(vault: KeyVault, fingerprint: string) {
     return vault.wrappedKeys.find((k) => k.fingerprint === fingerprint);
+}
+
+/** What `unlockWithPassword()` resolves with. */
+export interface UnlockResult {
+    /** Fingerprints of active *signing* keys whose wrapped private key couldn't be opened with the (correctly
+     * unwrapped) master key - e.g. a wrap sealed under a master key a later rekey replaced. The unlock still
+     * succeeds without them (no `signingPrivateKey`), so a user isn't locked out of reading mail by a signing
+     * key they can re-enroll. Empty when every active key opened. */
+    unopenableKeys: string[];
+}
+
+/**
+ * Thrown by `unlockWithPassword()` when the password was right (the master key unwrapped) but the active
+ * *encryption* key's wrapped private key couldn't be opened or imported with it. Distinct from the
+ * wrong-password failure (which rejects with the underlying AEAD error from opening the password wrap), so a
+ * UI can say "your encryption key can't be opened" instead of "incorrect password".
+ */
+export class UnopenableEncryptionKeyError extends Error {
+    public readonly fingerprint: string;
+    /** The underlying AEAD/import failure. */
+    public readonly cause: unknown;
+
+    constructor(fingerprint: string, cause?: unknown) {
+        super(`The encryption key ${fingerprint} for this mailbox couldn't be opened with its master key.`);
+        this.name = "UnopenableEncryptionKeyError";
+        this.fingerprint = fingerprint;
+        this.cause = cause;
+    }
+}
+
+/** Opens one wrapped PKCS#8 private key under `masterKey` and imports it (extractable), zeroing the
+ * transient plaintext whether or not the import succeeds. */
+async function openPrivateKey(
+    masterKey: Uint8Array,
+    wrapped: WrappedPrivateKey,
+    aad: Uint8Array,
+    algorithm: EcKeyImportParams,
+    usages: KeyUsage[],
+): Promise<CryptoKey> {
+    const raw = await openWithKey(masterKey, wrapped, aad);
+    try {
+        return await importPrivateKeyPkcs8(raw, algorithm, usages, true);
+    } finally {
+        raw.fill(0);
+    }
 }
 
 /**
@@ -138,10 +211,15 @@ function findWrappedPrivateKey(vault: KeyVault, fingerprint: string) {
  * currently-active public keys for. Stores the result in this module's in-memory session store.
  *
  * Throws (never silently no-ops) when there's no password wrap enrolled, or when the password is
- * wrong (AEAD authentication failure) — callers should present this as "incorrect password," not a
- * generic error, but this module doesn't presume a specific UI's error copy.
+ * wrong (AEAD authentication failure opening the password wrap) — callers should present this as
+ * "incorrect password," not a generic error, but this module doesn't presume a specific UI's error copy.
+ * Once the master key has opened, the password is known to be right: an active signing key that then
+ * won't open is skipped and listed in `UnlockResult.unopenableKeys`; an active encryption key that won't
+ * open still fails the unlock, with `UnopenableEncryptionKeyError`. Throws `KeysLockedError` when
+ * `destroyUnlockedKeys()` locked this mailbox (or all mailboxes) while the unlock was in flight.
  */
-export async function unlockWithPassword(mailboxUid: string, mailboxKeys: PublicKey[], password: string): Promise<void> {
+export async function unlockWithPassword(mailboxUid: string, mailboxKeys: PublicKey[], password: string): Promise<UnlockResult> {
+    const generation = lockGeneration(mailboxUid);
     const vault = await getKeyVault(mailboxUid);
     const passwordWrap = vault.masterKeyWraps.find((w) => w.method === "password");
     if (!passwordWrap) {
@@ -161,6 +239,7 @@ export async function unlockWithPassword(mailboxUid: string, mailboxKeys: Public
     );
 
     const unlocked: UnlockedKeys = { masterKey };
+    const unopenableKeys: string[] = [];
 
     // The unwrapped private keys are imported *extractable* (unlike `importPrivateKeyPkcs8()`'s default)
     // for exactly one consumer: `keyRotation.ts`'s `rewrapPrivateKeysUnderNewMasterKey()`, which re-seals
@@ -175,32 +254,46 @@ export async function unlockWithPassword(mailboxUid: string, mailboxKeys: Public
         const signingPublicKey = findActivePublicKey(mailboxKeys, "sign");
         const wrappedSigningKey = signingPublicKey && findWrappedPrivateKey(vault, signingPublicKey.fingerprint);
         if (signingPublicKey && wrappedSigningKey) {
-            const raw = await openWithKey(masterKey, wrappedSigningKey, buildAad(mailboxUid, SIGNING_PRIVATE_KEY_AAD_PURPOSE));
-            unlocked.signingPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDSA", namedCurve: "P-256" }, ["sign"], true);
-            raw.fill(0);
-            unlocked.signingCertDer = fromBase64(signingPublicKey.publicKey);
-            unlocked.signingFingerprint = signingPublicKey.fingerprint;
+            try {
+                const aad = buildAad(mailboxUid, SIGNING_PRIVATE_KEY_AAD_PURPOSE);
+                unlocked.signingPrivateKey = await openPrivateKey(masterKey, wrappedSigningKey, aad, { name: "ECDSA", namedCurve: "P-256" }, ["sign"]);
+                unlocked.signingCertDer = fromBase64(signingPublicKey.publicKey);
+                unlocked.signingFingerprint = signingPublicKey.fingerprint;
+            } catch {
+                unopenableKeys.push(signingPublicKey.fingerprint);
+            }
         }
 
         const encryptionPublicKey = findActivePublicKey(mailboxKeys, "encrypt");
         const wrappedEncryptionKey = encryptionPublicKey && findWrappedPrivateKey(vault, encryptionPublicKey.fingerprint);
         if (encryptionPublicKey && wrappedEncryptionKey) {
-            const raw = await openWithKey(masterKey, wrappedEncryptionKey, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));
-            unlocked.encryptionPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"], true);
-            raw.fill(0);
+            try {
+                const aad = buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE);
+                unlocked.encryptionPrivateKey = await openPrivateKey(masterKey, wrappedEncryptionKey, aad, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
+            } catch (err) {
+                throw new UnopenableEncryptionKeyError(encryptionPublicKey.fingerprint, err);
+            }
             unlocked.encryptionCertDer = fromBase64(encryptionPublicKey.publicKey);
             unlocked.encryptionFingerprint = encryptionPublicKey.fingerprint;
         }
+        if (lockGeneration(mailboxUid) !== generation) {
+            // Locked (e.g. logout) while this unlock was awaiting - never restore keys after that.
+            throw new KeysLockedError();
+        }
     } catch (err) {
         // A failed unlock never reaches the session store, so nothing else would ever zero this.
-        masterKey.fill(0);
+        destroyObject(unlocked);
         throw err;
     }
 
     // A re-unlock replacing existing keys (e.g. `settings/encryption`'s post-rotation refresh) deliberately
     // does NOT zero the previous entry's master key: an in-flight consumer that captured the old
     // `UnlockedKeys` object (e.g. a local-index build pass) is still legitimately using it, and nothing
-    // "destroyed" the session - only `destroyUnlockedKeys()` does that.
+    // "destroyed" the session - only `destroyUnlockedKeys()` does that, and it destroys every issued object.
     sessions.set(mailboxUid, unlocked);
+    const objects = issued.get(mailboxUid) ?? new Set<UnlockedKeys>();
+    objects.add(unlocked);
+    issued.set(mailboxUid, objects);
     notify({ mailboxUid, state: "unlocked" });
+    return { unopenableKeys };
 }

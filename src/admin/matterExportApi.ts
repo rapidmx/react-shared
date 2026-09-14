@@ -16,7 +16,7 @@ import { RequestListParams, buildRequestListQuery } from "../util/apiQuery.js";
 
 export type { RequestListParams };
 
-export type MatterExportStatus = "pending" | "ready" | "failed";
+export type MatterExportStatus = "pending" | "processing" | "ready" | "failed";
 
 export interface MatterExportRequest {
     uid: string;
@@ -28,6 +28,9 @@ export interface MatterExportRequest {
     status: MatterExportStatus;
     blobKey?: string;
     errorMessage?: string;
+    /** How many times the server job has claimed this request into `"processing"` (a stalled claim is reclaimed
+     * back to `"pending"` until the job's max attempts, then marked `"failed"`). */
+    processingAttempts?: number;
 }
 
 export function createMatterExportRequest(matterId: string): Promise<MatterExportRequest> {

@@ -17,7 +17,7 @@ import { RequestListParams, buildRequestListQuery } from "../util/apiQuery.js";
 
 export type { RequestListParams };
 
-export type DataSubjectErasureStatus = "pending" | "approved" | "denied" | "completed";
+export type DataSubjectErasureStatus = "pending" | "approved" | "in_progress" | "denied" | "completed";
 
 export interface DataSubjectErasureRequest {
     uid: string;

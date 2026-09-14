@@ -189,4 +189,23 @@ describe("vCard escaping and parsing fixes (round-4 review)", () => {
         const parsed = parseVCards('BEGIN:VCARD\r\nFN:Test\r\nEMAIL;X-LABEL="a:b"\r\nEND:VCARD');
         expect(parsed[0].emails).toEqual([]);
     });
+
+    // Round-5 review: records were split on "BEGIN:VCARD" anywhere, so a NOTE quoting it started a bogus card.
+    it("starts a record only at a line that is exactly BEGIN:VCARD, after unfolding", () => {
+        const parsed = parseVCards(
+            [
+                "BEGIN:VCARD",
+                "FN:Ann",
+                "NOTE:paste BEGIN:VCARD here",
+                "NOTE:folded line ",
+                " BEGIN:VCARD",
+                "END:VCARD",
+                "begin:vcard  ",
+                "FN:Bob",
+                "END:VCARD",
+            ].join("\n"),
+        );
+        expect(parsed.map((c) => c.displayName)).toEqual(["Ann", "Bob"]);
+        expect(parsed[0].notes).toBe("folded line BEGIN:VCARD");
+    });
 });

@@ -16,7 +16,7 @@ import { KeysLockedError, assertKeyMaterialUsable, buildAad, generateMasterKey, 
 import { buildEscrowWrap, buildPasswordWrap, buildRecoveryWraps } from "../../src/crypto/masterKeyWraps.js";
 import { checkSignerBinding, evaluateMessageSecurity } from "../../src/crypto/messageSecurity.js";
 import { bytesToBinaryString } from "../../src/crypto/mime.js";
-import { extractCertificateEmails, signDetached } from "../../src/crypto/smime.js";
+import { computeCertFingerprint, extractCertificateEmails, signDetached } from "../../src/crypto/smime.js";
 import {
     ProtectedHeaders,
     applyBaselineOuterHeaders,
@@ -118,7 +118,7 @@ describe("finding 3: duplicate From/To/Cc/Sender headers", () => {
         const alice = await generateIdentity("CN=alice@example.com");
         const raw = assembleOutboundMime(HEADERS, await buildSignedOnlyMessage("text/plain; charset=utf-8", "hello", HEADERS, alice.certDer, alice.privateKey));
         const forged = raw.replace("To: bob@example.com", "From: ceo@example.com\r\nTo: bob@example.com");
-        expect(await evaluateMessageSecurity(forged, undefined)).toEqual({ state: "signature_failed", signatureFailureReason: "header_mismatch" });
+        expect(await evaluateMessageSecurity(forged, undefined)).toMatchObject({ state: "signature_failed", signatureFailureReason: "header_mismatch" });
     });
 
     it("is header_mismatch when the signed (protected) headers repeat From, even though the signature is valid", async () => {
@@ -127,7 +127,7 @@ describe("finding 3: duplicate From/To/Cc/Sender headers", () => {
             ["From: alice@example.com", "From: ceo@example.com", "To: bob@example.com", 'Content-Type: text/plain; hp="clear"', "", "hi"].join(CRLF),
         );
         const raw = await foreignSignedMessage(["From: alice@example.com", "To: bob@example.com"], inner, alice);
-        expect(await evaluateMessageSecurity(raw, undefined)).toEqual({ state: "signature_failed", signatureFailureReason: "header_mismatch" });
+        expect(await evaluateMessageSecurity(raw, undefined)).toMatchObject({ state: "signature_failed", signatureFailureReason: "header_mismatch" });
     });
 
     it("counts Sender, To, and Cc case-insensitively too, but not other repeated fields", async () => {
@@ -168,7 +168,7 @@ describe("finding 10: malformed SubjectAlternativeName", () => {
         expect(extractCertificateEmails(mallory.certDer)).toEqual([]);
         const headers = { ...HEADERS, from: "mallory@example.com" };
         const raw = assembleOutboundMime(headers, await buildSignedOnlyMessage("text/plain", "hello", headers, mallory.certDer, mallory.privateKey));
-        expect(await evaluateMessageSecurity(raw, undefined)).toEqual({ state: "signature_failed", signatureFailureReason: "signer_identity_mismatch" });
+        expect(await evaluateMessageSecurity(raw, undefined)).toMatchObject({ state: "signature_failed", signatureFailureReason: "signer_identity_mismatch", signerEmails: [] });
     });
 });
 
@@ -180,7 +180,7 @@ describe("finding 11: notAddressedToReader", () => {
 
         expect((await evaluateMessageSecurity(raw, undefined, undefined, "BOB@example.com")).notAddressedToReader).toBe(false);
         expect((await evaluateMessageSecurity(raw, undefined, undefined, " carol@example.com ")).notAddressedToReader).toBe(false);
-        const replayed = await evaluateMessageSecurity(raw, undefined, undefined, "dave@example.com");
+        const replayed = await evaluateMessageSecurity(raw, undefined, await computeCertFingerprint(alice.certDer), "dave@example.com");
         expect(replayed).toMatchObject({ state: "signed_verified", notAddressedToReader: true });
         expect(await evaluateMessageSecurity(raw, undefined)).not.toHaveProperty("notAddressedToReader");
     });
@@ -230,11 +230,12 @@ describe("finding 7: header injection and non-ASCII headers on the send path", (
         const headers: ProtectedHeaders = { ...HEADERS, from: '"Zoë, Alice" <alice@example.com>', to: "Jürgen <bob@example.com>", subject: "Réunion ☕ — ordre du jour" };
         const raw = assembleOutboundMime(headers, await buildSignedOnlyMessage("text/plain; charset=utf-8", "salut", headers, alice.certDer, alice.privateKey));
         expect(raw.split("\r\n\r\n")[0]).not.toMatch(/[^\x20-\x7e\r\n\t]/);
-        expect(await evaluateMessageSecurity(raw, undefined, undefined, "bob@example.com")).toEqual({
+        expect(await evaluateMessageSecurity(raw, undefined, await computeCertFingerprint(alice.certDer), "bob@example.com")).toMatchObject({
             state: "signed_verified",
             html: expect.stringContaining("salut"),
             text: "salut",
             subject: "Réunion ☕ — ordre du jour",
+            protectedHeaders: { from: '=?UTF-8?B?Wm/DqywgQWxpY2U=?= <alice@example.com>', subject: "Réunion ☕ — ordre du jour" },
             notAddressedToReader: false,
         });
     });
@@ -257,7 +258,7 @@ describe("finding 13: byte-preserving (binary string) parsing of 8bit content", 
         const alice = await generateIdentity("CN=alice@example.com");
         const inner = new TextEncoder().encode(["Content-Type: text/plain; charset=utf-8", "Content-Transfer-Encoding: 8bit", "", "café ☕"].join(CRLF));
         const raw = await foreignSignedMessage(["From: alice@example.com", "To: bob@example.com"], inner, alice);
-        expect(await evaluateMessageSecurity(raw, undefined)).toMatchObject({ state: "signed_verified", text: "café ☕" });
+        expect(await evaluateMessageSecurity(raw, undefined, await computeCertFingerprint(alice.certDer))).toMatchObject({ state: "signed_verified", text: "café ☕" });
     });
 
     it("verifies an 8bit ISO-8859-1 part whose bytes aren't valid UTF-8 (res.text() would have replaced them)", async () => {
@@ -265,7 +266,7 @@ describe("finding 13: byte-preserving (binary string) parsing of 8bit content", 
         const header = new TextEncoder().encode(["Content-Type: text/html; charset=iso-8859-1", "Content-Transfer-Encoding: 8bit", "", "<p>caf"].join(CRLF));
         const inner = new Uint8Array([...header, 0xe9, ...new TextEncoder().encode("</p>")]);
         const raw = await foreignSignedMessage(["From: alice@example.com", "To: bob@example.com"], inner, alice);
-        expect(await evaluateMessageSecurity(raw, undefined)).toEqual({ state: "signed_verified", html: "<p>café</p>" });
+        expect(await evaluateMessageSecurity(raw, undefined)).toMatchObject({ state: "signed_unverified_signer", html: "<p>café</p>", attachments: [] });
         // What the pre-fix `res.text()` path produced: the byte replaced by U+FFFD, so the signature can't verify.
         const lossy = new TextDecoder().decode(new Uint8Array([...header, 0xe9, ...new TextEncoder().encode("</p>")]));
         expect(lossy).toContain("�");
@@ -277,13 +278,15 @@ describe("finding 13: byte-preserving (binary string) parsing of 8bit content", 
         const binary = await foreignSignedMessage(["From: alice@example.com", "To: bob@example.com"], new TextEncoder().encode(innerText), alice);
         const decoded = new TextDecoder().decode(Uint8Array.from(binary, (ch) => ch.charCodeAt(0)));
         expect(decoded).toContain("café");
-        expect(await evaluateMessageSecurity(decoded, undefined)).toMatchObject({ state: "signed_verified", text: "café" });
+        expect(await evaluateMessageSecurity(decoded, undefined, [await computeCertFingerprint(alice.certDer)])).toMatchObject({ state: "signed_verified", text: "café" });
     });
 
     it("decodes a raw 8-bit UTF-8 protected Subject from a foreign sender", async () => {
         const alice = await generateIdentity("CN=alice@example.com");
         const inner = new TextEncoder().encode(["From: alice@example.com", "To: bob@example.com", "Subject: Grüße", "Content-Type: text/plain", "", "hi"].join(CRLF));
-        const raw = await foreignSignedMessage(["From: alice@example.com", "To: bob@example.com"], inner, alice);
+        const outerSubject = bytesToBinaryString(new TextEncoder().encode("Subject: Grüße"));
+        const raw = await foreignSignedMessage(["From: alice@example.com", "To: bob@example.com", outerSubject], inner, alice);
         expect((await evaluateMessageSecurity(raw, undefined)).subject).toBe("Grüße");
+
     });
 });

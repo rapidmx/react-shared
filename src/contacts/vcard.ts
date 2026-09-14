@@ -134,10 +134,13 @@ function normalizeType(params: string[]): ContactAddressKind {
  * `normalizeType()`); structured values are split on unescaped `;` only.
  */
 export function parseVCards(text: string): ParsedVCardContact[] {
-    const cards = text.split(/BEGIN:VCARD/i).slice(1);
+    // Unfold first, then split only on a line that is exactly BEGIN:VCARD - a NOTE (or a folded line) that
+    // merely contains the text "BEGIN:VCARD" must not start a bogus record.
+    const unfolded = text.replace(/(?:\r\n|\r|\n)[ \t]/g, "");
+    const cards = unfolded.split(/^[ \t]*BEGIN:VCARD[ \t]*$/im).slice(1);
     return cards.map((card) => {
         const contact: ParsedVCardContact = { displayName: "", emails: [], phones: [], addresses: [] };
-        const lines = card.replace(/(?:\r\n|\r|\n)[ \t]/g, "").split(/\r\n|\r|\n/);
+        const lines = card.split(/\r\n|\r|\n/);
         for (const rawLine of lines) {
             const line = rawLine.trim();
             const colonIndex = valueSeparatorIndex(line);

@@ -221,23 +221,25 @@ function hexValue(code: number): number {
 
 /** Decodes a quoted-printable body (RFC 2045 §6.7) into bytes, in one linear pass into a preallocated
  * buffer. Literal text between escapes (which can't legally be non-ASCII in QP, but is after an
- * 8-bit-unsafe gateway) is written run by run: as the run's own bytes when it is a binary string, else as
- * its UTF-8 encoding. A run always ends at an ASCII `=`, so a surrogate pair is never split. */
+ * 8-bit-unsafe gateway) is written run by run, decided once for the whole input: as the runs' own bytes
+ * when the input is a binary string, else as their UTF-8 encoding (so an already-decoded `é` next to an
+ * emoji isn't written as a lone 0xE9 byte). A run always ends at an ASCII `=`, so a surrogate pair is never
+ * split. */
 export function decodeQuotedPrintable(text: string): Uint8Array {
     const input = text.replace(/=[ \t]*\r?\n/g, "");
+    const binary = isBinaryString(input);
     // At most 3 UTF-8 bytes per UTF-16 code unit, which only a non-binary string can need.
-    const out = new Uint8Array(isBinaryString(input) ? input.length : input.length * 3);
+    const out = new Uint8Array(binary ? input.length : input.length * 3);
     const encoder = new TextEncoder();
     let length = 0;
     let runStart = 0;
     const flushRun = (end: number) => {
-        const run = input.slice(runStart, end);
-        if (isBinaryString(run)) {
-            for (let j = 0; j < run.length; j++) {
-                out[length++] = run.charCodeAt(j);
+        if (binary) {
+            for (let j = runStart; j < end; j++) {
+                out[length++] = input.charCodeAt(j);
             }
         } else {
-            length += encoder.encodeInto(run, out.subarray(length)).written;
+            length += encoder.encodeInto(input.slice(runStart, end), out.subarray(length)).written;
         }
     };
     for (let i = 0; i + 2 < input.length; i++) {
@@ -370,20 +372,51 @@ export function encodeUnstructuredHeaderValue(value: string): string {
     return NEEDS_ENCODING.test(flattened) ? encodeWords(flattened) : flattened;
 }
 
+/** Encodes one mailbox (`Name <addr>` or a bare addr-spec) - see `encodeAddressListHeaderValue()`. */
+function encodeMailbox(mailbox: string): string {
+    const angle = mailbox.lastIndexOf("<");
+    if (angle === -1) {
+        // A bare addr-spec (possibly internationalized) stays verbatim; stray non-ASCII text that
+        // isn't an address at all is encoded rather than written raw.
+        const bare = mailbox.trim();
+        return bare.includes("@") || !NEEDS_ENCODING.test(bare) ? bare : encodeWords(bare);
+    }
+    const rawName = mailbox.slice(0, angle).trim();
+    const address = mailbox.slice(angle).trim();
+    const name = encodePhrase(rawName);
+    return name ? `${name} ${address}` : address;
+}
+
+/** Encodes a display-name phrase (a mailbox's name or a group's label): unquoted and RFC 2047-encoded when
+ * it holds non-ASCII, else kept exactly as written. */
+function encodePhrase(rawPhrase: string): string {
+    const phrase = rawPhrase.trim();
+    const unquoted = /^".*"$/.test(phrase) ? phrase.slice(1, -1).replace(/\\(.)/g, "$1") : phrase;
+    return NEEDS_ENCODING.test(unquoted) ? encodeWords(unquoted) : phrase;
+}
+
 /**
  * Makes an address-list header value (`From`/`To`/`Cc`) safe to serialize: CR/LF/NUL become a space, and
  * each mailbox's non-ASCII display name (`Zoë <z@example.com>`, quoted or not) is RFC 2047-encoded while
  * its addr-spec is kept verbatim (an internationalized address is left to SMTPUTF8, never encoded -
- * RFC 2047 §5 forbids encoded-words in an addr-spec).
+ * RFC 2047 §5 forbids encoded-words in an addr-spec). RFC 5322 group syntax (`Équipe: Zoë <z@x>, b@x;`)
+ * keeps its `:` and `;`, with the group label encoded as a phrase of its own. A top-level `:` only opens
+ * a group when a `;` follows it, so a stray colon in an unquoted display name isn't mistaken for one.
  */
 export function encodeAddressListHeaderValue(value: string): string {
     const flattened = value.replace(HEADER_BREAKING, " ");
     if (!NEEDS_ENCODING.test(flattened)) {
         return flattened;
     }
-    const mailboxes: string[] = [];
+    let out = "";
     let current = "";
     let inQuotes = false;
+    let inAngle = false;
+    let inGroup = false;
+    const emit = (encoded: string, delimiter: string) => {
+        out += (encoded && /[,:;]$/.test(out) ? " " : "") + encoded + delimiter;
+        current = "";
+    };
     for (let i = 0; i < flattened.length; i++) {
         const ch = flattened[i];
         if (inQuotes && ch === "\\" && i + 1 < flattened.length) {
@@ -392,32 +425,30 @@ export function encodeAddressListHeaderValue(value: string): string {
         }
         if (ch === '"') {
             inQuotes = !inQuotes;
-        } else if (ch === "," && !inQuotes) {
-            mailboxes.push(current);
-            current = "";
-            continue;
+        } else if (!inQuotes && ch === "<") {
+            inAngle = true;
+        } else if (!inQuotes && ch === ">") {
+            inAngle = false;
+        } else if (!inQuotes && !inAngle) {
+            if (ch === ",") {
+                emit(encodeMailbox(current), ",");
+                continue;
+            }
+            if (ch === ":" && !inGroup && flattened.includes(";", i)) {
+                emit(encodePhrase(current), ":");
+                inGroup = true;
+                continue;
+            }
+            if (ch === ";" && inGroup) {
+                emit(encodeMailbox(current), ";");
+                inGroup = false;
+                continue;
+            }
         }
         current += ch;
     }
-    mailboxes.push(current);
-    return mailboxes
-        .map((mailbox) => {
-            const angle = mailbox.lastIndexOf("<");
-            if (angle === -1) {
-                // A bare addr-spec (possibly internationalized) stays verbatim; stray non-ASCII text that
-                // isn't an address at all is encoded rather than written raw.
-                const bare = mailbox.trim();
-                return bare.includes("@") || !NEEDS_ENCODING.test(bare) ? bare : encodeWords(bare);
-            }
-            const rawName = mailbox.slice(0, angle).trim();
-            const address = mailbox.slice(angle).trim();
-            const name = /^".*"$/.test(rawName) ? rawName.slice(1, -1).replace(/\\(.)/g, "$1") : rawName;
-            if (!name) {
-                return address;
-            }
-            return NEEDS_ENCODING.test(name) ? `${encodeWords(name)} ${address}` : `${rawName} ${address}`;
-        })
-        .join(", ");
+    emit(encodeMailbox(current), "");
+    return out;
 }
 
 /** A message's displayable content: `html` only for a real `text/html` part, `text` only for a
@@ -459,6 +490,55 @@ export function extractDisplayBody(entity: MimeEntity, depth = 0): DisplayBody {
         text ??= found.text;
     }
     return text === undefined ? {} : { text };
+}
+
+/** One attachment found inside a MIME entity (see `extractAttachments()`). */
+export interface MimeAttachment {
+    /** The `Content-Disposition` `filename` (else the `Content-Type` `name`), RFC 2047-decoded; absent if neither. */
+    filename?: string;
+    /** The lowercased MIME type, e.g. `application/pdf`. */
+    contentType: string;
+    /** `"attachment"` for `Content-Disposition: attachment`, `"inline"` otherwise (an inline image, or a part with a
+     * filename and no disposition). */
+    disposition: "attachment" | "inline";
+    /** The `Content-ID` without its angle brackets, if any - how an HTML body references an inline part. */
+    contentId?: string;
+    /** Decodes the part's content (transfer encoding undone) - lazily, so evaluating a message never pays for
+     * attachments nobody opens. `undefined` for invalid base64. */
+    decode(): Uint8Array | undefined;
+}
+
+/**
+ * Lists the attachments inside `entity` (descending into multipart children, bounded depth): every leaf part
+ * with `Content-Disposition: attachment`, a filename, or a non-text type. The `text/plain`/`text/html` parts a
+ * reader would display (no disposition, no filename) are not attachments. Nested `message/rfc822` content is
+ * reported as one attachment, never expanded.
+ */
+export function extractAttachments(entity: MimeEntity, depth = 0): MimeAttachment[] {
+    const contentType = parseParameterizedHeader(entity.headers["content-type"] ?? "text/plain");
+    const disposition = parseParameterizedHeader(entity.headers["content-disposition"]);
+    const boundary = contentType.params["boundary"];
+    if (contentType.value.startsWith("multipart/")) {
+        if (!boundary || depth >= MAX_MULTIPART_DEPTH) {
+            return [];
+        }
+        return splitMultipart(entity.body, boundary).flatMap((part) => extractAttachments(parseMimeEntity(part), depth + 1));
+    }
+    const rawFilename = disposition.params["filename"] ?? contentType.params["name"];
+    const isAttachmentDisposition = disposition.value === "attachment";
+    if (!isAttachmentDisposition && rawFilename === undefined && contentType.value.startsWith("text/")) {
+        return [];
+    }
+    const contentId = entity.headers["content-id"]?.trim().replace(/^<(.*)>$/, "$1");
+    return [
+        {
+            ...(rawFilename !== undefined ? { filename: decodeHeaderText(rawFilename) } : {}),
+            contentType: contentType.value,
+            disposition: isAttachmentDisposition ? "attachment" : "inline",
+            ...(contentId ? { contentId } : {}),
+            decode: () => decodeBodyBytes(entity),
+        },
+    ];
 }
 
 /** HTML-escapes plain text and wraps it in a whitespace-preserving `<pre>`, so a `text/plain` body can be
