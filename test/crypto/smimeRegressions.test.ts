@@ -364,7 +364,8 @@ describe("foreign MIME framing", () => {
         const raw = assembleOutboundMime(HEADERS, await buildSignedOnlyMessage("text/plain", "line 1\r\nline 2", HEADERS, alice.certDer, alice.privateKey));
         const result = await evaluateMessageSecurity(raw.replace(/\r\n/g, "\n"), undefined);
         expect(result.state).toBe("signed_verified");
-        expect(result.text).toBe("line 1\nline 2");
+        // The body travels base64-encoded, so the storage conversion doesn't reach its own line endings.
+        expect(result.text).toBe("line 1\r\nline 2");
     });
 
     it("is invalid_signature when the second part isn't a pkcs7 signature, or its body is empty", async () => {

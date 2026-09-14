@@ -68,7 +68,10 @@ describe("evaluateMessageSecurity", () => {
         it("is signature_failed when the signed body was tampered with in transit", async () => {
             const alice = await generateTestIdentity("alice@example.com", "sign");
             const part = await buildSignedOnlyMessage("text/plain; charset=utf-8", "Hello, Bob.", HEADERS, alice.certDer, alice.privateKey);
-            const tamperedMime = assembleOutboundMime(HEADERS, part).replace("Hello, Bob.", "Hello, Eve.");
+            const tamperedMime = assembleOutboundMime(HEADERS, part).replace(
+                Buffer.from("Hello, Bob.").toString("base64"),
+                Buffer.from("Hello, Eve.").toString("base64"),
+            );
 
             expect(await evaluateMessageSecurity(tamperedMime, undefined)).toEqual({ state: "signature_failed", signatureFailureReason: "invalid_signature" });
         });

@@ -120,9 +120,23 @@ describe("buildSignedOnlyMessage / parseSignedOnlyMessage", () => {
         const alice = await generateTestIdentity("alice@example.com", "sign");
         const { contentType, body } = await buildSignedOnlyMessage("text/plain; charset=utf-8", "Hello, Bob.", HEADERS, alice.certDer, alice.privateKey);
 
-        const tampered = body.replace("Hello, Bob.", "Hello, Eve.");
+        const encodedBody = Buffer.from("Hello, Bob.").toString("base64");
+        expect(body).toContain(encodedBody);
+        const tampered = body.replace(encodedBody, Buffer.from("Hello, Eve.").toString("base64"));
         const result = await parseSignedOnlyMessage(contentType, tampered);
         expect(result.verified).toBe(false);
+    });
+
+    it("base64-encodes the signed body so long lines survive MTA rewrapping", async () => {
+        const alice = await generateTestIdentity("alice@example.com", "sign");
+        const longHtml = `<p>${"word ".repeat(1000)}</p>`;
+        const { contentType, body } = await buildSignedOnlyMessage("text/html; charset=utf-8", longHtml, HEADERS, alice.certDer, alice.privateKey);
+
+        expect(body).toContain("Content-Transfer-Encoding: base64");
+        expect(Math.max(...body.split("\r\n").map((line) => line.length))).toBeLessThanOrEqual(998);
+        const result = await parseSignedOnlyMessage(contentType, body);
+        expect(result.verified).toBe(true);
+        expect(result.bodyText).toBe(longHtml);
     });
 
     it("reports unverified for a Content-Type with no boundary parameter", async () => {

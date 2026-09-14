@@ -133,9 +133,15 @@ export async function buildSignedOnlyMessage(
     signingPrivateKey: CryptoKey,
 ): Promise<MimePart> {
     const boundary = generateBoundary();
-    const innerEntity = [protectedHeaderLines(protectedHeaders), `Content-Type: ${bodyContentType}; hp="clear"`, "", bodyText].join(
-        CRLF,
-    );
+    // Base64 so the signed bytes survive transport unchanged: a raw UTF-8 body is usually one long line, which
+    // MTAs rewrap past 998 characters and so break the detached signature.
+    const innerEntity = [
+        protectedHeaderLines(protectedHeaders),
+        `Content-Type: ${bodyContentType}; hp="clear"`,
+        `Content-Transfer-Encoding: base64`,
+        "",
+        base64Wrapped(new TextEncoder().encode(bodyText)),
+    ].join(CRLF);
 
     const signature = await signDetached(new TextEncoder().encode(innerEntity), signingCertDer, signingPrivateKey);
 
