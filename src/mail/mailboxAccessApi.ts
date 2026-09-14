@@ -47,6 +47,23 @@ export function setMailboxAccess(mailboxUid: string, userOrRoleId: string, role:
     });
 }
 
+/** What the signed-in caller may do in a mailbox, as the server's ACLs evaluate it (owners and trusted callers
+ * included). */
+export interface MyMailboxAccess {
+    canRead: boolean;
+    /** Create items in the mailbox: drafts, events, contacts, to-dos. */
+    canCreate: boolean;
+    canUpdate: boolean;
+    canDelete: boolean;
+    /** Manage who else has access. */
+    canManage: boolean;
+}
+
+/** The signed-in caller's own access to a mailbox. */
+export function getMyMailboxAccess(mailboxUid: string): Promise<MyMailboxAccess> {
+    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/me`);
+}
+
 /** Revokes a delegate's access to a mailbox - never rejects for a `userOrRoleId` that wasn't a member. */
 export function removeMailboxAccess(mailboxUid: string, userOrRoleId: string): Promise<void> {
     return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/${encodeURIComponent(userOrRoleId)}`, { method: "DELETE" });

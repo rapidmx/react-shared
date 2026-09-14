@@ -4,10 +4,25 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { listMailboxAccess, lookupMailboxOwnerByEmail, removeMailboxAccess, setMailboxAccess } from "../../src/mail/mailboxAccessApi.js";
+import {
+    getMyMailboxAccess,
+    listMailboxAccess,
+    lookupMailboxOwnerByEmail,
+    removeMailboxAccess,
+    setMailboxAccess,
+} from "../../src/mail/mailboxAccessApi.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
+});
+
+describe("getMyMailboxAccess", () => {
+    it("fetches the caller's own access with the mailboxUid encoded", async () => {
+        const access = { canRead: true, canCreate: true, canUpdate: false, canDelete: false, canManage: false };
+        const fetchMock = mockFetch(() => jsonResponse(200, access));
+        expect(await getMyMailboxAccess("mb/1")).toEqual(access);
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb%2F1/access/me", expect.anything());
+    });
 });
 
 describe("listMailboxAccess", () => {
