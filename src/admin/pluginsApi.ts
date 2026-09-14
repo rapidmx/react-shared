@@ -29,6 +29,8 @@ export interface PluginManifest {
     displayName: string;
     description?: string;
     settings?: PluginSettingDefinition[];
+    /** Other plugins this one needs, as package name to npm version range. */
+    requires?: Record<string, string>;
 }
 
 export type PluginSettingValue = string | number | boolean;
@@ -111,6 +113,21 @@ export interface PluginNamespace {
     registry?: string;
 }
 
+/** What `planPluginChange()` found: dependencies that would be installed (dependencies first) and installed plugins
+ * that would be enabled. The change is refused while `conflicts` isn't empty. */
+export interface PluginChangePlan {
+    plugin: { name: string; version: string; manifest: PluginManifest };
+    install: { name: string; version: string; integrity?: string; manifest: PluginManifest }[];
+    enable: string[];
+    conflicts: string[];
+}
+
+/** `addPlugin()`'s result: the added plugin and the dependencies installed or enabled with it. */
+export interface AddPluginResult {
+    plugin: Plugin;
+    dependencies: Plugin[];
+}
+
 export interface UpdatePluginInput {
     /** The row's optimistic-lock counter. */
     version?: number;
@@ -152,8 +169,19 @@ export function lookupPluginPackage(name: string, packageVersion?: string): Prom
     return apiFetch(`${BASE}/registry/${encodeURIComponent(name)}${query}`);
 }
 
-/** Adds a plugin, at its latest version unless `packageVersion` is given. */
-export function addPlugin(name: string, packageVersion?: string): Promise<Plugin> {
+/** What adding `name` - or changing it, when installed - at `packageVersion` (default: latest) would also install and
+ * enable, and what would refuse it. Nothing is changed. */
+export function planPluginChange(name: string, packageVersion?: string): Promise<PluginChangePlan> {
+    const query = new URLSearchParams({ name });
+    if (packageVersion) {
+        query.set("packageVersion", packageVersion);
+    }
+    return apiFetch(`${BASE}/plan?${query.toString()}`);
+}
+
+/** Adds a plugin, at its latest version unless `packageVersion` is given, installing and enabling the plugins it
+ * requires first. Refused (409) when a requirement conflicts with an installed plugin's version. */
+export function addPlugin(name: string, packageVersion?: string): Promise<AddPluginResult> {
     return apiFetch(BASE, { method: "POST", body: JSON.stringify({ name, packageVersion }) });
 }
 
@@ -161,7 +189,8 @@ export function updatePlugin(uid: string, input: UpdatePluginInput): Promise<Plu
     return apiFetch(`${BASE}/${encodeURIComponent(uid)}`, { method: "PUT", body: JSON.stringify(input) });
 }
 
-/** Removes a plugin. Data it stored stays in the database. */
+/** Removes a plugin. Data it stored stays in the database. Refused (409) while an enabled plugin requires it, as is
+ * disabling it with `updatePlugin()`. */
 export function removePlugin(uid: string): Promise<void> {
     return apiFetch(`${BASE}/${encodeURIComponent(uid)}`, { method: "DELETE" });
 }

@@ -12,6 +12,7 @@ import {
     searchPlugins,
     listPlugins,
     lookupPluginPackage,
+    planPluginChange,
     removePlugin,
     updatePlugin,
 } from "../../src/admin/pluginsApi.js";
@@ -51,6 +52,14 @@ describe("pluginsApi", () => {
             expect.objectContaining({ method: "PUT", body: JSON.stringify({ version: 2, enabled: false, settings: { "mail:x": null } }) }),
         );
         expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/p1", expect.objectContaining({ method: "DELETE" }));
+    });
+
+    it("plans a change, optionally at a version", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { install: [], enable: [], conflicts: [] }));
+        expect(await planPluginChange("@rapidmx/autodiscover-plugin")).toEqual({ install: [], enable: [], conflicts: [] });
+        await planPluginChange("@rapidmx/autodiscover-plugin", "1.0.0-beta.1");
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/plan?name=%40rapidmx%2Fautodiscover-plugin", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/plan?name=%40rapidmx%2Fautodiscover-plugin&packageVersion=1.0.0-beta.1", expect.anything());
     });
 
     it("lists namespaces, searches for plugins in all or one namespace, and checks for updates", async () => {
