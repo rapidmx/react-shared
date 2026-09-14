@@ -62,6 +62,7 @@ describe("pluginsApi", () => {
             enable: ["@rapidmx/activesync"],
         });
         expect(expectedPlan).toEqual({ install: [{ name: "@rapidmx/mapi", version: "1.0.0" }], enable: ["@rapidmx/activesync"] });
+        expect(expectedPlanOf({ plugin: { version: "2.0.0" }, install: [], enable: [] })).toEqual({ version: "2.0.0", install: [], enable: [] });
         await addPlugin("@rapidmx/autodiscover-plugin", "2.0.0", expectedPlan);
         await updatePlugin("p1", { version: 2, enabled: true, expectedPlan: { install: [], enable: [] } });
         expect(fetchMock).toHaveBeenCalledWith(

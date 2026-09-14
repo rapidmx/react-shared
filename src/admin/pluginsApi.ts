@@ -134,13 +134,19 @@ export interface AddPluginResult {
  * refuses the change (409) when what it would do now differs, e.g. because a new dependency appeared since. Send empty
  * lists to require that nothing else is installed or enabled. */
 export interface PluginExpectedPlan {
+    /** The version of the plugin itself that was previewed. */
+    version?: string;
     install: { name: string; version: string }[];
     enable: string[];
 }
 
 /** The `expectedPlan` to send for a change previewed as `plan`. */
-export function expectedPlanOf(plan: Pick<PluginChangePlan, "install" | "enable">): PluginExpectedPlan {
-    return { install: plan.install.map(({ name, version }) => ({ name, version })), enable: [...plan.enable] };
+export function expectedPlanOf(plan: Pick<PluginChangePlan, "install" | "enable"> & { plugin?: { version: string } }): PluginExpectedPlan {
+    return {
+        ...(plan.plugin ? { version: plan.plugin.version } : {}),
+        install: plan.install.map(({ name, version }) => ({ name, version })),
+        enable: [...plan.enable],
+    };
 }
 
 export interface UpdatePluginInput {
