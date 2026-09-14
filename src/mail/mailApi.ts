@@ -636,6 +636,12 @@ export function createDraft(mailboxUid: string, folderUid: string): Promise<Mess
     });
 }
 
+/** Deletes a message - e.g. an unsent draft that's no longer needed because compose switched to a different
+ * sending mailbox. */
+export function deleteMessage(uid: string, version: number): Promise<void> {
+    return apiFetch(`/mail/messages/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+}
+
 /**
  * Assembles a draft's structured compose input (recipients/subject/HTML body, plus whatever attachments have
  * already been `uploadAttachment()`-ed onto it) into RFC 5322 MIME and stores it as the draft's `bodyBlobKey`

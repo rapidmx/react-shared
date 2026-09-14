@@ -14,6 +14,7 @@ import {
     cancelScheduledSend,
     classifyMessage,
     createDraft,
+    deleteMessage,
     createFolder,
     createMailbox,
     declineReceipt,
@@ -680,6 +681,14 @@ describe("createDraft", () => {
         expect(body.mailboxUid).toBe("mb1");
         expect(body.folderUid).toBe("f1");
         expect(body.messageId).toMatch(/@webmail$/);
+    });
+});
+
+describe("deleteMessage", () => {
+    it("DELETEs the encoded message uid with its version", async () => {
+        const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
+        await deleteMessage("m/1", 3);
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m%2F1?version=3", expect.objectContaining({ method: "DELETE" }));
     });
 });
 
