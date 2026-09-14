@@ -31,10 +31,11 @@ export function getRetentionPolicy(): Promise<RetentionPolicy> {
     return apiFetch(`/system/retention-policy`);
 }
 
-/** Partial patch — only supplied fields are changed. There is no way to clear a previously-configured
- * field back to "no automatic purge" through this endpoint (matches the route's own real behavior,
- * not a client-side limitation to work around). */
-export function updateRetentionPolicy(patch: Partial<RetentionPolicy>): Promise<RetentionPolicy> {
+/** A retention policy change: a field left out is left alone, and `null` clears it back to "no automatic purge". */
+export type RetentionPolicyUpdate = { [K in keyof RetentionPolicy]?: RetentionPolicy[K] | null };
+
+/** Partial patch — only supplied fields are changed, and a `null` field is cleared. */
+export function updateRetentionPolicy(patch: RetentionPolicyUpdate): Promise<RetentionPolicy> {
     return apiFetch(`/system/retention-policy`, {
         method: "PUT",
         body: JSON.stringify(patch),
