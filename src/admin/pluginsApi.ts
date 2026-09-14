@@ -31,6 +31,8 @@ export interface PluginManifest {
     settings?: PluginSettingDefinition[];
     /** Other plugins this one needs, as package name to npm version range. */
     requires?: Record<string, string>;
+    /** Whether the plugin stores per-mailbox data that data-subject erasure must reach. */
+    mailboxScopedData?: boolean;
 }
 
 export type PluginSettingValue = string | number | boolean;
