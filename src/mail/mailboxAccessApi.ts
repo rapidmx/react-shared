@@ -14,11 +14,18 @@
  */
 import { apiFetch } from "../util/api.js";
 
+/** A role that can be granted. */
 export type MailboxAccessRole = "viewer" | "manager";
+
+/** A member's role as listed: `"custom"` for any other set of actions granted outside this API, which can't be set
+ * here - see `actions` for what it allows. */
+export type MailboxAccessMemberRole = MailboxAccessRole | "custom";
 
 export interface MailboxAccessMember {
     userOrRoleId: string;
-    role: MailboxAccessRole;
+    role: MailboxAccessMemberRole;
+    /** The ACL actions the member holds. */
+    actions?: string[];
 }
 
 export interface MailboxOwnerLookup {

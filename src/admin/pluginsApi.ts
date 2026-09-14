@@ -103,6 +103,8 @@ export interface PluginUpdateInfo {
     installedVersion: string;
     latestVersion?: string;
     updateAvailable: boolean;
+    /** Whether this server's configuration still allows the package; an update is never offered when it doesn't. */
+    allowed?: boolean;
     /** Why the registry couldn't be checked for this plugin. */
     error?: string;
 }
