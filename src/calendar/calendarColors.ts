@@ -24,6 +24,22 @@ export const CALENDAR_COLOR_PALETTE: string[] = [
  * existed — kept as the fallback so every pre-existing calendar keeps looking the same. */
 export const DEFAULT_CALENDAR_COLOR = CALENDAR_COLOR_PALETTE[0];
 
-export function colorForFolder(folder: Pick<Folder, "color">): string {
-    return folder.color || DEFAULT_CALENDAR_COLOR;
+/** `fallback` replaces `DEFAULT_CALENDAR_COLOR` for a folder with no color of its own - e.g. a shared
+ * mailbox's calendar falling back to that mailbox's `accentColorForMailbox()`, so it doesn't render in
+ * the same default blue as the caller's own calendar. An explicit `Folder.color` always wins. */
+export function colorForFolder(folder: Pick<Folder, "color">, fallback: string = DEFAULT_CALENDAR_COLOR): string {
+    return folder.color || fallback;
+}
+
+/** A stable per-mailbox color for grouping one mailbox's calendars together (sidebar section accent, and
+ * the fallback color for its uncolored calendars). Deterministic hash of `mailboxUid` into the palette
+ * minus `DEFAULT_CALENDAR_COLOR`, so another mailbox never collides with the default a caller's own
+ * calendar already uses. Client-side only - nothing is persisted. */
+export function accentColorForMailbox(mailboxUid: string): string {
+    const choices = CALENDAR_COLOR_PALETTE.slice(1);
+    let hash = 0;
+    for (let i = 0; i < mailboxUid.length; i++) {
+        hash = (hash * 31 + mailboxUid.charCodeAt(i)) >>> 0;
+    }
+    return choices[hash % choices.length];
 }
