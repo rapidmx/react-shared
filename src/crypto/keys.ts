@@ -48,7 +48,7 @@ export interface GeneratedKeyPair {
  * server-side at issuance, not here; this function only proves possession of the generated key.
  */
 export async function generateKeyPairWithCsr(mailboxAddress: string, useType: "sign" | "encrypt"): Promise<GeneratedKeyPair> {
-    const keyPair = (await crypto.subtle.generateKey(KEY_ALGORITHM, true, ["sign", "verify"])) as CryptoKeyPair;
+    const keyPair = await crypto.subtle.generateKey(KEY_ALGORITHM, true, ["sign", "verify"]);
     const csr = await x509.Pkcs10CertificateRequestGenerator.create({
         // Structural (array-of-object) subject name, matching @rapidmx/restapi's own CA-side convention -
         // never string-interpolated, so a mailbox address containing RDN-special characters (`,`, `+`,
@@ -75,11 +75,18 @@ export async function exportPrivateKeyPkcs8(privateKey: CryptoKey): Promise<Uint
  * after unwrapping it (`algorithm: "ECDSA"`, `usages: ["sign"]`) and, by `crypto/smime.ts`, to reinterpret
  * the same P-256 encryption key material for actual key-agreement operations (`algorithm: "ECDH"`,
  * `usages: ["deriveBits"]`) — see this module's own doc comment for why one physical key supports both.
+ *
+ * Imported **non-extractable by default**: signing/ECDH (including pkijs's own `SignedData.sign()`/
+ * `EnvelopedData.decrypt()`, which use a `CryptoKey` recipient key directly) never need to read the key
+ * material back out, so a script that obtains the `CryptoKey` object can use it but not exfiltrate it.
+ * Pass `extractable: true` only for a path that genuinely has to re-export the PKCS#8 bytes (see
+ * `keySession.ts`'s `unlockWithPassword()` for the one current case, and why).
  */
 export async function importPrivateKeyPkcs8(
     raw: Uint8Array,
     algorithm: EcKeyImportParams,
     usages: KeyUsage[],
+    extractable: boolean = false,
 ): Promise<CryptoKey> {
-    return crypto.subtle.importKey("pkcs8", raw as BufferSource, algorithm, true, usages);
+    return crypto.subtle.importKey("pkcs8", raw as BufferSource, algorithm, extractable, usages);
 }

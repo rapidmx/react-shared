@@ -10,6 +10,7 @@ import {
     listMatterExportRequests,
     matterExportRequestDownloadUrl,
 } from "../../src/admin/matterExportApi.js";
+import { configureApiBaseUrl } from "../../src/util/api.js";
 
 const request = {
     uid: "mer1",
@@ -44,6 +45,12 @@ describe("listMatterExportRequests", () => {
         expect(fetchMock).toHaveBeenCalledWith("/api/escrow/matter-export-requests", expect.anything());
         expect(result).toEqual([request]);
     });
+
+    it("forwards limit/page/matterId as query params", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await listMatterExportRequests({ limit: 50, page: 1, matterId: "m 1" });
+        expect(fetchMock).toHaveBeenCalledWith("/api/escrow/matter-export-requests?limit=50&page=1&matterId=m+1", expect.anything());
+    });
 });
 
 describe("getMatterExportRequest", () => {
@@ -58,5 +65,14 @@ describe("getMatterExportRequest", () => {
 describe("matterExportRequestDownloadUrl", () => {
     it("builds the same-origin download URL for an encoded uid", () => {
         expect(matterExportRequestDownloadUrl("mer/1")).toBe("/api/escrow/matter-export-requests/mer%2F1/download");
+    });
+
+    it("prefixes the configured API base URL", () => {
+        configureApiBaseUrl("https://mail.example.com");
+        try {
+            expect(matterExportRequestDownloadUrl("mer1")).toBe("https://mail.example.com/api/escrow/matter-export-requests/mer1/download");
+        } finally {
+            configureApiBaseUrl("");
+        }
     });
 });

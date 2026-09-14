@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
+import { configureApiBaseUrl } from "../../src/util/api.js";
 import {
     approveReceipt,
     archiveMessage,
@@ -63,6 +64,7 @@ const mailbox = {
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    configureApiBaseUrl("");
 });
 
 describe("listMailboxes", () => {
@@ -583,6 +585,11 @@ describe("attachmentContentUrl", () => {
     it("builds the same-origin download URL for an encoded uid", () => {
         expect(attachmentContentUrl("a/1")).toBe("/api/mail/attachments/a%2F1/content");
     });
+
+    it("prefixes the configured API base URL", () => {
+        configureApiBaseUrl("https://mail.example.com");
+        expect(attachmentContentUrl("a1")).toBe("https://mail.example.com/api/mail/attachments/a1/content");
+    });
 });
 
 describe("uploadAttachment", () => {
@@ -594,11 +601,20 @@ describe("uploadAttachment", () => {
 
         expect(fetchMock).toHaveBeenCalledWith(
             "/api/mail/attachments/upload?messageUid=m1&filename=note.txt&mimeType=text%2Fplain",
-            expect.objectContaining({ method: "POST", body: file }),
+            expect.objectContaining({ method: "POST", body: file, credentials: "include" }),
         );
         const init = fetchMock.mock.calls[0][1] as RequestInit;
         expect((init.headers as Record<string, string>)["Content-Type"]).toBe("text/plain");
         expect(result).toEqual(attachment);
+    });
+
+    it("targets the configured API base URL", async () => {
+        configureApiBaseUrl("https://mail.example.com");
+        const fetchMock = mockFetch(() => jsonResponse(200, attachment));
+        await uploadAttachment("m1", new File(["hello"], "note.txt", { type: "text/plain" }));
+        expect(fetchMock.mock.calls[0][0]).toBe(
+            "https://mail.example.com/api/mail/attachments/upload?messageUid=m1&filename=note.txt&mimeType=text%2Fplain",
+        );
     });
 
     it("falls back to application/octet-stream when the file has no type", async () => {
@@ -722,8 +738,15 @@ describe("getMessageRawContent", () => {
     it("fetches the encoded message's raw endpoint and returns its text body", async () => {
         const fetchMock = mockFetch(() => new Response("From: a@example.com\r\n\r\nbody", { status: 200, headers: { "content-type": "message/rfc822" } }));
         const result = await getMessageRawContent("m/1");
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m%2F1/raw");
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m%2F1/raw", { credentials: "include" });
         expect(result).toBe("From: a@example.com\r\n\r\nbody");
+    });
+
+    it("targets the configured API base URL", async () => {
+        configureApiBaseUrl("https://mail.example.com");
+        const fetchMock = mockFetch(() => new Response("raw", { status: 200 }));
+        await getMessageRawContent("m1");
+        expect(fetchMock).toHaveBeenCalledWith("https://mail.example.com/api/mail/messages/m1/raw", { credentials: "include" });
     });
 
     it("throws ApiRequestError using the body's message field on a non-ok JSON response", async () => {

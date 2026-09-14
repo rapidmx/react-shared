@@ -1,7 +1,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { parseSearchQuery } from "../../src/search/queryGrammar.js";
 
 describe("parseSearchQuery", () => {
@@ -35,9 +35,41 @@ describe("parseSearchQuery", () => {
 
     it("parses before:/after: as real Date objects", () => {
         const result = parseSearchQuery("before:2026-06-01 after:2026-01-01 taxes");
-        expect(result.before).toEqual(new Date("2026-06-01"));
-        expect(result.after).toEqual(new Date("2026-01-01"));
+        expect(result.before).toEqual(new Date(2026, 5, 1));
+        expect(result.after).toEqual(new Date(2026, 0, 1));
         expect(result.text).toBe("taxes");
+    });
+
+    describe("date-only values in a non-UTC runtime zone", () => {
+        const originalTz = process.env.TZ;
+        afterEach(() => {
+            process.env.TZ = originalTz;
+        });
+
+        it("parses a date-only before:/after: value as local midnight, not UTC midnight", () => {
+            // Node applies a runtime `process.env.TZ` change to `Date`'s local-time methods immediately.
+            process.env.TZ = "America/New_York";
+            const result = parseSearchQuery("before:2026-01-02 after:2026-07-01");
+            expect(result.before?.toISOString()).toBe("2026-01-02T05:00:00.000Z");
+            expect(result.after?.toISOString()).toBe("2026-07-01T04:00:00.000Z");
+        });
+
+        it("keeps a full ISO date-time value exactly as written", () => {
+            process.env.TZ = "America/New_York";
+            const result = parseSearchQuery("before:2026-01-02T00:00:00Z after:2026-01-01T12:30:00-08:00");
+            expect(result.before?.toISOString()).toBe("2026-01-02T00:00:00.000Z");
+            expect(result.after?.toISOString()).toBe("2026-01-01T20:30:00.000Z");
+        });
+    });
+
+    it.each(["2026-02-30", "2026-13-01", "2026-00-10"])("leaves a date-only value naming a nonexistent date (%s) in the free-text remainder", (value) => {
+        const result = parseSearchQuery(`before:${value} taxes`);
+        expect(result.before).toBeUndefined();
+        expect(result.text).toBe(`before:${value} taxes`);
+    });
+
+    it("parses a date-only value with a two-digit year literally rather than as 19xx", () => {
+        expect(parseSearchQuery("after:0099-03-04").after?.getFullYear()).toBe(99);
     });
 
     it("leaves an unparseable before:/after: value in the free-text remainder", () => {
@@ -133,8 +165,8 @@ describe("parseSearchQuery", () => {
             cc: "carol@example.com",
             subject: "budget",
             hasAttachment: true,
-            before: new Date("2026-06-01"),
-            after: new Date("2026-01-01"),
+            before: new Date(2026, 5, 1),
+            after: new Date(2026, 0, 1),
             folderUid: "f1",
             flags: ["flagged"],
             labels: ["l1"],

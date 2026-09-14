@@ -43,6 +43,12 @@ describe("listAccessRequests", () => {
         await listAccessRequests({ page: 2, limit: 10 });
         expect(fetchMock).toHaveBeenCalledWith("/api/escrow/access-requests?limit=10&page=2", expect.anything());
     });
+
+    it("narrows to one matterId when given", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await listAccessRequests({ matterId: "m/1" });
+        expect(fetchMock).toHaveBeenCalledWith("/api/escrow/access-requests?limit=25&page=0&matterId=m%2F1", expect.anything());
+    });
 });
 
 describe("getAccessRequest", () => {

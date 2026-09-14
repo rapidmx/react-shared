@@ -120,6 +120,12 @@ describe("updateContact", () => {
         );
         expect(result.displayName).toBe("Renamed");
     });
+
+    it("accepts a minimal patch carrying only uid/version plus the changed field", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { ...contact, notes: "hi" }));
+        await updateContact({ uid: "c1", version: 2, notes: "hi" });
+        expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({ uid: "c1", version: 2, notes: "hi" });
+    });
 });
 
 describe("deleteContact", () => {
@@ -147,12 +153,11 @@ describe("listDeletedContacts", () => {
 });
 
 describe("setContactFavorite", () => {
-    it("PUTs the contact with favorite set to the given value", async () => {
+    it("PUTs only uid/version/favorite, never the contact's other (server-managed) fields", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, { ...contact, favorite: true }));
         await setContactFavorite(contact, true);
         const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
-        expect(body.favorite).toBe(true);
-        expect(body.uid).toBe("c1");
+        expect(body).toEqual({ uid: "c1", version: 0, favorite: true });
     });
 });
 

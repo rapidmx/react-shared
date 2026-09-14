@@ -3,7 +3,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { describe, expect, it } from "vitest";
 import { toBase64 } from "../../src/crypto/encoding.js";
-import { base32Encode, deriveFromRecoveryCode, generateRecoveryCode } from "../../src/crypto/recoveryCode.js";
+import { base32Encode, deriveFromRecoveryCode, generateRecoveryCode, normalizeRecoveryCode } from "../../src/crypto/recoveryCode.js";
 
 describe("base32Encode", () => {
     it("encodes an input whose bit length is an exact multiple of 5 with no leftover bits", () => {
@@ -45,6 +45,38 @@ describe("deriveFromRecoveryCode", () => {
         const canonical = await deriveFromRecoveryCode(code, salt);
         const retyped = await deriveFromRecoveryCode(` ${code.toLowerCase()} `, salt);
         expect(toBase64(retyped)).toBe(toBase64(canonical));
+    });
+
+    it("derives exactly the pre-normalization key for a generated code (existing wraps keep unlocking)", async () => {
+        const { hkdfDerive } = await import("../../src/crypto/masterKey.js");
+        const salt = crypto.getRandomValues(new Uint8Array(16));
+        for (let i = 0; i < 20; i++) {
+            const code = generateRecoveryCode();
+            expect(normalizeRecoveryCode(code)).toBe(code);
+            // The original derivation hashed `code.trim().toUpperCase()` - i.e. the dashed form verbatim.
+            const legacy = await hkdfDerive(new TextEncoder().encode(code), salt, "wrap");
+            expect(toBase64(await deriveFromRecoveryCode(code, salt))).toBe(toBase64(legacy));
+        }
+    });
+
+    it("derives the same key for lowercase, spaced, dash-less, and O/I/L-transcribed variants", async () => {
+        const salt = crypto.getRandomValues(new Uint8Array(16));
+        // A fixed code containing 0 and 1 so the O/I/L aliases are actually exercised.
+        const code = "0123-4567-89AB-CDEF-GHJK-MNPQ-RSTV-WXYZ";
+        const canonical = toBase64(await deriveFromRecoveryCode(code, salt));
+        const variants = [
+            code.toLowerCase(),
+            code.replace(/-/g, ""),
+            code.replace(/-/g, " "),
+            ` ${code.replace(/-/g, " - ")}\n`,
+            code.replace("0", "O").replace("1", "I"),
+            code.replace("0", "o").replace("1", "l"),
+            "O L23-4567 89ab cdefGHJKMNPQRSTVWXYZ",
+        ];
+        for (const variant of variants) {
+            expect(normalizeRecoveryCode(variant)).toBe(code);
+            expect(toBase64(await deriveFromRecoveryCode(variant, salt))).toBe(canonical);
+        }
     });
 
     it("produces different keys for different codes, same salt", async () => {

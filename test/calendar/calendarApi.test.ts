@@ -44,6 +44,32 @@ describe("listCalendarEvents", () => {
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/calendar-events?limit=500&page=0&folderUid=f1", expect.anything());
         expect(result).toEqual([event]);
     });
+
+    it("pages through every full page until a short page comes back", async () => {
+        const fullPage = Array.from({ length: 500 }, (_, i) => ({ ...event, uid: `p0-${i}` }));
+        const secondFullPage = Array.from({ length: 500 }, (_, i) => ({ ...event, uid: `p1-${i}` }));
+        const fetchMock = mockFetch((url) => {
+            if (url.includes("page=0")) return jsonResponse(200, fullPage);
+            if (url.includes("page=1")) return jsonResponse(200, secondFullPage);
+            return jsonResponse(200, []);
+        });
+        const result = await listCalendarEvents("f1");
+        expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
+            "/api/mail/calendar-events?limit=500&page=0&folderUid=f1",
+            "/api/mail/calendar-events?limit=500&page=1&folderUid=f1",
+            "/api/mail/calendar-events?limit=500&page=2&folderUid=f1",
+        ]);
+        expect(result).toHaveLength(1000);
+        expect(result[500].uid).toBe("p1-0");
+    });
+
+    it("stops after a hard page cap if the server keeps returning full pages", async () => {
+        const fullPage = Array.from({ length: 500 }, () => event);
+        const fetchMock = mockFetch(() => jsonResponse(200, fullPage));
+        const result = await listCalendarEvents("f1");
+        expect(fetchMock).toHaveBeenCalledTimes(100);
+        expect(result).toHaveLength(50_000);
+    });
 });
 
 describe("getCalendarEvent", () => {

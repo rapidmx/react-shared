@@ -90,4 +90,23 @@ describe("listFlaggedMessages", () => {
         // Only inbox/sent_items should ever have been queried — calendar/contacts/tasks folders excluded.
         expect(fetchMock.mock.calls.filter((c) => (c[0] as string).startsWith("/api/mail/messages"))).toHaveLength(2);
     });
+
+    it("pages through a folder holding more than one 500-message page, and includes archive folders.", async () => {
+        const fullPage = Array.from({ length: 500 }, (_, i) => message(`p0-${i}`, false, "2026-01-01T00:00:00.000Z"));
+        const fetchMock = mockFetch((url) => {
+            if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [folder("f-archive", "archive")]);
+            if (url.includes("folderUid=f-archive") && url.includes("page=0")) return jsonResponse(200, fullPage);
+            if (url.includes("folderUid=f-archive") && url.includes("page=1")) {
+                return jsonResponse(200, [message("second-page-flagged", true, "2026-01-02T00:00:00.000Z")]);
+            }
+            throw new Error(`unexpected ${url}`);
+        });
+
+        const result = await listFlaggedMessages("mb1");
+
+        expect(result.map((m) => m.uid)).toEqual(["second-page-flagged"]);
+        const messageCalls = fetchMock.mock.calls.map((c) => c[0] as string).filter((u) => u.startsWith("/api/mail/messages"));
+        expect(messageCalls).toHaveLength(2);
+        expect(messageCalls[0]).toContain("limit=500");
+    });
 });

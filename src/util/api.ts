@@ -53,6 +53,19 @@ export function configureApiBaseUrl(baseUrl: string): void {
 }
 
 /**
+ * The full URL for an `@ApiRoute`-declared `path` (e.g. `/mail/attachments/a1/content`) - the `/api`
+ * prefix plus whatever origin `configureApiBaseUrl()` set (a same-origin relative `/api/...` path when
+ * it was never called). Every call site that can't go through `apiFetch()` - a raw-bytes upload, a
+ * non-JSON download, or a plain URL handed to an `<a href>`/`<img src>` - must build its URL here rather
+ * than hard-coding `/api...`, or it silently ignores a configured cross-origin base URL. A raw `fetch()`
+ * built on this should also pass `credentials: "include"` so a cross-origin call still carries the `jwt`
+ * cookie (harmless for a same-origin one).
+ */
+export function apiUrl(path: string): string {
+    return `${apiBaseUrl}/api${path}`;
+}
+
+/**
  * `fetch()` against the RapidMX server's API - same-origin unless `configureApiBaseUrl()` has been
  * called, in which case this also switches to `credentials: "include"` so the configured cross-origin
  * call still carries the `jwt` cookie (a plain relative fetch never needs this - `credentials:
@@ -65,7 +78,7 @@ export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}
     headers.set("Content-Type", "application/json");
     const credentials = apiBaseUrl ? "include" : init.credentials;
 
-    const res = await fetch(`${apiBaseUrl}/api${path}`, { ...init, headers, credentials });
+    const res = await fetch(apiUrl(path), { ...init, headers, credentials });
     return decodeApiResponse<T>(res);
 }
 

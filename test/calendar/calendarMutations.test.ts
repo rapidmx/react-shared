@@ -93,6 +93,67 @@ describe("detachOccurrence", () => {
         expect(postBody.recurrenceRule).toBeUndefined();
         expect(result.uid).toBe("e2");
     });
+
+    it("creates the detached event before excluding the occurrence from the master", async () => {
+        const fetchMock = mockFetch((url, init) =>
+            init?.method === "POST" ? jsonResponse(200, occurrence({ uid: "e2" })) : jsonResponse(200, occurrence()),
+        );
+        await detachOccurrence(occurrence(), { title: "Renamed" });
+        expect(fetchMock.mock.calls.map((c) => `${(c[1] as RequestInit).method} ${c[0]}`)).toEqual([
+            "POST /api/mail/calendar-events",
+            "PUT /api/mail/calendar-events/e1",
+        ]);
+    });
+
+    it("keeps the master's icalUid and autoReply fields, sets recurrenceId, and never copies a recurrenceRule", async () => {
+        const fetchMock = mockFetch((url, init) =>
+            init?.method === "POST" ? jsonResponse(200, occurrence({ uid: "e2" })) : jsonResponse(200, occurrence()),
+        );
+        const master = occurrence({ icalUid: "series-ical", autoReplyEnabled: true, autoReplyMessage: "Away" });
+
+        // The event modal passes its full field set, including the series' own recurrence rule.
+        await detachOccurrence(master, { title: "Renamed", recurrenceRule: master.recurrenceRule });
+
+        const postCall = fetchMock.mock.calls.find((c) => (c[1] as RequestInit).method === "POST")!;
+        const postBody = JSON.parse((postCall[1] as RequestInit).body as string);
+        expect(postBody).toMatchObject({
+            icalUid: "series-ical",
+            recurrenceId: "2026-06-03T15:00:00.000Z",
+            autoReplyEnabled: true,
+            autoReplyMessage: "Away",
+            title: "Renamed",
+        });
+        expect("recurrenceRule" in postBody).toBe(false);
+    });
+
+    it("deletes the created detached event and rethrows when adding the exception fails", async () => {
+        const fetchMock = mockFetch((url, init) => {
+            if (init?.method === "POST") return jsonResponse(200, occurrence({ uid: "e2", version: 0 }));
+            if (init?.method === "PUT") return jsonResponse(409, { message: "version conflict" });
+            return emptyResponse(200);
+        });
+
+        await expect(detachOccurrence(occurrence(), { title: "Renamed" })).rejects.toThrow();
+
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/calendar-events/e2?version=0", expect.objectContaining({ method: "DELETE" }));
+    });
+
+    it("still rethrows the original error when the rollback delete also fails", async () => {
+        mockFetch((url, init) => {
+            if (init?.method === "POST") return jsonResponse(200, occurrence({ uid: "e2", version: 0 }));
+            if (init?.method === "PUT") return jsonResponse(409, { message: "version conflict" });
+            return jsonResponse(500, { message: "rollback failed" });
+        });
+
+        await expect(detachOccurrence(occurrence(), { title: "Renamed" })).rejects.toThrow("version conflict");
+    });
+
+    it("does not touch the master when creating the detached event fails", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(500, { message: "create failed" }));
+        await expect(detachOccurrence(occurrence(), { title: "Renamed" })).rejects.toThrow();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("POST");
+    });
 });
 
 describe("deleteEventSeries", () => {

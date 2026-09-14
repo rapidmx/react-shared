@@ -16,7 +16,7 @@ interface TestIdentity {
 }
 
 async function generateTestIdentity(cn: string, keyUsage: "sign" | "encrypt"): Promise<TestIdentity> {
-    const keys = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
+    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
     const cert = await x509.X509CertificateGenerator.createSelfSigned({
         serialNumber: "01",
         name: `CN=${cn}`,
@@ -60,7 +60,8 @@ describe("evaluateMessageSecurity", () => {
 
             const result = await evaluateMessageSecurity(rawMime, undefined);
             expect(result.state).toBe("signed_verified");
-            expect(result.html).toBe("Hello, Bob.");
+            expect(result.text).toBe("Hello, Bob.");
+            expect(result.html).toBe('<pre style="white-space: pre-wrap; word-wrap: break-word; font-family: inherit">Hello, Bob.</pre>');
             expect(result.subject).toBe("Real subject");
         });
 
@@ -69,7 +70,7 @@ describe("evaluateMessageSecurity", () => {
             const part = await buildSignedOnlyMessage("text/plain; charset=utf-8", "Hello, Bob.", HEADERS, alice.certDer, alice.privateKey);
             const tamperedMime = assembleOutboundMime(HEADERS, part).replace("Hello, Bob.", "Hello, Eve.");
 
-            expect(await evaluateMessageSecurity(tamperedMime, undefined)).toEqual({ state: "signature_failed" });
+            expect(await evaluateMessageSecurity(tamperedMime, undefined)).toEqual({ state: "signature_failed", signatureFailureReason: "invalid_signature" });
         });
 
         it("is signature_failed when a pinned fingerprint is supplied and does not match the signer", async () => {
@@ -79,7 +80,7 @@ describe("evaluateMessageSecurity", () => {
             const rawMime = assembleOutboundMime(HEADERS, part);
 
             const wrongFingerprint = await computeCertFingerprint(someoneElse.certDer);
-            expect(await evaluateMessageSecurity(rawMime, undefined, wrongFingerprint)).toEqual({ state: "signature_failed" });
+            expect(await evaluateMessageSecurity(rawMime, undefined, wrongFingerprint)).toEqual({ state: "signature_failed", signatureFailureReason: "untrusted_signer" });
         });
 
         it("is signed_verified when a pinned fingerprint is supplied and matches the signer", async () => {
@@ -108,7 +109,7 @@ describe("evaluateMessageSecurity", () => {
 
             const result = await evaluateMessageSecurity(rawMime, { encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer });
             expect(result.state).toBe("encrypted");
-            expect(result.html).toBe("Secret body.");
+            expect(result.text).toBe("Secret body.");
             expect(result.decryptError).toBeUndefined();
         });
 
@@ -145,7 +146,7 @@ describe("evaluateMessageSecurity", () => {
 
             const result = await evaluateMessageSecurity(rawMime, { encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer });
             expect(result.state).toBe("encrypted_verified");
-            expect(result.html).toBe("Secret body.");
+            expect(result.text).toBe("Secret body.");
         });
 
         it("recovers the real subject from the protected headers, not the (possibly obscured) outer envelope", async () => {
@@ -189,7 +190,7 @@ describe("evaluateMessageSecurity", () => {
             expect(result.headerTamperDetected).toBe(true);
         });
 
-        it("propagates headerTamperDetected through a verified sign-then-encrypt message too", async () => {
+        it("downgrades a sign-then-encrypt message whose outer From was rewritten, and still reports headerTamperDetected", async () => {
             const alice = await generateTestIdentity("alice@example.com", "sign");
             const bob = await generateTestIdentity("bob@example.com", "encrypt");
             const part = await buildEncryptedMessage("text/plain; charset=utf-8", "Secret body.", HEADERS, HEADERS, [bob.certDer], {
@@ -199,7 +200,8 @@ describe("evaluateMessageSecurity", () => {
             const rawMime = assembleOutboundMime(HEADERS, part).replace("From: alice@example.com", "From: eve@example.com");
 
             const result = await evaluateMessageSecurity(rawMime, { encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer });
-            expect(result.state).toBe("encrypted_verified");
+            expect(result.state).toBe("signature_failed");
+            expect(result.signatureFailureReason).toBe("header_mismatch");
             expect(result.headerTamperDetected).toBe(true);
         });
 
@@ -222,7 +224,7 @@ describe("evaluateMessageSecurity", () => {
             expect(result.state).toBe("signature_failed");
             // Content still renders alongside the warning - a failed signature is not a reason to hide
             // the (successfully decrypted, AEAD-authenticated) body from the reader.
-            expect(result.html).toBe("Secret body.");
+            expect(result.text).toBe("Secret body.");
         });
     });
 });

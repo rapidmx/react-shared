@@ -43,13 +43,12 @@ export default defineConfig({
                     //    created rather than reused. See test/useBranding.test.tsx's 2026-09-11 test for
                     //    the actual (doc-comment-contradicting) behavior this documents - worth JP's own
                     //    look as a possible real fix, not changed here.
-                    // 2. smime.ts has three branches unreachable through its own public API surface, all
-                    //    documented inline at their exact location: `verifyDetached()`/`verifyOpaque()`'s
-                    //    `certificates?.[0] instanceof Certificate` check (the `certificates` field is a
-                    //    union with AttributeCertificate/OtherCertificateFormat variants that neither
-                    //    signing function ever actually embeds), and `decryptEnvelopedData()`'s
+                    // 2. smime.ts has one branch unreachable through its own public API surface,
+                    //    documented inline at its exact location: `decryptEnvelopedData()`'s
                     //    non-Error-thrown fallback (only reachable with zero recipientInfos, which
-                    //    `encryptForRecipients()` never produces in practice).
+                    //    `encryptForRecipients()` never produces in practice). The former
+                    //    `certificates?.[0] instanceof Certificate` branches are gone: verification now
+                    //    uses the certificate pkijs matched to the SignerInfo (round-3 review, PoC 2).
                     // 3. queryGrammar.ts#extractFirst()'s `match[2] ?? match[3] ?? ""` fallback - the
                     //    regex it follows requires one of group 2 (quoted value) or group 3 (bare value)
                     //    whenever it matches at all, so the `?? ""` arm is unreachable.

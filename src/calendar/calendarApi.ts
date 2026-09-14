@@ -94,6 +94,9 @@ export interface CalendarEvent {
     autoReplyMessage?: string;
 }
 
+const LIST_PAGE_SIZE = 500;
+const LIST_CALENDAR_EVENTS_MAX_PAGES = 100;
+
 /**
  * Lists every event in a folder (same "fetch the flat list, filter client-side" contract as
  * `contactsApi.ts`'s `listContacts`/`tasksApi.ts`'s `listTasks`), for the caller to expand and filter
@@ -104,9 +107,22 @@ export interface CalendarEvent {
  * `Date`, so a Mongo `$lte`/`$gte` comparison against them (a real `Date` operand) matches nothing at
  * all, silently returning zero events for *any* date-bounded query. Client-side filtering sidesteps
  * that entirely and needs no fix to land here.
+ *
+ * Pages through the whole folder (`limit=500`, the server's own page-size cap) until a short page comes
+ * back, so a calendar with more than one page of events isn't silently truncated. A hard cap of
+ * `LIST_CALENDAR_EVENTS_MAX_PAGES` pages guards against looping forever should a server ever ignore
+ * `page` and keep returning full pages.
  */
-export function listCalendarEvents(folderUid: string): Promise<CalendarEvent[]> {
-    return apiFetch(`/mail/calendar-events?${buildQuery({ limit: 500 }, { folderUid })}`);
+export async function listCalendarEvents(folderUid: string): Promise<CalendarEvent[]> {
+    const events: CalendarEvent[] = [];
+    for (let page = 0; page < LIST_CALENDAR_EVENTS_MAX_PAGES; page++) {
+        const batch = await apiFetch<CalendarEvent[]>(`/mail/calendar-events?${buildQuery({ limit: LIST_PAGE_SIZE, page }, { folderUid })}`);
+        events.push(...batch);
+        if (batch.length < LIST_PAGE_SIZE) {
+            break;
+        }
+    }
+    return events;
 }
 
 export function getCalendarEvent(uid: string): Promise<CalendarEvent> {

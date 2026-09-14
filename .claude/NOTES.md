@@ -534,3 +534,29 @@ that order; Phase 4 discovery/contacts UI and Phase 5 settings/recovery UI are s
     doesn't re-flag it without checking Tier 1's own behavior first) and a pinning test asserting two
     genuinely different-content candidates get the identical score for an all-negated query - protects
     against a future change accidentally making this asymmetric between tiers instead of symmetric.
+
+### 2026-09-14 — Round-3 review fixes (S/MIME receive path, calendar tz, API contracts, key session)
+
+- **S/MIME (critical, PoCs confirmed against the old dist before fixing):** `verifyDetached()` now rejects
+  SignedData carrying eContent (pkijs silently prefers eContent over the supplied `data`) and both verify
+  functions require `eContentType` id-data; the signer certificate is pkijs's `extendedMode`
+  `signerCertificate` (the SignerInfo's match), never `certificates[0]`. PoCs live on as
+  `test/crypto/smimeRegressions.test.ts`.
+- **Identity binding** (`messageSecurity.ts`, exported `checkSignerBinding()`): pin mismatch or pin with no
+  cert → `untrusted_signer`; cert emails (SAN rfc822Name, else subject E / email-shaped CN - the CN fallback
+  keeps our own test/self-signed certs working) must contain the single protected From (outer From when
+  there are no protected headers) → else `signer_identity_mismatch`; protected From/To must equal the outer
+  envelope's → else `header_mismatch`. All map to `state: "signature_failed"` plus new optional
+  `signatureFailureReason` - the state union was deliberately NOT extended (web-client switches on it).
+- **Decrypt rejects non-AEAD** (`UnsupportedContentEncryptionError`, AES-GCM OIDs only). Interop cost:
+  legacy AES-CBC S/MIME mail is undecryptable by design.
+- **MIME parsing** moved to new dependency-free `crypto/mime.ts` (no MIME lib in deps; not worth adding
+  one). `MessageSecurityResult.html` is real HTML only for text/html; text/plain is escaped into a `<pre>`
+  with raw text in new `text`. RFC 2231/2047 not supported (documented in the module).
+- Calendar (tz-aware expansion, local drag ids, detach ordering/rollback), API contracts (`apiUrl()`,
+  `ContactPatch`, `RequestListParams`, `apply_label`, mailbox fields, search `mailboxUid`), key session
+  (`subscribeKeySession`, master-key zeroing, iframe/sleep-aware idle timeout), recovery-code
+  normalization, and Modal/Drawer focus trap + overlay stack were done in parallel in the same pass - see
+  each module's doc comments. Known server gaps: restapi list endpoints didn't yet honour
+  `limit`/`page`/`matterId`; tier-3 `has:attachment` uses the outer message's `hasAttachments`.
+- web-client's `.yarn/patches/@rapidmx-react-shared-npm-0.4.0-*.patch` was regenerated from this dist.

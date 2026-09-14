@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { ReactNode, useEffect, useRef } from "react";
+import React, { ReactNode, useRef } from "react";
 import { createPortal } from "react-dom";
+import { OverlayDepthContext, useOverlayDialog } from "./overlayStack.js";
 
 export interface DrawerProps {
     open: boolean;
@@ -17,39 +18,13 @@ export interface DrawerProps {
 
 /**
  * An off-canvas panel for mobile, portal-rendered to `document.body` like `Modal.tsx` — same
- * backdrop/focus-trap/Escape-key contract, copied verbatim, just styled as a slide-in edge panel
+ * backdrop/focus-trap/Escape-key contract (shared via `overlayStack.ts`), just styled as a slide-in edge panel
  * instead of a centered card. Used to hold a secondary sidebar's content below the `md` breakpoint,
  * where it doesn't fit alongside the primary content.
  */
 export default function Drawer({ open, onClose, title, side = "left", children }: DrawerProps) {
     const dialogRef = useRef<HTMLDivElement>(null);
-    const triggerRef = useRef<Element | null>(null);
-    // Callers routinely pass `onClose` as a fresh inline function every render — reading it through a ref
-    // (rather than depending on it directly) keeps the effect below from re-running, and re-stealing focus
-    // into the drawer, on every parent re-render.
-    const onCloseRef = useRef(onClose);
-    onCloseRef.current = onClose;
-
-    useEffect(() => {
-        if (!open) return;
-
-        triggerRef.current = document.activeElement;
-        dialogRef.current?.focus();
-
-        function handleKeyDown(e: KeyboardEvent) {
-            if (e.key === "Escape") {
-                onCloseRef.current();
-            }
-        }
-        document.addEventListener("keydown", handleKeyDown);
-
-        return () => {
-            document.removeEventListener("keydown", handleKeyDown);
-            if (triggerRef.current instanceof HTMLElement) {
-                triggerRef.current.focus();
-            }
-        };
-    }, [open]);
+    const childDepth = useOverlayDialog(open, dialogRef, onClose);
 
     if (!open) {
         return null;
@@ -82,7 +57,9 @@ export default function Drawer({ open, onClose, title, side = "left", children }
                         &times;
                     </button>
                 </div>
-                <div>{children}</div>
+                <div>
+                    <OverlayDepthContext.Provider value={childDepth}>{children}</OverlayDepthContext.Provider>
+                </div>
             </div>
         </div>,
         document.body,

@@ -105,12 +105,24 @@ function extractHasAttachment(input: string): { found: boolean; rest: string } {
     return { found: true, rest: input.slice(0, match.index) + match[1] + input.slice(match.index + match[0].length) };
 }
 
+/** Local midnight on `year`-`month`-`day`, or an Invalid Date when that calendar date doesn't exist
+ * (e.g. `2026-02-30`, which the `Date` constructor would otherwise silently roll over into March). */
+function localDate(year: number, month: number, day: number): Date {
+    const date = new Date(year, month - 1, day);
+    date.setFullYear(year);
+    return date.getMonth() === month - 1 && date.getDate() === day ? date : new Date(Number.NaN);
+}
+
 function extractDate(input: string, key: string): { date?: Date; rest: string } {
     const { value, rest } = extractFirst(input, key);
     if (value === undefined) {
         return { rest: input };
     }
-    const date = new Date(value);
+    // A date-only `yyyy-MM-dd` value means local midnight on that day (what a user typing `before:2026-01-02`
+    // means) — `new Date("2026-01-02")` alone would parse it as UTC midnight per the ECMAScript spec.
+    // Anything else (a full ISO date-time, with or without an offset) is left to `new Date()` as-is.
+    const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    const date = dateOnly ? localDate(Number(dateOnly[1]), Number(dateOnly[2]), Number(dateOnly[3])) : new Date(value);
     if (Number.isNaN(date.getTime())) {
         // Unparseable — leave the whole token in the free-text remainder rather than silently dropping
         // it, mirroring BaseSearchRoute's own parseDateParam() leniency (invalid date -> undefined).

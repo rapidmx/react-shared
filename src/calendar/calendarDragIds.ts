@@ -22,9 +22,16 @@ const DAY_ID_PREFIX = "day:";
 const SLOT_ID_PREFIX = "slot:";
 const RESIZE_ID_PREFIX = "resize:";
 
-/** A month-view day cell's droppable id, for the given day (any time-of-day on that calendar date). */
+/**
+ * A month-view day cell's droppable id, for the given day (any time-of-day on that calendar date) —
+ * encoded as the runtime's *local* `yyyy-MM-dd`, matching the local-midnight day dates the grid views
+ * build via `date-fns`.
+ */
 export function dayDropId(date: Date): string {
-    return `${DAY_ID_PREFIX}${date.toISOString().slice(0, 10)}`;
+    const yyyy = String(date.getFullYear()).padStart(4, "0");
+    const mm = String(date.getMonth() + 1).padStart(2, "0");
+    const dd = String(date.getDate()).padStart(2, "0");
+    return `${DAY_ID_PREFIX}${yyyy}-${mm}-${dd}`;
 }
 
 /** A week/day-view time slot's droppable id, rounded to the given date-time instant. */
@@ -76,9 +83,17 @@ export function resolveDragAction(
     }
 
     if (overId.startsWith(DAY_ID_PREFIX)) {
-        const targetDay = new Date(`${overId.slice(DAY_ID_PREFIX.length)}T00:00:00.000Z`);
-        const sourceDay = new Date(`${occurrence.startDate.slice(0, 10)}T00:00:00.000Z`);
-        return { type: "move", occurrence, deltaMs: targetDay.getTime() - sourceDay.getTime() };
+        // Moving to another day keeps the occurrence's local wall-clock start time, so the delta is
+        // "same local time on the target day" minus the original start — a whole number of calendar
+        // days, which is not always a multiple of 24h when the move crosses a DST change.
+        const [year, month, day] = overId.slice(DAY_ID_PREFIX.length).split("-").map(Number);
+        const source = new Date(occurrence.startDate);
+        const target = new Date(source.getTime());
+        target.setFullYear(year, month - 1, day);
+        if (Number.isNaN(target.getTime())) {
+            return null;
+        }
+        return { type: "move", occurrence, deltaMs: target.getTime() - source.getTime() };
     }
 
     if (overId.startsWith(SLOT_ID_PREFIX)) {

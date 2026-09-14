@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import { getImportRequest, listImportRequests, uploadMailboxImport } from "../../src/mail/mailboxImportApi.js";
+import { configureApiBaseUrl } from "../../src/util/api.js";
 
 const request = {
     uid: "mir1",
@@ -21,6 +22,7 @@ const request = {
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    configureApiBaseUrl("");
 });
 
 describe("uploadMailboxImport", () => {
@@ -32,11 +34,18 @@ describe("uploadMailboxImport", () => {
 
         expect(fetchMock).toHaveBeenCalledWith(
             "/api/mail/mailbox-import-requests?format=mbox&targetFolderUid=f1",
-            expect.objectContaining({ method: "POST", body: file }),
+            expect.objectContaining({ method: "POST", body: file, credentials: "include" }),
         );
         const init = fetchMock.mock.calls[0][1] as RequestInit;
         expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/mbox");
         expect(result).toEqual(request);
+    });
+
+    it("targets the configured API base URL", async () => {
+        configureApiBaseUrl("https://mail.example.com");
+        const fetchMock = mockFetch(() => jsonResponse(200, request));
+        await uploadMailboxImport(new File(["From x\n"], "archive.mbox"), { format: "mbox", targetFolderUid: "f1" });
+        expect(fetchMock.mock.calls[0][0]).toBe("https://mail.example.com/api/mail/mailbox-import-requests?format=mbox&targetFolderUid=f1");
     });
 
     it("uses application/vnd.ms-outlook for a pst upload", async () => {
@@ -100,6 +109,13 @@ describe("uploadMailboxImport", () => {
         expect(result).toBeUndefined();
     });
 
+    it("falls back to a generic message when there is no body and no statusText", async () => {
+        mockFetch(() => new Response(null, { status: 500, statusText: "" }));
+        await expect(uploadMailboxImport(new File(["..."], "archive.mbox"), { format: "mbox", targetFolderUid: "f1" })).rejects.toMatchObject({
+            message: "Upload failed.",
+        });
+    });
+
     it("falls back to statusText when the error response has no JSON body", async () => {
         const file = new File(["..."], "archive.mbox");
         mockFetch(() => new Response(null, { status: 500, statusText: "Server Error" }));
@@ -117,6 +133,12 @@ describe("listImportRequests", () => {
         const result = await listImportRequests();
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailbox-import-requests", expect.anything());
         expect(result).toEqual([request]);
+    });
+
+    it("forwards limit/page as query params", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await listImportRequests({ limit: 500, page: 0 });
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailbox-import-requests?limit=500&page=0", expect.anything());
     });
 });
 

@@ -11,7 +11,10 @@
  * `MatterExportJob`, not this client) — `createMatterExportRequest()` only stages a `pending` request;
  * poll `listMatterExportRequests()` for `status` to become `"ready"` (or `"failed"`).
  */
-import { apiFetch } from "../util/api.js";
+import { apiFetch, apiUrl } from "../util/api.js";
+import { RequestListParams, buildRequestListQuery } from "../util/apiQuery.js";
+
+export type { RequestListParams };
 
 export type MatterExportStatus = "pending" | "ready" | "failed";
 
@@ -35,9 +38,10 @@ export function createMatterExportRequest(matterId: string): Promise<MatterExpor
 }
 
 /** Scoped server-side to matters under scopes the caller holds — never all requests, even for a trusted
- * admin who isn't also a holder. */
-export function listMatterExportRequests(): Promise<MatterExportRequest[]> {
-    return apiFetch(`/escrow/matter-export-requests`);
+ * admin who isn't also a holder. Newest first; `params` pages through them (`limit` capped at 500
+ * server-side) and/or narrows to one `matterId`. */
+export function listMatterExportRequests(params: RequestListParams = {}): Promise<MatterExportRequest[]> {
+    return apiFetch(`/escrow/matter-export-requests${buildRequestListQuery(params)}`);
 }
 
 export function getMatterExportRequest(uid: string): Promise<MatterExportRequest> {
@@ -47,5 +51,5 @@ export function getMatterExportRequest(uid: string): Promise<MatterExportRequest
 /** A plain URL, not a fetch wrapper — same "let the browser download it natively" pattern
  * `dataExportApi.ts`'s `exportRequestDownloadUrl()` already establishes. 404s until `status === "ready"`. */
 export function matterExportRequestDownloadUrl(uid: string): string {
-    return `/api/escrow/matter-export-requests/${encodeURIComponent(uid)}/download`;
+    return apiUrl(`/escrow/matter-export-requests/${encodeURIComponent(uid)}/download`);
 }

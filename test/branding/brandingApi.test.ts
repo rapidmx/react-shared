@@ -15,11 +15,13 @@ import {
     uploadBrandingLogo,
     uploadBrandingStylesheet,
 } from "../../src/branding/brandingApi.js";
+import { configureApiBaseUrl } from "../../src/util/api.js";
 
 const branding: Branding = { companyName: "Acme", title: "Acme Mail" };
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    configureApiBaseUrl("");
 });
 
 describe("getBranding", () => {
@@ -52,10 +54,20 @@ describe("uploadBrandingLogo", () => {
 
         const result = await uploadBrandingLogo(file);
 
-        expect(fetchMock).toHaveBeenCalledWith("/api/system/branding/logo", expect.objectContaining({ method: "POST", body: file }));
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/system/branding/logo",
+            expect.objectContaining({ method: "POST", body: file, credentials: "include" }),
+        );
         const init = fetchMock.mock.calls[0][1] as RequestInit;
         expect((init.headers as Record<string, string>)["Content-Type"]).toBe("image/png");
         expect(result).toEqual(updated);
+    });
+
+    it("targets the configured API base URL", async () => {
+        configureApiBaseUrl("https://mail.example.com");
+        const fetchMock = mockFetch(() => jsonResponse(200, branding));
+        await uploadBrandingLogo(new File(["png-bytes"], "logo.png", { type: "image/png" }));
+        expect(fetchMock.mock.calls[0][0]).toBe("https://mail.example.com/api/system/branding/logo");
     });
 
     it("falls back to application/octet-stream when the file has no type", async () => {

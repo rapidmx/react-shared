@@ -10,7 +10,7 @@
  * repo's `.claude/NOTES.md`.
  */
 
-import { ApiRequestError, apiFetch, authApiFetch } from "../util/api.js";
+import { ApiRequestError, apiFetch, apiUrl, authApiFetch } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
 
@@ -64,11 +64,16 @@ export interface Mailbox {
      * real `Mailbox` (defaults `true`/`false` server-side respectively), same optional-for-old-fixtures
      * caveat as `oofEnabled`. */
     alwaysRequestReceiptInternal?: boolean;
+    /** Same as `alwaysRequestReceiptInternal`/`External`, for a recipient in a *different* organisation
+     * that has opted into federation with this one - a third tier between same-org and fully external. */
+    alwaysRequestReceiptFederated?: boolean;
     alwaysRequestReceiptExternal?: boolean;
     /** Whether this mailbox, as the *recipient* of a receipt request, sends one back immediately versus
      * holding it for the owner's explicit approval (`approveReceipt()`/`declineReceipt()`) — classifies the
      * requester, not the recipient. Always present (defaults `true`/`false` respectively), same caveat. */
     autoSendReceiptsInternal?: boolean;
+    /** The federated-tier counterpart of `autoSendReceiptsInternal`/`External`. */
+    autoSendReceiptsFederated?: boolean;
     autoSendReceiptsExternal?: boolean;
     /** This mailbox's own encryption preference, per `specs/end-to-end_encryption.md` — a client
      * defaults to encrypting only when *both* sender and recipient report `"mutual"`. Absent is
@@ -156,6 +161,12 @@ export function autoProvisionMailbox(selection?: { alias: string; domain: string
     });
 }
 
+/**
+ * A partial mailbox update. The fields typed `| null` are the ones `@rapidmx/restapi`'s `Mailbox` model
+ * copies whenever the key is *present* in the body (not only when it's non-`undefined`), so sending
+ * `null` clears them - `JSON.stringify()` drops an `undefined` value entirely, which would instead leave
+ * the old value in place.
+ */
 export interface UpdateMailboxInput {
     uid: string;
     version: number;
@@ -164,20 +175,25 @@ export interface UpdateMailboxInput {
     quotaBytes?: number;
     aliasAddresses?: string[];
     isResource?: boolean;
-    resourceType?: "room" | "equipment";
-    resourceCapacity?: number;
+    resourceType?: "room" | "equipment" | null;
+    resourceCapacity?: number | null;
     autoAcceptBookings?: boolean;
     allowConflicts?: boolean;
-    bookingWindowDays?: number;
-    maxDurationMinutes?: number;
+    bookingWindowDays?: number | null;
+    maxDurationMinutes?: number | null;
     oofEnabled?: boolean;
     oofMessage?: string;
-    oofStartTime?: string;
-    oofEndTime?: string;
+    oofStartTime?: string | null;
+    oofEndTime?: string | null;
     alwaysRequestReceiptInternal?: boolean;
+    alwaysRequestReceiptFederated?: boolean;
     alwaysRequestReceiptExternal?: boolean;
     autoSendReceiptsInternal?: boolean;
+    autoSendReceiptsFederated?: boolean;
     autoSendReceiptsExternal?: boolean;
+    /** Trusted-caller-only server-side. `null` (or `""`) unassigns the mailbox's escrow scope; the
+     * referenced `EscrowScope` must exist otherwise. See `Mailbox.escrowScopeId`. */
+    escrowScopeId?: string | null;
 }
 
 export function updateMailbox(input: UpdateMailboxInput): Promise<Mailbox> {
@@ -292,6 +308,7 @@ export type FolderType =
     | "deleted_items"
     | "outbox"
     | "junk"
+    | "archive"
     | "calendar"
     | "contacts"
     | "tasks"
@@ -589,9 +606,10 @@ export function listAttachments(folderUid: string, messageUid: string): Promise<
     return apiFetch(`/mail/attachments?${buildQuery({ limit: 200 }, { folderUid, messageUid })}`);
 }
 
-/** The same-origin URL to download/display an attachment's binary content — not fetched via `apiFetch`, used directly as a link/image `href`/`src`. */
+/** The URL to download/display an attachment's binary content — not fetched via `apiFetch`, used directly as
+ * a link/image `href`/`src`. Honors `configureApiBaseUrl()` (see `apiUrl()`). */
 export function attachmentContentUrl(uid: string): string {
-    return `/api/mail/attachments/${encodeURIComponent(uid)}/content`;
+    return apiUrl(`/mail/attachments/${encodeURIComponent(uid)}/content`);
 }
 
 /**
@@ -601,8 +619,9 @@ export function attachmentContentUrl(uid: string): string {
  */
 export async function uploadAttachment(messageUid: string, file: File): Promise<Attachment> {
     const params = new URLSearchParams({ messageUid, filename: file.name, mimeType: file.type || "application/octet-stream" });
-    const res = await fetch(`/api/mail/attachments/upload?${params.toString()}`, {
+    const res = await fetch(apiUrl(`/mail/attachments/upload?${params.toString()}`), {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": file.type || "application/octet-stream" },
         body: file,
     });
@@ -696,7 +715,7 @@ export function sendMessage(messageUid: string): Promise<Message> {
  * that library's own `GET /:id/content` deliberately never serves (see that route's own doc comment).
  */
 export async function getMessageRawContent(messageUid: string): Promise<string> {
-    const res = await fetch(`/api/mail/messages/${encodeURIComponent(messageUid)}/raw`);
+    const res = await fetch(apiUrl(`/mail/messages/${encodeURIComponent(messageUid)}/raw`), { credentials: "include" });
     if (!res.ok) {
         const contentType = res.headers.get("content-type") ?? "";
         const body = contentType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;

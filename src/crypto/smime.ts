@@ -36,6 +36,32 @@ const DIGEST_ALGORITHM = "SHA-256";
  * construction used consistently across this entire E2E scheme. */
 const CONTENT_ENCRYPTION_ALGORITHM: AesKeyGenParams = { name: "AES-GCM", length: 256 };
 
+/** `id-data` (RFC 5652 §4) - the only encapsulated content type S/MIME message signatures use. */
+const ID_DATA = pkijs.ContentInfo.DATA;
+
+/** AES-GCM content-encryption OIDs (id-aes128-GCM, id-aes192-GCM, id-aes256-GCM - RFC 5084). The only
+ * content encryption `decryptEnvelopedData()` accepts: see `UnsupportedContentEncryptionError`. */
+const AEAD_CONTENT_ENCRYPTION_OIDS = new Set(["2.16.840.1.101.3.4.1.6", "2.16.840.1.101.3.4.1.26", "2.16.840.1.101.3.4.1.46"]);
+
+/**
+ * Thrown by `decryptEnvelopedData()` for content encrypted with a non-AEAD algorithm (e.g. AES-CBC, 3DES).
+ * Unauthenticated CBC content is malleable - an attacker who can't read the message can still flip
+ * plaintext bits or mount EFAIL-style exfiltration gadgets against the decrypted HTML - so it is rejected
+ * outright rather than rendered with a weaker indicator.
+ *
+ * Interop note: many legacy S/MIME clients still send AES-CBC `EnvelopedData`; those messages are
+ * undecryptable in RapidMX clients by design. Everything RapidMX itself sends uses AES-256-GCM.
+ */
+export class UnsupportedContentEncryptionError extends Error {
+    public readonly algorithmOid: string;
+
+    constructor(algorithmOid: string) {
+        super(`This message uses unauthenticated content encryption (${algorithmOid}), which is not accepted.`);
+        this.name = "UnsupportedContentEncryptionError";
+        this.algorithmOid = algorithmOid;
+    }
+}
+
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
@@ -75,7 +101,8 @@ export async function signDetached(content: Uint8Array, signingCertDer: Uint8Arr
 
 export interface VerifyResult {
     valid: boolean;
-    /** The signer's certificate as embedded in the SignedData structure, if present - callers
+    /** The certificate pkijs matched to the verified SignerInfo's `sid` (never merely the first embedded
+     * certificate) - present whenever `valid` is true. Callers
      * compare its fingerprint against the pinned `Contact` key per the spec's Trust Model (TOFU);
      * this function only proves the signature is mathematically valid over `content`, not that the
      * certificate belongs to who the message claims. */
@@ -87,39 +114,91 @@ export interface VerifyResult {
  * error - a malformed/foreign CMS blob is exactly the "signature failed" case the spec's Message
  * Security Indicators table requires being able to render. */
 export async function verifyDetached(content: Uint8Array, signatureDer: Uint8Array): Promise<VerifyResult> {
-    let contentInfo: pkijs.ContentInfo;
+    const signedData = parseSignedData(signatureDer);
+    // A detached signature MUST NOT carry encapsulated content: pkijs's verify() silently prefers an
+    // embedded eContent over the caller-supplied `data`, so accepting one here would let an attacker take
+    // ANY opaque signature the victim ever produced and staple it onto arbitrary content, which would
+    // then verify as "signed" (the round-3 review's PoC 1 - see smimeRegressions.test.ts).
+    if (!signedData || signedData.encapContentInfo.eContent) {
+        return { valid: false };
+    }
+    return verifySignerZero(signedData, toArrayBuffer(content));
+}
+
+/** Parses untrusted DER as a `ContentInfo` wrapping `SignedData` whose `eContentType` is `id-data`.
+ * Constructing SignedData from an untrusted schema can throw on a structurally-valid-BER-but-not-
+ * actually-SignedData blob - that degrades to `undefined` ("signature failed"), never a thrown error, per
+ * the spec's Message Security Indicators (a malformed CMS blob is exactly that state, not a crash). */
+function parseSignedData(der: Uint8Array): pkijs.SignedData | undefined {
     try {
-        contentInfo = pkijs.ContentInfo.fromBER(toArrayBuffer(signatureDer));
+        const contentInfo = pkijs.ContentInfo.fromBER(toArrayBuffer(der));
+        if (contentInfo.contentType !== pkijs.ContentInfo.SIGNED_DATA) {
+            return undefined;
+        }
+        const signedData = new pkijs.SignedData({ schema: contentInfo.content });
+        return signedData.encapContentInfo.eContentType === ID_DATA ? signedData : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Verifies `signerInfos[0]` and returns the certificate pkijs actually matched to that SignerInfo's `sid`
+ * (`extendedMode`) - never simply `certificates[0]`, which an attacker controls independently of who
+ * signed: embedding the victim's certificate first and signing with their own key (whose certificate is
+ * second) previously reported the victim's certificate as the signer (the round-3 review's PoC 2).
+ * pkijs throws a `SignedDataVerifyError` for most failures in extended mode; all degrade to invalid.
+ */
+async function verifySignerZero(signedData: pkijs.SignedData, data?: ArrayBuffer): Promise<VerifyResult> {
+    try {
+        const result = await signedData.verify({ signer: 0, data, extendedMode: true });
+        if (result.signatureVerified !== true || !result.signerCertificate) {
+            return { valid: false };
+        }
+        return { valid: true, signerCertificateDer: new Uint8Array(result.signerCertificate.toSchema().toBER()) };
     } catch {
         return { valid: false };
     }
-    if (contentInfo.contentType !== pkijs.ContentInfo.SIGNED_DATA) {
-        return { valid: false };
-    }
+}
 
-    // Constructing SignedData from an untrusted schema, and verify() itself, can both throw on a
-    // structurally-valid-BER-but-not-actually-SignedData blob (e.g. the right contentType with the
-    // wrong content shape) - either failure degrades to "signature failed," never a thrown error, per
-    // the spec's Message Security Indicators (a malformed CMS blob is exactly that state, not a crash).
-    let signedData: pkijs.SignedData;
-    let valid: boolean;
+/**
+ * Extracts every email address a certificate asserts, lowercased: SAN `rfc822Name` entries when the
+ * certificate has any (RFC 5280 §4.2.1.6 - SAN is authoritative when present), otherwise the subject's
+ * legacy `emailAddress` attributes plus a `CN` that is itself an email address (how this deployment's
+ * own self-signed/test certificates and many older CAs name a mailbox). Used by `messageSecurity.ts` to
+ * bind a signer certificate to the message's claimed sender. Returns `[]` for unparseable input.
+ */
+export function extractCertificateEmails(certDer: Uint8Array): string[] {
+    let cert: pkijs.Certificate;
     try {
-        signedData = new pkijs.SignedData({ schema: contentInfo.content });
-        valid = await signedData.verify({ signer: 0, data: toArrayBuffer(content) });
+        cert = parseCertificate(certDer);
     } catch {
-        return { valid: false };
+        return [];
     }
-
-    // `certificates` is a CertificateSetItem union (Certificate | AttributeCertificateV1/V2 |
-    // OtherCertificateFormat) - `signDetached()` only ever embeds a plain Certificate, so the
-    // non-Certificate branch here is defensive against a foreign/malformed CMS blob, not reachable
-    // through this module's own signing path (not exercised in tests for that reason).
-    const signerCertificate = signedData.certificates?.[0];
-    const signerCertificateDer =
-        signerCertificate && signerCertificate instanceof pkijs.Certificate
-            ? new Uint8Array(signerCertificate.toSchema().toBER())
-            : undefined;
-    return { valid, signerCertificateDer };
+    const sanEmails: string[] = [];
+    for (const extension of cert.extensions ?? []) {
+        // pkijs parses a SubjectAlternativeName extension's value into an AltName automatically.
+        const altNames = extension.extnID === "2.5.29.17" ? (extension.parsedValue as pkijs.AltName).altNames : [];
+        for (const name of altNames) {
+            // GeneralName type 1 = rfc822Name (an IA5String value).
+            if (name.type === 1) {
+                sanEmails.push(String(name.value).toLowerCase());
+            }
+        }
+    }
+    if (sanEmails.length > 0) {
+        return sanEmails;
+    }
+    const subjectEmails: string[] = [];
+    for (const attribute of cert.subject.typesAndValues) {
+        const isEmailAttribute = attribute.type === "1.2.840.113549.1.9.1";
+        const isCommonName = attribute.type === "2.5.4.3";
+        const value = String(attribute.value.valueBlock.value).trim().toLowerCase();
+        if (isEmailAttribute || (isCommonName && /^[^\s@]+@[^\s@]+$/.test(value))) {
+            subjectEmails.push(value);
+        }
+    }
+    return subjectEmails;
 }
 
 /**
@@ -161,42 +240,21 @@ export interface VerifyOpaqueResult extends VerifyResult {
  * content — unlike `verifyDetached()`, the content isn't supplied separately by the caller, since the
  * whole point of an opaque signature is that it carries its own content. */
 export async function verifyOpaque(signedDer: Uint8Array): Promise<VerifyOpaqueResult> {
-    let contentInfo: pkijs.ContentInfo;
-    try {
-        contentInfo = pkijs.ContentInfo.fromBER(toArrayBuffer(signedDer));
-    } catch {
+    const signedData = parseSignedData(signedDer);
+    const eContent = signedData?.encapContentInfo.eContent;
+    if (!signedData || !eContent) {
         return { valid: false };
     }
-    if (contentInfo.contentType !== pkijs.ContentInfo.SIGNED_DATA) {
+    const result = await verifySignerZero(signedData);
+    if (!result.valid) {
         return { valid: false };
     }
-
-    let signedData: pkijs.SignedData;
-    let valid: boolean;
-    try {
-        signedData = new pkijs.SignedData({ schema: contentInfo.content });
-        valid = await signedData.verify({ signer: 0 });
-    } catch {
-        return { valid: false };
-    }
-
-    // Same defensive, not-reachable-through-signOpaque()'s-own-path branch as verifyDetached() above -
-    // see that function's identical comment.
-    const signerCertificate = signedData.certificates?.[0];
-    const signerCertificateDer =
-        signerCertificate && signerCertificate instanceof pkijs.Certificate
-            ? new Uint8Array(signerCertificate.toSchema().toBER())
-            : undefined;
-    // No external `data` is ever passed to verify() in this function - a detached signature (no
-    // eContent) can only ever fail to verify here, never succeed, so `valid` being true guarantees
-    // eContent is present; this isn't optional defensive handling for a case that can't occur.
     // `.getValue()`, not `.valueBlock.valueHexView` directly - eContent commonly round-trips as a
     // *constructed* OctetString (an outer OctetString wrapping one or more inner primitive OctetString
     // chunks, standard per RFC 5652), and only `.getValue()` transparently concatenates those chunks;
     // reading `.valueBlock.valueHexView` directly is only correct for a primitive OctetString and
     // silently returns empty bytes otherwise (confirmed by direct reproduction).
-    const content = valid ? new Uint8Array(signedData.encapContentInfo.eContent!.getValue()) : undefined;
-    return { valid, signerCertificateDer, content };
+    return { ...result, content: new Uint8Array(eContent.getValue()) };
 }
 
 /**
@@ -233,6 +291,10 @@ export async function decryptEnvelopedData(
         throw new Error("This CMS content is not EnvelopedData.");
     }
     const envelopedData = new pkijs.EnvelopedData({ schema: contentInfo.content });
+    const contentEncryptionOid = envelopedData.encryptedContentInfo.contentEncryptionAlgorithm.algorithmId;
+    if (!AEAD_CONTENT_ENCRYPTION_OIDS.has(contentEncryptionOid)) {
+        throw new UnsupportedContentEncryptionError(contentEncryptionOid);
+    }
     const recipientCertificate = parseCertificate(recipientCertDer);
 
     let lastError: unknown;

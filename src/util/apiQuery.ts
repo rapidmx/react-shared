@@ -27,3 +27,35 @@ export function buildQuery(params: ListParams, extra: Record<string, string> = {
     }
     return parts.join("&");
 }
+
+/**
+ * Optional paging/scope params for the async-request list endpoints (`listExportRequests()`,
+ * `listImportRequests()`, `listErasureRequests()`, `listMatterExportRequests()`,
+ * `listAccessRequests()`). Server contract: newest first, `limit` capped at 500, `page` zero-based,
+ * `matterId` honored only by the Matter-scoped (escrow) endpoints.
+ */
+export interface RequestListParams extends ListParams {
+    /** Restricts the list to one Matter - only meaningful for Matter-scoped request lists. */
+    matterId?: string;
+}
+
+/**
+ * Builds a `?limit=&page=&matterId=` suffix from only the params actually supplied - unlike
+ * `buildQuery()`, applies no default page size (these endpoints historically returned every request
+ * with no params at all, so a caller passing nothing keeps that exact request). Returns `""` when no
+ * param is set.
+ */
+export function buildRequestListQuery(params: RequestListParams = {}): string {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) {
+        query.set("limit", String(params.limit));
+    }
+    if (params.page !== undefined) {
+        query.set("page", String(params.page));
+    }
+    if (params.matterId) {
+        query.set("matterId", params.matterId);
+    }
+    const encoded = query.toString();
+    return encoded ? `?${encoded}` : "";
+}

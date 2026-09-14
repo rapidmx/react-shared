@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { ApiRequestError, apiFetch, authApiFetch, configureApiBaseUrl } from "../../src/util/api.js";
+import { ApiRequestError, apiFetch, apiUrl, authApiFetch, configureApiBaseUrl } from "../../src/util/api.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -124,6 +124,17 @@ describe("apiFetch", () => {
         const init = fetchMock.mock.calls[0][1] as RequestInit;
         expect(fetchMock.mock.calls[0][0]).toBe("/api/status");
         expect(init.credentials).toBeUndefined();
+    });
+});
+
+describe("apiUrl", () => {
+    it("returns a same-origin /api-prefixed path by default", () => {
+        expect(apiUrl("/mail/attachments/a1/content")).toBe("/api/mail/attachments/a1/content");
+    });
+
+    it("prefixes the configured base URL once configureApiBaseUrl() is set", () => {
+        configureApiBaseUrl("https://mail.example.com/");
+        expect(apiUrl("/mail/attachments/a1/content")).toBe("https://mail.example.com/api/mail/attachments/a1/content");
     });
 });
 

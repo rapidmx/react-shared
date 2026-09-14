@@ -19,8 +19,8 @@
  * types here would just produce fetch/decrypt failures for entities this module has no way to open.
  */
 import type { UnlockedKeys } from "../crypto/keySession.js";
-import { evaluateMessageSecurity } from "../crypto/messageSecurity.js";
-import { getMessageRawContent } from "../mail/mailApi.js";
+import { evaluateMessageSecurity, type MessageSecurityResult } from "../crypto/messageSecurity.js";
+import { getMessage, getMessageRawContent } from "../mail/mailApi.js";
 import type { ParsedSearchQuery } from "./queryGrammar.js";
 import { SEARCH_FIELD_WEIGHTS } from "./searchScoring.js";
 import { candidates, SearchResult } from "./searchApi.js";
@@ -203,11 +203,50 @@ function hasAnyFilter(parsed: ParsedSearchQuery): boolean {
     );
 }
 
+/** How many candidates are fetched/decrypted at once - bounds the burst of raw-MIME requests and
+ * concurrent WebCrypto work a large candidate page would otherwise fire all at once. */
+export const TIER3_DECRYPT_CONCURRENCY = 4;
+
+/** `Promise.allSettled()` over `items`, but never running more than `concurrency` `task`s at a time.
+ * Outcomes are returned in `items`' own order. */
+async function settleWithConcurrency<T, R>(
+    items: T[],
+    concurrency: number,
+    task: (item: T) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+    const outcomes: PromiseSettledResult<R>[] = new Array(items.length);
+    let next = 0;
+    async function worker(): Promise<void> {
+        while (next < items.length) {
+            const index = next++;
+            try {
+                outcomes[index] = { status: "fulfilled", value: await task(items[index]) };
+            } catch (reason) {
+                outcomes[index] = { status: "rejected", reason };
+            }
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+    return outcomes;
+}
+
+export interface SearchEncryptedCandidatesOptions {
+    /** Forwarded to `candidates()` - which accessible mailbox to search (e.g. the one currently open).
+     * Omitted, the server uses the caller's own mailbox. */
+    mailboxUid?: string;
+}
+
 /**
  * Runs Tier 3 for one parsed query: fetches a bounded candidate set from the server, decrypts each
- * candidate this device can open, and returns only the ones whose real (decrypted) content actually
- * matches - each with a raw (not yet normalized) score the caller should run through
- * `searchScoring.ts#normalizeServerScores()` alongside Tier 1's own scores before merging.
+ * candidate this device can open (at most `TIER3_DECRYPT_CONCURRENCY` at a time), and returns only the
+ * ones whose real (decrypted) content actually matches - each with a raw (not yet normalized) score the
+ * caller should run through `searchScoring.ts#normalizeServerScores()` alongside Tier 1's own scores
+ * before merging.
+ *
+ * Honors every operator `parseSearchQuery()` produces, not just free text: `subject:` must appear
+ * (case-insensitively) in the *decrypted* subject, and `has:attachment` is checked against the
+ * message's own `Message.hasAttachments` (fetched via `getMessage()` before decrypting, so a mismatch
+ * never pays for a decrypt). The candidates endpoint accepts neither filter, so both are applied here.
  *
  * Returns `[]` (never throws) when `unlocked` is absent - nothing can be decrypted without it, so
  * there is nothing this tier can contribute - or when the query has no free text and no structured
@@ -218,6 +257,7 @@ export async function searchEncryptedCandidates(
     parsed: ParsedSearchQuery,
     unlocked: UnlockedKeys | undefined,
     limit = 50,
+    options: SearchEncryptedCandidatesOptions = {},
 ): Promise<SearchResult[]> {
     if (!unlocked || !hasAnyFilter(parsed)) {
         return [];
@@ -234,21 +274,29 @@ export async function searchEncryptedCandidates(
         flags: parsed.flags,
         labels: parsed.labels,
         limit,
+        mailboxUid: options.mailboxUid,
     });
 
-    const settled = await Promise.allSettled(
-        page.candidates
-            .filter((candidate) => candidate.entityType === "message")
-            .map(async (candidate) => {
-                const rawMime = await getMessageRawContent(candidate.entityUid);
-                const security = await evaluateMessageSecurity(rawMime, unlocked);
-                return { entityUid: candidate.entityUid, security };
-            }),
+    const settled = await settleWithConcurrency(
+        page.candidates.filter((candidate) => candidate.entityType === "message"),
+        TIER3_DECRYPT_CONCURRENCY,
+        async (candidate) => {
+            if (parsed.hasAttachment !== undefined) {
+                const message = await getMessage(candidate.entityUid);
+                if (Boolean(message.hasAttachments) !== parsed.hasAttachment) {
+                    return undefined;
+                }
+            }
+            const rawMime = await getMessageRawContent(candidate.entityUid);
+            const security: MessageSecurityResult = await evaluateMessageSecurity(rawMime, unlocked);
+            return { entityUid: candidate.entityUid, security };
+        },
     );
 
+    const subjectFilter = parsed.subject?.toLowerCase();
     const results: SearchResult[] = [];
     for (const outcome of settled) {
-        if (outcome.status === "rejected") {
+        if (outcome.status === "rejected" || !outcome.value) {
             continue;
         }
         const { entityUid, security } = outcome.value;
@@ -259,7 +307,13 @@ export async function searchEncryptedCandidates(
             continue;
         }
         const subjectText = security.subject ?? "";
-        const bodyText = security.html ? stripHtml(security.html) : "";
+        // Prefer the raw plain text when the body was text/plain - `html` is then only an escaped
+        // `<pre>` rendering of it (always set alongside `text`, so the guard above needn't check
+        // `text` separately) - and fall back to stripping a real text/html body.
+        const bodyText = security.text ?? (security.html ? stripHtml(security.html) : "");
+        if (subjectFilter && !subjectText.toLowerCase().includes(subjectFilter)) {
+            continue;
+        }
         const haystack = `${subjectText} ${bodyText}`;
         if (!matchesFreeText(parsed.text, haystack)) {
             continue;

@@ -50,9 +50,11 @@ describe("search", () => {
             folderUid: "f1",
             flags: ["read", "flagged"],
             labels: ["l1", "l2"],
+            mailboxUid: "mb2",
         });
         const [url] = fetchMock.mock.calls[0];
         const params = new URLSearchParams(url.split("?")[1]);
+        expect(params.get("mailboxUid")).toBe("mb2");
         expect(params.get("from")).toBe("alice@example.com");
         expect(params.get("to")).toBe("bob@example.com");
         expect(params.get("cc")).toBe("carol@example.com");
@@ -113,9 +115,11 @@ describe("candidates", () => {
             labels: ["l1"],
             cursor: "c0",
             limit: 25,
+            mailboxUid: "mb2",
         });
         const [url] = fetchMock.mock.calls[0];
         const params = new URLSearchParams(url.split("?")[1]);
+        expect(params.get("mailboxUid")).toBe("mb2");
         expect(params.get("types")).toBe("message");
         expect(params.get("participants")).toBe("alice@example.com,bob@example.com");
         expect(params.get("before")).toBe(before.toISOString());

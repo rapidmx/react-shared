@@ -56,9 +56,33 @@ export function generateRecoveryCode(): string {
     return groups.join("-");
 }
 
+/**
+ * Canonicalizes user-typed recovery code input into the exact form `generateRecoveryCode()` emits (and
+ * therefore the exact string `buildRecoveryWraps()` hashed at enrolment): every whitespace character and
+ * dash is stripped, letters are uppercased, Crockford's own decode aliases are applied (`O` → `0`, `I`/`L`
+ * → `1` — none of which the generation alphabet ever emits, so a generated code is unchanged by this
+ * mapping), and the result is re-grouped into dash-separated `GROUP_SIZE` blocks. The re-grouping is
+ * load-bearing, not cosmetic: the dashes were always part of the HKDF input, so stripping them without
+ * re-inserting them in the canonical grouping would derive a different key than every existing wrap.
+ */
+export function normalizeRecoveryCode(code: string): string {
+    const compact = code
+        .replace(/[\s-]+/g, "")
+        .toUpperCase()
+        .replace(/O/g, "0")
+        .replace(/[IL]/g, "1");
+    const groups: string[] = [];
+    for (let i = 0; i < compact.length; i += GROUP_SIZE) {
+        groups.push(compact.slice(i, i + GROUP_SIZE));
+    }
+    return groups.join("-");
+}
+
 /** Derives the wrapping key for one recovery code. `salt` is per-wrap, generated at enrolment and stored
- * alongside the resulting `MasterKeyWrap` (never secret — HKDF's salt need not be). */
+ * alongside the resulting `MasterKeyWrap` (never secret — HKDF's salt need not be). `code` is normalized
+ * first (see `normalizeRecoveryCode()`), so lowercase, spacing/dash variations, and O/I/L transcription
+ * slips all derive the same key as the code exactly as displayed. */
 export async function deriveFromRecoveryCode(code: string, salt: Uint8Array): Promise<Uint8Array> {
-    const ikm = new TextEncoder().encode(code.trim().toUpperCase());
+    const ikm = new TextEncoder().encode(normalizeRecoveryCode(code));
     return hkdfDerive(ikm, salt, "wrap");
 }

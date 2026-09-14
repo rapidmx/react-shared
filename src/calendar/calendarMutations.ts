@@ -36,10 +36,20 @@ export function saveEventSeries(occurrence: CalendarOccurrence, fields: Partial<
 /**
  * Applies edited `fields` to just this one occurrence of a recurring event, detaching it into its own
  * standalone (non-recurring) event and excluding the original occurrence from the series.
+ *
+ * The detached event is created *first*, and only then is the original occurrence excluded from the
+ * master — so a failure part-way never makes the occurrence silently disappear. If adding the
+ * exception fails, the just-created detached event is deleted again (best-effort) and the original
+ * error is rethrown. The detached event keeps the master's `icalUid` and records the occurrence's
+ * original start as its `recurrenceId` (the RFC5545 way of identifying a modified instance), and never
+ * carries the series' `recurrenceRule` — even if `fields` includes one (e.g. the event modal's full
+ * field set).
  */
 export async function detachOccurrence(occurrence: CalendarOccurrence, fields: Partial<CalendarEventInput>): Promise<CalendarEvent> {
-    await addException(occurrence, occurrence.recurrenceId!);
-    return createCalendarEvent({
+    const originalStart = occurrence.recurrenceId!;
+    // `icalUid`/`recurrenceId` aren't part of `CalendarEventInput`, but `@rapidmx/restapi`'s
+    // `CalendarEvent` model accepts both on create (and `createCalendarEvent` already sends `icalUid`).
+    const input: CalendarEventInput & { icalUid: string; recurrenceId: string } = {
         mailboxUid: occurrence.mailboxUid,
         folderUid: occurrence.folderUid,
         title: occurrence.title,
@@ -53,8 +63,21 @@ export async function detachOccurrence(occurrence: CalendarOccurrence, fields: P
         status: occurrence.status,
         busyStatus: occurrence.busyStatus,
         reminderMinutesBeforeStart: occurrence.reminderMinutesBeforeStart,
+        autoReplyEnabled: occurrence.autoReplyEnabled,
+        autoReplyMessage: occurrence.autoReplyMessage,
         ...fields,
-    });
+        recurrenceRule: undefined,
+        icalUid: occurrence.icalUid,
+        recurrenceId: originalStart,
+    };
+    const created = await createCalendarEvent(input);
+    try {
+        await addException(occurrence, originalStart);
+    } catch (err) {
+        await deleteCalendarEvent(created.uid, created.version).catch(() => undefined);
+        throw err;
+    }
+    return created;
 }
 
 /** Deletes an entire recurring series (or a genuinely non-recurring event) outright. */

@@ -15,13 +15,29 @@ import { Folder, Message, listFolders, listMessages } from "./mailApi.js";
 /** Folder types that actually hold `Message` records — mirrors `MailShell.tsx`'s own `MAIL_FOLDER_TYPES`
  * allowlist (kept as a separate local copy rather than a shared export, since the two call sites have no
  * other coupling and this list is small/stable). */
-const MAIL_FOLDER_TYPES = new Set(["inbox", "drafts", "outbox", "sent_items", "junk", "deleted_items", "user"]);
+const MAIL_FOLDER_TYPES = new Set(["inbox", "drafts", "outbox", "sent_items", "junk", "deleted_items", "archive", "user"]);
+
+/** The server's own per-request `limit` cap - a page shorter than this is the folder's last one. */
+const PAGE_SIZE = 500;
+
+/** Every message in one folder, paging through `listMessages()` until a short page - never silently
+ * truncated at a single page's cap the way one `limit: 500` call would be for a large folder. */
+async function listAllMessages(folderUid: string): Promise<Message[]> {
+    const all: Message[] = [];
+    for (let page = 0; ; page += 1) {
+        const batch = await listMessages(folderUid, { limit: PAGE_SIZE, page });
+        all.push(...batch);
+        if (batch.length < PAGE_SIZE) {
+            return all;
+        }
+    }
+}
 
 /** Lists every flagged message across all of a mailbox's mail folders (not just Inbox), newest first. */
 export async function listFlaggedMessages(mailboxUid: string): Promise<Message[]> {
     const folders: Folder[] = await listFolders(mailboxUid);
     const mailFolders = folders.filter((f) => MAIL_FOLDER_TYPES.has(f.type));
-    const perFolder = await Promise.all(mailFolders.map((f) => listMessages(f.uid, { limit: 500 })));
+    const perFolder = await Promise.all(mailFolders.map((f) => listAllMessages(f.uid)));
     return perFolder
         .flat()
         .filter((m) => m.flags.flagged)

@@ -131,17 +131,24 @@ export interface UpdateContactInput extends ContactInput {
     version: number;
 }
 
-export function updateContact(input: UpdateContactInput): Promise<Contact> {
-    return apiFetch(`/mail/contacts/${encodeURIComponent(input.uid)}`, {
+/** A minimal contact update: only `uid`/`version` are required, every other field is sent only if
+ * present. The server merges just the fields in the body and rejects server-managed ones
+ * (`dateCreated`/`dateModified`/etc.), so prefer sending only what actually changed over a whole
+ * fetched `Contact`. An `UpdateContactInput` is also a valid `ContactPatch`. */
+export type ContactPatch = Partial<Contact> & Pick<Contact, "uid" | "version">;
+
+export function updateContact(patch: ContactPatch): Promise<Contact> {
+    return apiFetch(`/mail/contacts/${encodeURIComponent(patch.uid)}`, {
         method: "PUT",
-        body: JSON.stringify(input),
+        body: JSON.stringify(patch),
     });
 }
 
 /** Thin `updateContact()` wrapper for toggling favorite/star status — same pattern as `mailApi.ts`'s
- * `setMessageRead()`/`tasksApi.ts`'s `setTaskCompleted()`. */
+ * `setMessageRead()`/`tasksApi.ts`'s `setTaskCompleted()`. Sends only `uid`/`version`/`favorite`, never
+ * the rest of `contact` (the server rejects its managed fields). */
 export function setContactFavorite(contact: Contact, favorite: boolean): Promise<Contact> {
-    return updateContact({ ...contact, favorite });
+    return updateContact({ uid: contact.uid, version: contact.version, favorite });
 }
 
 export function deleteContact(uid: string, version: number): Promise<void> {

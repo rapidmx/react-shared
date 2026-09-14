@@ -17,12 +17,16 @@ import { ListParams, buildQuery } from "../util/apiQuery.js";
 
 export type { ListParams };
 
-/** The lifecycle event an `EscrowAuditLogEntry` records — deliberately excludes a denied request (nothing
- * was ever granted or used there); that goes through the ordinary `AuditLogEntry` (`auditLogApi.ts`)
- * instead. */
+/** The lifecycle event an `EscrowAuditLogEntry` records — mirrors `@rapidmx/restapi`'s `EscrowAuditAction`
+ * enum values exactly, including a Matter-scoped eDiscovery export's lifecycle (`matter_export.*`, whose
+ * `requestId` is the `MatterExportRequest` uid). Deliberately excludes a denied access request (nothing was
+ * ever granted or used there); that goes through the ordinary `AuditLogEntry` (`auditLogApi.ts`) instead. */
 export type EscrowAuditAction =
     | "escrow_access_request.created"
     | "escrow_access_request.approved"
+    | "matter_export.requested"
+    | "matter_export.ready"
+    | "matter_export.failed"
     | "escrow_access_request.material_read";
 
 export interface EscrowAuditLogEntry {

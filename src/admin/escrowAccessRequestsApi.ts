@@ -13,9 +13,9 @@
  */
 
 import { apiFetch } from "../util/api.js";
-import { ListParams, buildQuery } from "../util/apiQuery.js";
+import { ListParams, RequestListParams, buildQuery } from "../util/apiQuery.js";
 
-export type { ListParams };
+export type { ListParams, RequestListParams };
 
 export interface EscrowAccessRequestApproval {
     holderUserUid: string;
@@ -67,8 +67,11 @@ export interface EscrowAccessMaterial {
     masterKeyWraps: MasterKeyWrap[];
 }
 
-export function listAccessRequests(params: ListParams = {}): Promise<EscrowAccessRequest[]> {
-    return apiFetch(`/escrow/access-requests?${buildQuery(params)}`);
+/** Newest first. Every request belongs to one Matter, so `params.matterId` narrows the list to that
+ * Matter's requests (still only ever within scopes the caller holds). */
+export function listAccessRequests(params: RequestListParams = {}): Promise<EscrowAccessRequest[]> {
+    const { matterId, ...paging } = params;
+    return apiFetch(`/escrow/access-requests?${buildQuery(paging, matterId ? { matterId } : {})}`);
 }
 
 export function getAccessRequest(uid: string): Promise<EscrowAccessRequest> {

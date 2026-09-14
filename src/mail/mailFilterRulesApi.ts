@@ -17,7 +17,7 @@ import { MessageImportance } from "./mailApi.js";
 
 export type { ListParams };
 
-export type MailFilterActionType = "move_to_folder" | "copy_to_folder" | "delete" | "mark_as_read" | "forward";
+export type MailFilterActionType = "move_to_folder" | "copy_to_folder" | "delete" | "mark_as_read" | "forward" | "apply_label";
 
 export interface MailFilterAction {
     type: MailFilterActionType;
@@ -25,6 +25,8 @@ export interface MailFilterAction {
     folderUid?: string;
     /** Required for `forward`. */
     forwardTo?: string;
+    /** The `Label.uid` to apply (`labelsApi.ts`). Required for `apply_label`. */
+    labelUid?: string;
 }
 
 export interface MailFilterConditions {

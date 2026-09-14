@@ -5,11 +5,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { toBase64 } from "../../src/crypto/encoding.js";
 import { generateKeyPairWithCsr, exportPrivateKeyPkcs8 } from "../../src/crypto/keys.js";
 import {
+    type KeySessionEvent,
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE,
     MASTER_KEY_AAD_PURPOSE,
     SIGNING_PRIVATE_KEY_AAD_PURPOSE,
     destroyUnlockedKeys,
     getUnlockedKeys,
+    subscribeKeySession,
     unlockWithPassword,
 } from "../../src/crypto/keySession.js";
 import { buildAad, generateMasterKey, sealWithKey } from "../../src/crypto/masterKey.js";
@@ -195,5 +197,167 @@ describe("getUnlockedKeys / destroyUnlockedKeys", () => {
         destroyUnlockedKeys();
         expect(getUnlockedKeys("mb-a")).toBeUndefined();
         expect(getUnlockedKeys("mb1")).toBeUndefined();
+    });
+
+    it("zeroes the master key bytes in place when keys are destroyed", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const held = getUnlockedKeys(MAILBOX_UID)!;
+        expect(held.masterKey.some((b) => b !== 0)).toBe(true);
+
+        destroyUnlockedKeys(MAILBOX_UID);
+        expect(held.masterKey.length).toBe(32);
+        expect(held.masterKey.every((b) => b === 0)).toBe(true);
+    });
+
+    it("zeroes every mailbox's master key on a destroy-all", async () => {
+        const a = await enrollForTest(["encrypt"], "mb-a");
+        const b = await enrollForTest(["encrypt"], "mb1");
+        getKeyVault.mockImplementation((mailboxUid: string) => Promise.resolve(mailboxUid === "mb-a" ? a.vault : b.vault));
+        await unlockWithPassword("mb-a", a.mailboxKeys, PASSWORD);
+        await unlockWithPassword("mb1", b.mailboxKeys, PASSWORD);
+        const heldA = getUnlockedKeys("mb-a")!;
+        const heldB = getUnlockedKeys("mb1")!;
+
+        destroyUnlockedKeys();
+        expect(heldA.masterKey.every((x) => x === 0)).toBe(true);
+        expect(heldB.masterKey.every((x) => x === 0)).toBe(true);
+    });
+
+    it("does not zero the previous master key when a re-unlock replaces a session", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const first = getUnlockedKeys(MAILBOX_UID)!;
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+
+        expect(getUnlockedKeys(MAILBOX_UID)).not.toBe(first);
+        expect(first.masterKey.some((x) => x !== 0)).toBe(true);
+    });
+
+    it("keeps unlocked private keys extractable, since key rotation re-exports them", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["sign", "encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const unlocked = getUnlockedKeys(MAILBOX_UID)!;
+        expect(unlocked.signingPrivateKey!.extractable).toBe(true);
+        expect(unlocked.encryptionPrivateKey!.extractable).toBe(true);
+    });
+
+    it("zeroes the unwrapped master key when unwrapping a private key fails partway", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["encrypt"]);
+        // A private-key wrap sealed under the right AAD but garbage ciphertext - the master key itself
+        // opens fine, then the private key's AEAD check fails.
+        const corrupted: KeyVault = {
+            ...vault,
+            wrappedKeys: [{ ...vault.wrappedKeys[0], ciphertext: toBase64(new Uint8Array(64)) }],
+        };
+        getKeyVault.mockResolvedValue(corrupted);
+        const fills = vi.spyOn(Uint8Array.prototype, "fill");
+
+        await expect(unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD)).rejects.toThrow();
+        expect(getUnlockedKeys(MAILBOX_UID)).toBeUndefined();
+        const zeroFills = fills.mock.calls
+            .map((args, i) => ({ value: args[0], target: fills.mock.contexts[i] as Uint8Array }))
+            .filter(({ value, target }) => value === 0 && target.length === 32);
+        expect(zeroFills.length).toBe(1);
+        expect(zeroFills[0].target.every((x) => x === 0)).toBe(true);
+        fills.mockRestore();
+    });
+});
+
+describe("subscribeKeySession", () => {
+    it("notifies on unlock and on destroy, with the mailbox and new state", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        const listener = vi.fn();
+        const unsubscribe = subscribeKeySession(listener);
+
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        expect(listener).toHaveBeenLastCalledWith({ mailboxUid: MAILBOX_UID, state: "unlocked" } satisfies KeySessionEvent);
+
+        destroyUnlockedKeys(MAILBOX_UID);
+        expect(listener).toHaveBeenLastCalledWith({ mailboxUid: MAILBOX_UID, state: "locked" });
+        expect(listener).toHaveBeenCalledTimes(2);
+        unsubscribe();
+    });
+
+    it("fires one locked event per mailbox on destroy-all, and nothing when there was nothing to destroy", async () => {
+        const a = await enrollForTest(["encrypt"], "mb-a");
+        const b = await enrollForTest(["encrypt"], "mb1");
+        getKeyVault.mockImplementation((mailboxUid: string) => Promise.resolve(mailboxUid === "mb-a" ? a.vault : b.vault));
+        await unlockWithPassword("mb-a", a.mailboxKeys, PASSWORD);
+        await unlockWithPassword("mb1", b.mailboxKeys, PASSWORD);
+
+        const listener = vi.fn();
+        const unsubscribe = subscribeKeySession(listener);
+        destroyUnlockedKeys();
+        expect(listener.mock.calls.map(([e]) => e)).toEqual([
+            { mailboxUid: "mb-a", state: "locked" },
+            { mailboxUid: "mb1", state: "locked" },
+        ]);
+
+        listener.mockClear();
+        destroyUnlockedKeys();
+        destroyUnlockedKeys("never-unlocked");
+        expect(listener).not.toHaveBeenCalled();
+        unsubscribe();
+    });
+
+    it("does not notify on a failed unlock", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        const listener = vi.fn();
+        const unsubscribe = subscribeKeySession(listener);
+
+        await expect(unlockWithPassword(MAILBOX_UID, mailboxKeys, "the wrong password")).rejects.toThrow();
+        expect(listener).not.toHaveBeenCalled();
+        unsubscribe();
+    });
+
+    it("stops notifying after unsubscribe, and accepts a zero-argument listener", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        let calls = 0;
+        const unsubscribe = subscribeKeySession(() => {
+            calls++;
+        });
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        expect(calls).toBe(1);
+
+        unsubscribe();
+        destroyUnlockedKeys();
+        expect(calls).toBe(1);
+    });
+
+    it("still delivers to every listener when one throws, surfacing the error asynchronously", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+
+        const boom = new Error("listener failed");
+        const rethrown: unknown[] = [];
+        const microtaskSpy = vi.spyOn(globalThis, "queueMicrotask").mockImplementation((cb) => {
+            try {
+                cb();
+            } catch (err) {
+                rethrown.push(err);
+            }
+        });
+        const second = vi.fn();
+        const unsubA = subscribeKeySession(() => {
+            throw boom;
+        });
+        const unsubB = subscribeKeySession(second);
+
+        destroyUnlockedKeys(MAILBOX_UID);
+        expect(second).toHaveBeenCalledWith({ mailboxUid: MAILBOX_UID, state: "locked" });
+        expect(getUnlockedKeys(MAILBOX_UID)).toBeUndefined();
+        expect(rethrown).toEqual([boom]);
+
+        microtaskSpy.mockRestore();
+        unsubA();
+        unsubB();
     });
 });

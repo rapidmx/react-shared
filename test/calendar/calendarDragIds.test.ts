@@ -2,7 +2,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { CalendarOccurrence } from "../../src/calendar/recurrence.js";
 import {
     dayDropId,
@@ -48,6 +48,46 @@ describe("id encoding", () => {
     });
 });
 
+/**
+ * Day-cell ids and day-drop deltas are local-time based. The suite pins TZ=UTC, so these switch the
+ * runtime zone for the duration of each test (Node applies a runtime `process.env.TZ` change to
+ * `Date`'s local-time methods immediately) to prove the behavior in a zone with DST and a non-zero
+ * offset, not just in UTC where local and UTC dates coincide.
+ */
+describe("local-time day drops (non-UTC runtime zone)", () => {
+    const originalTz = process.env.TZ;
+    afterEach(() => {
+        process.env.TZ = originalTz;
+    });
+
+    it("dayDropId uses the local calendar date, not the UTC one", () => {
+        process.env.TZ = "America/New_York";
+        // Local midnight in New York (as date-fns builds month-grid days) is 04:00/05:00Z the same date,
+        // but local 20:00 is already the *next* UTC date.
+        expect(dayDropId(new Date(2026, 5, 8))).toBe("day:2026-06-08");
+        expect(dayDropId(new Date(2026, 5, 5, 20, 0))).toBe("day:2026-06-05");
+        process.env.TZ = "Asia/Tokyo";
+        // Local midnight in Tokyo is the previous UTC date.
+        expect(dayDropId(new Date(2026, 0, 1))).toBe("day:2026-01-01");
+    });
+
+    it("moves a late-evening event by whole local calendar days", () => {
+        process.env.TZ = "America/New_York";
+        const occ = occurrence({ startDate: new Date(2026, 5, 5, 20, 0).toISOString() });
+        const action = resolveDragAction("e1", dayDropId(new Date(2026, 5, 8)), [occ]);
+        expect(action).toMatchObject({ type: "move", deltaMs: 3 * 24 * 60 * 60 * 1000 });
+    });
+
+    it("preserves local wall-clock time when the move crosses a DST change", () => {
+        process.env.TZ = "America/New_York";
+        const occ = occurrence({ startDate: new Date(2026, 2, 6, 10, 0).toISOString() }); // Fri 10:00 EST
+        const action = resolveDragAction("e1", dayDropId(new Date(2026, 2, 9)), [occ]); // Mon, after DST began
+        expect(action).toMatchObject({ type: "move", deltaMs: 3 * 24 * 60 * 60 * 1000 - 60 * 60 * 1000 });
+        const moved = new Date(new Date(occ.startDate).getTime() + (action as { deltaMs: number }).deltaMs);
+        expect([moved.getDate(), moved.getHours(), moved.getMinutes()]).toEqual([9, 10, 0]);
+    });
+});
+
 describe("resolveDragAction", () => {
     it("returns null when dropped outside any droppable", () => {
         expect(resolveDragAction("e1", undefined, [occurrence()])).toBeNull();
@@ -79,6 +119,10 @@ describe("resolveDragAction", () => {
 
     it("returns null when a resize handle is dropped on a day cell instead of a time slot", () => {
         expect(resolveDragAction("resize:e1", "day:2026-06-05", [occurrence()])).toBeNull();
+    });
+
+    it("returns null for a malformed day drop id", () => {
+        expect(resolveDragAction("e1", "day:not-a-date", [occurrence()])).toBeNull();
     });
 
     it("returns null for an unrecognized over-id prefix", () => {

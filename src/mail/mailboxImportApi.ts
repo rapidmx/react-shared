@@ -9,7 +9,10 @@
  * stages the upload and returns the `pending` request; poll `getImportRequest()`/`listImportRequests()`
  * for `status` to become `"completed"` (with `importedCount`/`failedCount`) or `"failed"`.
  */
-import { ApiRequestError, apiFetch } from "../util/api.js";
+import { ApiRequestError, apiFetch, apiUrl } from "../util/api.js";
+import { RequestListParams, buildRequestListQuery } from "../util/apiQuery.js";
+
+export type { RequestListParams };
 
 export type MailboxImportFormat = "mbox" | "pst";
 export type MailboxImportStatus = "pending" | "processing" | "completed" | "failed";
@@ -50,8 +53,9 @@ export async function uploadMailboxImport(file: File, input: UploadMailboxImport
     if (input.mailboxUid) {
         params.set("mailboxUid", input.mailboxUid);
     }
-    const res = await fetch(`/api/mail/mailbox-import-requests?${params.toString()}`, {
+    const res = await fetch(apiUrl(`/mail/mailbox-import-requests?${params.toString()}`), {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": input.format === "pst" ? "application/vnd.ms-outlook" : "application/mbox" },
         body: file,
     });
@@ -64,9 +68,10 @@ export async function uploadMailboxImport(file: File, input: UploadMailboxImport
     return responseBody as MailboxImportRequest;
 }
 
-/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). */
-export function listImportRequests(): Promise<MailboxImportRequest[]> {
-    return apiFetch(`/mail/mailbox-import-requests`);
+/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). Newest
+ * first; `params` pages through them (`limit` capped at 500 server-side). */
+export function listImportRequests(params: RequestListParams = {}): Promise<MailboxImportRequest[]> {
+    return apiFetch(`/mail/mailbox-import-requests${buildRequestListQuery(params)}`);
 }
 
 export function getImportRequest(uid: string): Promise<MailboxImportRequest> {

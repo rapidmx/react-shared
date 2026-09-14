@@ -42,6 +42,12 @@ describe("listErasureRequests", () => {
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/erasure-requests", expect.anything());
         expect(result).toEqual([request]);
     });
+
+    it("forwards limit/page as query params", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await listErasureRequests({ limit: 10, page: 2 });
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/erasure-requests?limit=10&page=2", expect.anything());
+    });
 });
 
 describe("getErasureRequest", () => {

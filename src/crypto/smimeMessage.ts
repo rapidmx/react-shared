@@ -26,12 +26,23 @@
  * RFC 9788's own worked example uses (outer enveloped-data → decrypts to signed-data → unwraps to the
  * real `hp="cipher"` content), not a `multipart/signed` structure encrypted as a whole.
  */
-import { fromBase64, toBase64 } from "./encoding.js";
+import { toBase64 } from "./encoding.js";
+import {
+    DisplayBody,
+    decodeBase64Text,
+    decodeBodyText,
+    extractDisplayBody,
+    MimeHeaderField,
+    parseMimeEntity,
+    parseParameterizedHeader,
+    splitMultipart,
+} from "./mime.js";
 import {
     decryptEnvelopedData,
     encryptForRecipients,
     signDetached,
     signOpaque,
+    UnsupportedContentEncryptionError,
     verifyDetached,
     verifyOpaque,
 } from "./smime.js";
@@ -85,9 +96,8 @@ function protectedHeaderLines(headers: ProtectedHeaders, hpOuter?: ProtectedHead
     if (hpOuter) {
         // RFC 9788 Section 2.2.1's `hp-outer` field: the literal string "HP-Outer:" followed by the
         // original field name and its (outer, possibly-obscured) value. Written on every encrypted
-        // message per the spec, but not yet read back and compared against the actual outer envelope
-        // on receipt (that comparison - detecting a tampered outer header - is real received-message
-        // work for a later pass, not implemented by parseEncryptedMessage() below yet).
+        // message per the spec, and compared against the actual outer envelope on receipt by
+        // parseEncryptedMessage() (see ParsedEncryptedMessage.headerTamperDetected).
         lines.push(`HP-Outer: From: ${hpOuter.from}`);
         lines.push(`HP-Outer: To: ${hpOuter.to}`);
         if (hpOuter.cc) {
@@ -146,42 +156,63 @@ export async function buildSignedOnlyMessage(
 
 export interface ParsedSignedOnlyMessage {
     verified: boolean;
+    /** The certificate pkijs matched to the verified SignerInfo (not merely the first embedded one). */
     signerCertificateDer?: Uint8Array;
     protectedHeaders?: ProtectedHeaders;
     bodyContentType?: string;
+    /** The inner entity's body with its Content-Transfer-Encoding/charset decoded (for a multipart inner
+     * entity this is the raw multipart text - use `displayBody` for what to render). */
     bodyText?: string;
+    /** The displayable body: `html` only for a real text/html part, `text` for text/plain. */
+    displayBody?: DisplayBody;
 }
 
-/** Parses and verifies a `multipart/signed` message built by `buildSignedOnlyMessage()`. Returns
- * `{ verified: false }` (never throws) for anything malformed — same "degrade to a failed-signature
- * state, don't crash" contract as `smime.ts`'s own verify functions. */
+const SIGNATURE_CONTENT_TYPES = new Set(["application/pkcs7-signature", "application/x-pkcs7-signature"]);
+const PKCS7_MIME_CONTENT_TYPES = new Set(["application/pkcs7-mime", "application/x-pkcs7-mime"]);
+
+/** Parses and verifies a `multipart/signed` message (RFC 1847/8551). Returns `{ verified: false }` (never
+ * throws) for anything malformed — same "degrade to a failed-signature state, don't crash" contract as
+ * `smime.ts`'s own verify functions. Accepts foreign-MUA framing: unquoted/case-varied parameters,
+ * preamble/epilogue, transport padding, and a signed part stored with bare-LF line endings (retried in
+ * canonical CRLF form, which is what RFC 8551 §3.1.1 says was actually signed). */
 export async function parseSignedOnlyMessage(contentType: string, body: string): Promise<ParsedSignedOnlyMessage> {
-    const boundary = extractBoundary(contentType);
+    const boundary = parseParameterizedHeader(contentType).params["boundary"];
     if (!boundary) {
         return { verified: false };
     }
-    const parts = splitOnBoundary(body, boundary);
+    const parts = splitMultipart(body, boundary);
     if (parts.length < 2) {
         return { verified: false };
     }
-    const [innerEntity, signaturePart] = parts;
-    const signatureDer = extractBase64Body(signaturePart);
-    if (!signatureDer) {
+    const [innerText, signaturePartText] = parts;
+    const signaturePart = parseMimeEntity(signaturePartText);
+    if (!SIGNATURE_CONTENT_TYPES.has(parseParameterizedHeader(signaturePart.headers["content-type"]).value)) {
+        return { verified: false };
+    }
+    // The signature part is always base64 in practice (binary DER can't survive a text transport); a
+    // missing Content-Transfer-Encoding header is treated as base64 too, matching common senders.
+    const signatureDer = decodeBase64Text(signaturePart.body);
+    if (!signatureDer || signatureDer.length === 0) {
         return { verified: false };
     }
 
-    const result = await verifyDetached(new TextEncoder().encode(innerEntity), signatureDer);
+    let result = await verifyDetached(new TextEncoder().encode(innerText), signatureDer);
+    const canonical = innerText.replace(/\r?\n/g, CRLF);
+    if (!result.valid && canonical !== innerText) {
+        result = await verifyDetached(new TextEncoder().encode(canonical), signatureDer);
+    }
     if (!result.valid) {
         return { verified: false };
     }
 
-    const { headers, contentType: bodyContentType, body: bodyText } = splitHeadersAndBody(innerEntity);
+    const inner = parseMimeEntity(innerText);
     return {
         verified: true,
         signerCertificateDer: result.signerCertificateDer,
-        protectedHeaders: headersToProtectedHeaders(headers),
-        bodyContentType,
-        bodyText,
+        protectedHeaders: headersToProtectedHeaders(inner.headers),
+        bodyContentType: inner.headers["content-type"],
+        bodyText: decodeBodyText(inner),
+        displayBody: extractDisplayBody(inner),
     };
 }
 
@@ -272,6 +303,11 @@ export interface ParsedEncryptedMessage {
      * carries no `HP-Outer:` lines at all (a foreign sender's S/MIME implementation that doesn't write
      * them, or a message from before this field existed). */
     headerTamperDetected?: boolean;
+    /** The displayable body: `html` only for a real text/html part, `text` for text/plain. */
+    displayBody?: DisplayBody;
+    /** `true` when decryption was refused because the content encryption isn't AEAD (see `smime.ts`'s
+     * `UnsupportedContentEncryptionError`) - lets the caller explain that instead of "wrong key". */
+    unsupportedContentEncryption?: boolean;
 }
 
 /** RFC 9788's `HP-Outer:` field-copy fields to actually compare - a subset of `ProtectedHeaders`
@@ -285,17 +321,16 @@ export type ComparableOuterHeaders = Partial<Pick<ProtectedHeaders, "from" | "to
  * (a real bug if reused for this - JSON/`Record` keys aren't multi-valued). Scans the raw header block
  * text directly instead. Returns `undefined` when no `HP-Outer:` lines are present at all, so a caller
  * can distinguish "nothing to compare" from "compared and everything matched". */
-function extractHpOuterHeaders(rawHeaderBlock: string): ComparableOuterHeaders | undefined {
+function extractHpOuterHeaders(fields: MimeHeaderField[]): ComparableOuterHeaders | undefined {
     const result: ComparableOuterHeaders = {};
     let found = false;
-    for (const line of rawHeaderBlock.split(CRLF)) {
-        const match = /^HP-Outer:\s*(From|To|Cc|Date|Subject):\s*(.*)$/i.exec(line);
+    for (const { name, value } of fields) {
+        const match = name.toLowerCase() === "hp-outer" ? /^(From|To|Cc|Date|Subject):\s*(.*)$/i.exec(value) : null;
         if (!match) {
             continue;
         }
         found = true;
-        const field = match[1].toLowerCase() as keyof ComparableOuterHeaders;
-        result[field] = match[2].trim();
+        result[match[1].toLowerCase() as keyof ComparableOuterHeaders] = match[2].trim();
     }
     return found ? result : undefined;
 }
@@ -322,7 +357,7 @@ export async function parseEncryptedMessage(
     recipientPrivateKey: CryptoKey,
     actualOuterHeaders?: ComparableOuterHeaders,
 ): Promise<ParsedEncryptedMessage> {
-    const envelopedDer = decodeBase64Body(base64Body);
+    const envelopedDer = decodeBase64Text(base64Body);
     if (!envelopedDer) {
         return { decrypted: false };
     }
@@ -330,110 +365,54 @@ export async function parseEncryptedMessage(
     let decrypted: Uint8Array;
     try {
         decrypted = await decryptEnvelopedData(envelopedDer, recipientCertDer, recipientPrivateKey);
-    } catch {
-        return { decrypted: false };
+    } catch (err) {
+        return err instanceof UnsupportedContentEncryptionError ? { decrypted: false, unsupportedContentEncryption: true } : { decrypted: false };
     }
 
-    function compareTamper(rawHeaderBlock: string): boolean | undefined {
-        const hpOuter = extractHpOuterHeaders(rawHeaderBlock);
+    function compareTamper(fields: MimeHeaderField[]): boolean | undefined {
+        const hpOuter = extractHpOuterHeaders(fields);
         if (!hpOuter || !actualOuterHeaders) {
             return undefined;
         }
         return !outerHeadersMatch(hpOuter, actualOuterHeaders);
     }
 
-    const decoded = new TextDecoder().decode(decrypted);
-    const { headers: outerContentHeaders, body: outerContentBody, rawHeaderBlock: outerRawHeaderBlock } = splitHeadersAndBody(decoded);
-    const innerContentType = outerContentHeaders["content-type"];
+    let entity = parseMimeEntity(new TextDecoder().decode(decrypted));
+    const wrapper = parseParameterizedHeader(entity.headers["content-type"]);
+    let signature: Pick<ParsedEncryptedMessage, "signatureVerified" | "signerCertificateDer"> = {};
 
-    if (innerContentType?.includes('smime-type="signed-data"')) {
-        const signedDer = decodeBase64Body(outerContentBody);
+    if (PKCS7_MIME_CONTENT_TYPES.has(wrapper.value) && wrapper.params["smime-type"]?.toLowerCase() === "signed-data") {
+        const signedDer = decodeBase64Text(entity.body);
         if (!signedDer) {
             return { decrypted: false };
         }
         const verifyResult = await verifyOpaque(signedDer);
-        if (!verifyResult.valid || !verifyResult.content) {
+        if (!verifyResult.valid) {
             return { decrypted: true, signatureVerified: false };
         }
-        const plaintext = new TextDecoder().decode(verifyResult.content);
-        const { headers, contentType: bodyContentType, body: bodyText, rawHeaderBlock } = splitHeadersAndBody(plaintext);
-        return {
-            decrypted: true,
-            signatureVerified: true,
-            signerCertificateDer: verifyResult.signerCertificateDer,
-            protectedHeaders: headersToProtectedHeaders(headers),
-            bodyContentType,
-            bodyText,
-            headerTamperDetected: compareTamper(rawHeaderBlock),
-        };
+        // verifyOpaque() always returns `content` alongside `valid: true`.
+        entity = parseMimeEntity(new TextDecoder().decode(verifyResult.content));
+        signature = { signatureVerified: true, signerCertificateDer: verifyResult.signerCertificateDer };
     }
 
-    const { headers, contentType: bodyContentType, body: bodyText } = splitHeadersAndBody(decoded);
     return {
         decrypted: true,
-        protectedHeaders: headersToProtectedHeaders(headers),
-        bodyContentType,
-        bodyText,
-        headerTamperDetected: compareTamper(outerRawHeaderBlock),
+        ...signature,
+        protectedHeaders: headersToProtectedHeaders(entity.headers),
+        bodyContentType: entity.headers["content-type"],
+        bodyText: decodeBodyText(entity),
+        displayBody: extractDisplayBody(entity),
+        headerTamperDetected: compareTamper(entity.fields),
     };
 }
 
-// ---------------------------------------------------------------------------
-// Small, targeted MIME parsing helpers - sufficient for entities this module
-// itself produces; not a general-purpose MIME parser.
-// ---------------------------------------------------------------------------
-
-function extractBoundary(contentType: string): string | undefined {
-    const match = /boundary="([^"]+)"/.exec(contentType);
-    return match?.[1];
-}
-
-function splitOnBoundary(body: string, boundary: string): string[] {
-    const delimiter = `--${boundary}`;
-    return body
-        .split(delimiter)
-        .map((part) => part.replace(/^\r\n/, "").replace(/\r\n$/, ""))
-        .filter((part) => part.length > 0 && part !== "--");
-}
-
-function extractBase64Body(part: string): Uint8Array | undefined {
-    const { body } = splitHeadersAndBody(part);
-    return decodeBase64Body(body);
-}
-
-function decodeBase64Body(base64Body: string): Uint8Array | undefined {
-    try {
-        return fromBase64(base64Body.replace(/[\r\n]/g, ""));
-    } catch {
-        return undefined;
-    }
-}
-
-/** Splits a MIME entity's raw text into its header lines (lowercased-key map) and body, and returns
- * the entity's own Content-Type value (if present) for convenience. Exported for `messageSecurity.ts`,
- * which uses it to read a *received* message's own top-level Content-Type before deciding whether to
- * treat it as `buildEncryptedMessage()`- or `buildSignedOnlyMessage()`-shaped.
- *
- * Also returns the raw, unparsed header block text as `rawHeaderBlock` — the flat `headers` map can
- * only hold one value per (lowercased) name, which silently drops all but the last line for a
- * repeated-name header like RFC 9788's `HP-Outer` (see `extractHpOuterHeaders()`, which parses
- * `rawHeaderBlock` directly instead). */
+/** Splits a MIME entity's raw text into its header lines (lowercased-key map, first occurrence of each
+ * name, unfolded) and raw body, plus the entity's own Content-Type value for convenience. Kept for
+ * backward compatibility - new code should use `mime.ts`'s `parseMimeEntity()`, which also exposes every
+ * repeated field in order. Tolerates bare-LF line endings. */
 export function splitHeadersAndBody(entity: string): { headers: Record<string, string>; contentType?: string; body: string; rawHeaderBlock: string } {
-    const separatorIndex = entity.indexOf(`${CRLF}${CRLF}`);
-    const headerBlock = separatorIndex === -1 ? entity : entity.slice(0, separatorIndex);
-    const body = separatorIndex === -1 ? "" : entity.slice(separatorIndex + 2 * CRLF.length);
-
-    const headers: Record<string, string> = {};
-    for (const line of headerBlock.split(CRLF)) {
-        const colonIndex = line.indexOf(":");
-        if (colonIndex === -1) {
-            continue;
-        }
-        const name = line.slice(0, colonIndex).trim().toLowerCase();
-        const value = line.slice(colonIndex + 1).trim();
-        headers[name] = value;
-    }
-    return { headers, contentType: headers["content-type"], body, rawHeaderBlock: headerBlock };
+    const { headers, body, rawHeaderBlock } = parseMimeEntity(entity);
+    return { headers, contentType: headers["content-type"], body, rawHeaderBlock };
 }
 
 function headersToProtectedHeaders(headers: Record<string, string>): ProtectedHeaders {

@@ -5,7 +5,7 @@ import "reflect-metadata";
 import * as x509 from "@peculiar/x509";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { searchEncryptedCandidates } from "../../src/search/searchTier3.js";
+import { TIER3_DECRYPT_CONCURRENCY, searchEncryptedCandidates } from "../../src/search/searchTier3.js";
 import { ParsedSearchQuery } from "../../src/search/queryGrammar.js";
 import { UnlockedKeys } from "../../src/crypto/keySession.js";
 import { ProtectedHeaders, applyBaselineOuterHeaders, assembleOutboundMime, buildEncryptedMessage } from "../../src/crypto/smimeMessage.js";
@@ -18,7 +18,7 @@ interface TestIdentity {
 }
 
 async function generateTestIdentity(cn: string): Promise<TestIdentity> {
-    const keys = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
+    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
     const cert = await x509.X509CertificateGenerator.createSelfSigned({
         serialNumber: "01",
         name: `CN=${cn}`,
@@ -444,5 +444,133 @@ describe("searchEncryptedCandidates", () => {
         const result = await searchEncryptedCandidates(baseParsedQuery({ text: "-spam -junk" }), unlocked);
         expect(result).toHaveLength(2);
         expect(result[0].score).toBe(result[1].score);
+    });
+
+    it("honors subject: against the decrypted subject, case-insensitively", async () => {
+        const bob = await generateTestIdentity("bob@example.com");
+        const unlocked = { masterKey: new Uint8Array(32), encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer } as UnlockedKeys;
+        const rawA = await buildEncryptedRawMime("Body mentions nothing relevant.", { ...HEADERS, subject: "Quarterly BUDGET review" }, bob);
+        const rawB = await buildEncryptedRawMime("This body talks about the budget though.", { ...HEADERS, subject: "Lunch" }, bob);
+
+        mockFetch((url) => {
+            if (url.includes("/search/candidates")) {
+                return jsonResponse(200, {
+                    candidates: [
+                        { entityType: "message", entityUid: "m1" },
+                        { entityType: "message", entityUid: "m2" },
+                    ],
+                });
+            }
+            if (url.includes("/messages/m1/raw")) return new Response(rawA, { status: 200 });
+            if (url.includes("/messages/m2/raw")) return new Response(rawB, { status: 200 });
+            throw new Error(`unexpected ${url}`);
+        });
+
+        const result = await searchEncryptedCandidates(baseParsedQuery({ subject: "budget" }), unlocked);
+        expect(result.map((r) => r.entityUid)).toEqual(["m1"]);
+    });
+
+    it("honors has:attachment via Message.hasAttachments, skipping the decrypt for a mismatch", async () => {
+        const bob = await generateTestIdentity("bob@example.com");
+        const unlocked = { masterKey: new Uint8Array(32), encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer } as UnlockedKeys;
+        const raw = await buildEncryptedRawMime("Budget attached.", HEADERS, bob);
+
+        const fetchMock = mockFetch((url) => {
+            if (url.includes("/search/candidates")) {
+                return jsonResponse(200, {
+                    candidates: [
+                        { entityType: "message", entityUid: "with" },
+                        { entityType: "message", entityUid: "without" },
+                    ],
+                });
+            }
+            if (url.endsWith("/messages/with")) return jsonResponse(200, { uid: "with", hasAttachments: true });
+            if (url.endsWith("/messages/without")) return jsonResponse(200, { uid: "without", hasAttachments: false });
+            if (url.includes("/messages/with/raw")) return new Response(raw, { status: 200 });
+            throw new Error(`unexpected ${url}`);
+        });
+
+        const withAttachment = await searchEncryptedCandidates(baseParsedQuery({ hasAttachment: true }), unlocked);
+        expect(withAttachment.map((r) => r.entityUid)).toEqual(["with"]);
+        expect(fetchMock.mock.calls.some((c) => (c[0] as string).includes("/messages/without/raw"))).toBe(false);
+
+        const withoutAttachment = await searchEncryptedCandidates(baseParsedQuery({ hasAttachment: false }), unlocked);
+        expect(withoutAttachment).toEqual([]);
+    });
+
+    it("matches against a text/html body's stripped text", async () => {
+        const bob = await generateTestIdentity("bob@example.com");
+        const unlocked = { masterKey: new Uint8Array(32), encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer } as UnlockedKeys;
+        const part = await buildEncryptedMessage(
+            "text/html; charset=utf-8",
+            "<p>The <b>budget</b> &amp; forecast</p>",
+            HEADERS,
+            applyBaselineOuterHeaders(HEADERS),
+            [bob.certDer],
+        );
+        const raw = assembleOutboundMime(HEADERS, part);
+
+        mockFetch((url) => {
+            if (url.includes("/search/candidates")) return jsonResponse(200, { candidates: [{ entityType: "message", entityUid: "m1" }] });
+            if (url.includes("/messages/m1/raw")) return new Response(raw, { status: 200 });
+            throw new Error(`unexpected ${url}`);
+        });
+
+        const result = await searchEncryptedCandidates(baseParsedQuery({ text: '"budget & forecast"' }), unlocked);
+        expect(result).toHaveLength(1);
+        expect(result[0].snippet).not.toContain("<b>");
+    });
+
+    it("matches on the decrypted subject alone when the body has no displayable text part", async () => {
+        const bob = await generateTestIdentity("bob@example.com");
+        const unlocked = { masterKey: new Uint8Array(32), encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer } as UnlockedKeys;
+        const part = await buildEncryptedMessage("application/octet-stream", "opaque bytes", HEADERS, applyBaselineOuterHeaders(HEADERS), [
+            bob.certDer,
+        ]);
+        const raw = assembleOutboundMime(HEADERS, part);
+
+        mockFetch((url) => {
+            if (url.includes("/search/candidates")) return jsonResponse(200, { candidates: [{ entityType: "message", entityUid: "m1" }] });
+            if (url.includes("/messages/m1/raw")) return new Response(raw, { status: 200 });
+            throw new Error(`unexpected ${url}`);
+        });
+
+        const result = await searchEncryptedCandidates(baseParsedQuery({ text: "budget" }), unlocked);
+        expect(result).toHaveLength(1);
+        expect(result[0].snippet).toBe("Quarterly budget review");
+    });
+
+    it("forwards mailboxUid to the candidates request", async () => {
+        const unlocked = { masterKey: new Uint8Array(32) } as UnlockedKeys;
+        const fetchMock = mockFetch(() => jsonResponse(200, { candidates: [] }));
+        await searchEncryptedCandidates(baseParsedQuery({ text: "budget" }), unlocked, 10, { mailboxUid: "mb2" });
+        const params = new URLSearchParams((fetchMock.mock.calls[0][0] as string).split("?")[1]);
+        expect(params.get("mailboxUid")).toBe("mb2");
+        expect(params.get("limit")).toBe("10");
+    });
+
+    it(`never fetches/decrypts more than ${TIER3_DECRYPT_CONCURRENCY} candidates at once`, async () => {
+        const bob = await generateTestIdentity("bob@example.com");
+        const unlocked = { masterKey: new Uint8Array(32), encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer } as UnlockedKeys;
+        const raw = await buildEncryptedRawMime("budget", HEADERS, bob);
+        const uids = Array.from({ length: 10 }, (_, i) => `m${i}`);
+        let inFlight = 0;
+        let maxInFlight = 0;
+
+        mockFetch(async (url) => {
+            if (url.includes("/search/candidates")) {
+                return jsonResponse(200, { candidates: uids.map((entityUid) => ({ entityType: "message", entityUid })) });
+            }
+            inFlight += 1;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            inFlight -= 1;
+            return new Response(raw, { status: 200 });
+        });
+
+        const result = await searchEncryptedCandidates(baseParsedQuery({ text: "budget" }), unlocked);
+        expect(result.map((r) => r.entityUid)).toEqual(uids);
+        expect(maxInFlight).toBeLessThanOrEqual(TIER3_DECRYPT_CONCURRENCY);
+        expect(maxInFlight).toBeGreaterThan(1);
     });
 });

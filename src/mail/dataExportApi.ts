@@ -11,7 +11,10 @@
  * only stages a `pending` request; poll `getExportRequest()`/`listExportRequests()` for `status` to
  * become `"ready"` (or `"failed"`) before offering the download.
  */
-import { apiFetch } from "../util/api.js";
+import { apiFetch, apiUrl } from "../util/api.js";
+import { RequestListParams, buildRequestListQuery } from "../util/apiQuery.js";
+
+export type { RequestListParams };
 
 export type DataExportFormat = "json" | "mbox";
 export type DataExportStatus = "pending" | "ready" | "failed";
@@ -43,9 +46,10 @@ export function createExportRequest(input: CreateDataExportRequestInput): Promis
     });
 }
 
-/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). */
-export function listExportRequests(): Promise<DataExportRequest[]> {
-    return apiFetch(`/mail/data-export-requests`);
+/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). Newest
+ * first; `params` pages through them (`limit` capped at 500 server-side). */
+export function listExportRequests(params: RequestListParams = {}): Promise<DataExportRequest[]> {
+    return apiFetch(`/mail/data-export-requests${buildRequestListQuery(params)}`);
 }
 
 export function getExportRequest(uid: string): Promise<DataExportRequest> {
@@ -57,5 +61,5 @@ export function getExportRequest(uid: string): Promise<DataExportRequest> {
  * (the browser's own native download, no JS fetch/blob needed) — same pattern `mailApi.ts`'s
  * `attachmentContentUrl()` already establishes. 404s until `status === "ready"`. */
 export function exportRequestDownloadUrl(uid: string): string {
-    return `/api/mail/data-export-requests/${encodeURIComponent(uid)}/download`;
+    return apiUrl(`/mail/data-export-requests/${encodeURIComponent(uid)}/download`);
 }

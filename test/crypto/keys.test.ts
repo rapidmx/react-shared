@@ -35,12 +35,25 @@ describe("exportPrivateKeyPkcs8 / importPrivateKeyPkcs8", () => {
         // Prove it's functionally the same key by signing with the original and verifying with the
         // original public key, then signing with the re-imported key and verifying the same way.
         const data = new TextEncoder().encode("prove possession");
-        const sigFromOriginal = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, keyPair.privateKey, data as BufferSource);
-        const sigFromReimported = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, reimported, data as BufferSource);
+        const sigFromOriginal = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, keyPair.privateKey, data);
+        const sigFromReimported = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, reimported, data);
         expect(
             await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, keyPair.publicKey, sigFromReimported, data as BufferSource),
         ).toBe(true);
         expect(sigFromOriginal.byteLength).toBeGreaterThan(0);
+    });
+
+    it("imports non-extractable by default, and extractable only when explicitly requested", async () => {
+        const { keyPair } = await generateKeyPairWithCsr("alice@example.com", "sign");
+        const raw = await exportPrivateKeyPkcs8(keyPair.privateKey);
+
+        const locked = await importPrivateKeyPkcs8(raw, { name: "ECDSA", namedCurve: "P-256" }, ["sign"]);
+        expect(locked.extractable).toBe(false);
+        await expect(exportPrivateKeyPkcs8(locked)).rejects.toThrow();
+
+        const exportable = await importPrivateKeyPkcs8(raw, { name: "ECDSA", namedCurve: "P-256" }, ["sign"], true);
+        expect(exportable.extractable).toBe(true);
+        expect(await exportPrivateKeyPkcs8(exportable)).toEqual(raw);
     });
 
     it("re-imports the same encryption key material under ECDH for actual key agreement", async () => {

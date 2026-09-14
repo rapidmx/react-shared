@@ -13,6 +13,9 @@
  * while the target mailbox is a custodian on an active legal hold.
  */
 import { apiFetch } from "../util/api.js";
+import { RequestListParams, buildRequestListQuery } from "../util/apiQuery.js";
+
+export type { RequestListParams };
 
 export type DataSubjectErasureStatus = "pending" | "approved" | "denied" | "completed";
 
@@ -36,9 +39,10 @@ export function createErasureRequest(): Promise<DataSubjectErasureRequest> {
     return apiFetch(`/mail/erasure-requests`, { method: "POST" });
 }
 
-/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). */
-export function listErasureRequests(): Promise<DataSubjectErasureRequest[]> {
-    return apiFetch(`/mail/erasure-requests`);
+/** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). Newest
+ * first; `params` pages through them (`limit` capped at 500 server-side). */
+export function listErasureRequests(params: RequestListParams = {}): Promise<DataSubjectErasureRequest[]> {
+    return apiFetch(`/mail/erasure-requests${buildRequestListQuery(params)}`);
 }
 
 export function getErasureRequest(uid: string): Promise<DataSubjectErasureRequest> {

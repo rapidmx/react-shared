@@ -20,13 +20,11 @@
  * but no UI calls them yet — a real follow-up, not a silent gap: a mailbox enrolled *only* with a
  * passkey has no way to unlock through this module today.
  */
-import type { KeyVault, PublicKey } from "./keyvaultApi.js";
-import { findActivePublicKey, getKeyVault } from "./keyvaultApi.js";
+import { type KeyVault, type PublicKey, findActivePublicKey, getKeyVault } from "./keyvaultApi.js";
 import { fromBase64 } from "./encoding.js";
 import { importPrivateKeyPkcs8 } from "./keys.js";
 import { buildAad, openWithKey } from "./masterKey.js";
-import { parseArgon2idKdfLabel } from "./passwordUnlock.js";
-import { deriveFromPassword } from "./passwordUnlock.js";
+import { deriveFromPassword, parseArgon2idKdfLabel } from "./passwordUnlock.js";
 
 /** AAD purpose labels — MUST exactly match what `KeyEnrollmentGate.tsx` used when it originally
  * sealed each of these values, or `openWithKey()` fails (GCM authenticates the AAD, not just the
@@ -47,19 +45,72 @@ export interface UnlockedKeys {
 
 const sessions = new Map<string, UnlockedKeys>();
 
+/** What changed in the session store — passed to every `subscribeKeySession()` listener. */
+export interface KeySessionEvent {
+    mailboxUid: string;
+    /** `"unlocked"` when keys were stored (a first unlock, or a re-unlock replacing existing keys, e.g.
+     * after a key rotation); `"locked"` when they were destroyed. */
+    state: "unlocked" | "locked";
+}
+
+export type KeySessionListener = (event: KeySessionEvent) => void;
+
+const listeners = new Set<KeySessionListener>();
+
+function notify(event: KeySessionEvent): void {
+    // Iterate a snapshot so a listener that unsubscribes (or subscribes another) mid-dispatch can't skip
+    // or double-deliver. A throwing listener must never stop the rest - especially on "locked", where a
+    // later listener may be the one clearing decrypted content from the screen - so its error is
+    // rethrown asynchronously instead, still surfacing as an uncaught error without aborting delivery.
+    for (const listener of [...listeners]) {
+        try {
+            listener(event);
+        } catch (err) {
+            queueMicrotask(() => {
+                throw err;
+            });
+        }
+    }
+}
+
+/**
+ * Subscribes to session store changes: fires once per mailbox whenever its keys are unlocked (stored)
+ * or destroyed, so a UI can e.g. clear already-decrypted content the moment keys go away instead of
+ * polling `getUnlockedKeys()`. A `destroyUnlockedKeys()` call that finds nothing to destroy fires
+ * nothing. Returns an unsubscribe function.
+ */
+export function subscribeKeySession(listener: KeySessionListener): () => void {
+    listeners.add(listener);
+    return () => {
+        listeners.delete(listener);
+    };
+}
+
 /** Reads back a mailbox's already-unlocked keys this session, or `undefined` if it hasn't been
  * unlocked yet (or was destroyed). Never triggers an unlock itself. */
 export function getUnlockedKeys(mailboxUid: string): UnlockedKeys | undefined {
     return sessions.get(mailboxUid);
 }
 
-/** Destroys one mailbox's unlocked keys, or every mailbox's if called with no argument — the spec's
- * "destroyed on explicit logout" / "session revocation" / "configurable idle period" triggers. */
+/**
+ * Destroys one mailbox's unlocked keys, or every mailbox's if called with no argument — the spec's
+ * "destroyed on explicit logout" / "session revocation" / "configurable idle period" triggers.
+ *
+ * The master key's bytes are overwritten with zeros in place before the entry is dropped, so any
+ * `UnlockedKeys` object a caller is still holding no longer carries usable key material either (and the
+ * bytes don't linger until garbage collection). The private keys themselves are `CryptoKey` handles
+ * whose material WebCrypto never exposes to JS, so there is nothing to zero there.
+ */
 export function destroyUnlockedKeys(mailboxUid?: string): void {
-    if (mailboxUid) {
-        sessions.delete(mailboxUid);
-    } else {
-        sessions.clear();
+    const uids = mailboxUid ? [mailboxUid] : [...sessions.keys()];
+    for (const uid of uids) {
+        const unlocked = sessions.get(uid);
+        if (!unlocked) {
+            continue;
+        }
+        unlocked.masterKey.fill(0);
+        sessions.delete(uid);
+        notify({ mailboxUid: uid, state: "locked" });
     }
 }
 
@@ -99,23 +150,42 @@ export async function unlockWithPassword(mailboxUid: string, mailboxKeys: Public
 
     const unlocked: UnlockedKeys = { masterKey };
 
-    const signingPublicKey = findActivePublicKey(mailboxKeys, "sign");
-    const wrappedSigningKey = signingPublicKey && findWrappedPrivateKey(vault, signingPublicKey.fingerprint);
-    if (signingPublicKey && wrappedSigningKey) {
-        const raw = await openWithKey(masterKey, wrappedSigningKey, buildAad(mailboxUid, SIGNING_PRIVATE_KEY_AAD_PURPOSE));
-        unlocked.signingPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDSA", namedCurve: "P-256" }, ["sign"]);
-        unlocked.signingCertDer = fromBase64(signingPublicKey.publicKey);
-        unlocked.signingFingerprint = signingPublicKey.fingerprint;
+    // The unwrapped private keys are imported *extractable* (unlike `importPrivateKeyPkcs8()`'s default)
+    // for exactly one consumer: `keyRotation.ts`'s `rewrapPrivateKeysUnderNewMasterKey()`, which re-seals
+    // these session keys' PKCS#8 bytes under a new master key via `crypto.subtle.exportKey()` (web-client's
+    // Settings > Encryption "rotate keys"). Nothing else exports them. Making them non-extractable would
+    // first require that function to re-open the vault's wraps with `masterKey` instead. The transient
+    // PKCS#8 plaintext buffers are zeroed as soon as WebCrypto has copied them into a `CryptoKey`.
+    try {
+        const signingPublicKey = findActivePublicKey(mailboxKeys, "sign");
+        const wrappedSigningKey = signingPublicKey && findWrappedPrivateKey(vault, signingPublicKey.fingerprint);
+        if (signingPublicKey && wrappedSigningKey) {
+            const raw = await openWithKey(masterKey, wrappedSigningKey, buildAad(mailboxUid, SIGNING_PRIVATE_KEY_AAD_PURPOSE));
+            unlocked.signingPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDSA", namedCurve: "P-256" }, ["sign"], true);
+            raw.fill(0);
+            unlocked.signingCertDer = fromBase64(signingPublicKey.publicKey);
+            unlocked.signingFingerprint = signingPublicKey.fingerprint;
+        }
+
+        const encryptionPublicKey = findActivePublicKey(mailboxKeys, "encrypt");
+        const wrappedEncryptionKey = encryptionPublicKey && findWrappedPrivateKey(vault, encryptionPublicKey.fingerprint);
+        if (encryptionPublicKey && wrappedEncryptionKey) {
+            const raw = await openWithKey(masterKey, wrappedEncryptionKey, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));
+            unlocked.encryptionPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"], true);
+            raw.fill(0);
+            unlocked.encryptionCertDer = fromBase64(encryptionPublicKey.publicKey);
+            unlocked.encryptionFingerprint = encryptionPublicKey.fingerprint;
+        }
+    } catch (err) {
+        // A failed unlock never reaches the session store, so nothing else would ever zero this.
+        masterKey.fill(0);
+        throw err;
     }
 
-    const encryptionPublicKey = findActivePublicKey(mailboxKeys, "encrypt");
-    const wrappedEncryptionKey = encryptionPublicKey && findWrappedPrivateKey(vault, encryptionPublicKey.fingerprint);
-    if (encryptionPublicKey && wrappedEncryptionKey) {
-        const raw = await openWithKey(masterKey, wrappedEncryptionKey, buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE));
-        unlocked.encryptionPrivateKey = await importPrivateKeyPkcs8(raw, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
-        unlocked.encryptionCertDer = fromBase64(encryptionPublicKey.publicKey);
-        unlocked.encryptionFingerprint = encryptionPublicKey.fingerprint;
-    }
-
+    // A re-unlock replacing existing keys (e.g. `settings/encryption`'s post-rotation refresh) deliberately
+    // does NOT zero the previous entry's master key: an in-flight consumer that captured the old
+    // `UnlockedKeys` object (e.g. a local-index build pass) is still legitimately using it, and nothing
+    // "destroyed" the session - only `destroyUnlockedKeys()` does that.
     sessions.set(mailboxUid, unlocked);
+    notify({ mailboxUid, state: "unlocked" });
 }

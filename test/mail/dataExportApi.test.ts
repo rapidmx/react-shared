@@ -10,6 +10,7 @@ import {
     getExportRequest,
     listExportRequests,
 } from "../../src/mail/dataExportApi.js";
+import { configureApiBaseUrl } from "../../src/util/api.js";
 
 const request = {
     uid: "der1",
@@ -54,6 +55,12 @@ describe("listExportRequests", () => {
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/data-export-requests", expect.anything());
         expect(result).toEqual([request]);
     });
+
+    it("forwards only the page when limit is omitted", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await listExportRequests({ page: 3 });
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/data-export-requests?page=3", expect.anything());
+    });
 });
 
 describe("getExportRequest", () => {
@@ -68,5 +75,14 @@ describe("getExportRequest", () => {
 describe("exportRequestDownloadUrl", () => {
     it("builds the same-origin download URL for an encoded uid", () => {
         expect(exportRequestDownloadUrl("der/1")).toBe("/api/mail/data-export-requests/der%2F1/download");
+    });
+
+    it("prefixes the configured API base URL", () => {
+        configureApiBaseUrl("https://mail.example.com");
+        try {
+            expect(exportRequestDownloadUrl("der1")).toBe("https://mail.example.com/api/mail/data-export-requests/der1/download");
+        } finally {
+            configureApiBaseUrl("");
+        }
     });
 });

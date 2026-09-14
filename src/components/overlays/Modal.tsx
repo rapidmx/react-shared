@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { ReactNode, useEffect, useRef } from "react";
+import React, { ReactNode, useRef } from "react";
 import { createPortal } from "react-dom";
+import { OverlayDepthContext, useOverlayDialog } from "./overlayStack.js";
 
 export interface ModalProps {
     open: boolean;
@@ -16,38 +17,14 @@ export interface ModalProps {
  * A small, dependency-free modal dialog rendered via a portal to `document.body`. Controlled by the
  * caller (`open` state lives in the parent, not here) so multiple call sites can share the same simple
  * contract without each needing its own open/close plumbing.
+ *
+ * Focus moves into the dialog on open, Tab/Shift+Tab stay trapped inside it, and focus returns to the
+ * previously focused element on close. When overlays are stacked (Modal/Drawer), only the topmost one
+ * handles Escape and the focus trap - see `overlayStack.ts`.
  */
 export default function Modal({ open, onClose, title, children }: ModalProps) {
     const dialogRef = useRef<HTMLDivElement>(null);
-    const triggerRef = useRef<Element | null>(null);
-    // Callers routinely pass `onClose` as a fresh inline function every render — reading it through a ref
-    // (rather than depending on it directly) keeps the effect below from re-running, and re-stealing focus
-    // into the dialog, on every parent re-render (e.g. every keystroke in a field inside the modal).
-    const onCloseRef = useRef(onClose);
-    onCloseRef.current = onClose;
-
-    useEffect(() => {
-        if (!open) return;
-
-        // Remember what had focus before the modal opened so it can be restored on close (e.g. the "+
-        // Add" button that triggered this modal), then move focus into the dialog itself.
-        triggerRef.current = document.activeElement;
-        dialogRef.current?.focus();
-
-        function handleKeyDown(e: KeyboardEvent) {
-            if (e.key === "Escape") {
-                onCloseRef.current();
-            }
-        }
-        document.addEventListener("keydown", handleKeyDown);
-
-        return () => {
-            document.removeEventListener("keydown", handleKeyDown);
-            if (triggerRef.current instanceof HTMLElement) {
-                triggerRef.current.focus();
-            }
-        };
-    }, [open]);
+    const childDepth = useOverlayDialog(open, dialogRef, onClose);
 
     if (!open) {
         return null;
@@ -77,7 +54,9 @@ export default function Modal({ open, onClose, title, children }: ModalProps) {
                         &times;
                     </button>
                 </div>
-                <div>{children}</div>
+                <div>
+                    <OverlayDepthContext.Provider value={childDepth}>{children}</OverlayDepthContext.Provider>
+                </div>
             </div>
         </div>,
         document.body,

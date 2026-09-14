@@ -50,18 +50,119 @@ const WEEKDAY_OBJECT: Record<WeekdayCode, Weekday> = {
     SU: RRule.SU,
 };
 
-/** Builds an `RRule` instance from this app's `RecurrenceRule` shape, anchored at `dtstart`. */
-export function buildRRule(rule: RecurrenceRule, dtstart: Date): RRuleNS.RRule {
+function createRRule(rule: RecurrenceRule, dtstart: Date, until: Date | null, tzid: string | null): RRuleNS.RRule {
     return new RRule({
         freq: FREQ_MAP[rule.freq],
         interval: rule.interval,
         dtstart,
+        tzid,
         byweekday: rule.byDay?.map((code) => WEEKDAY_OBJECT[code]),
         bymonthday: rule.byMonthDay,
         bymonth: rule.byMonth,
         count: rule.count,
-        until: rule.until ? new Date(rule.until) : null,
+        until,
     });
+}
+
+/**
+ * Builds an `RRule` instance from this app's `RecurrenceRule` shape, anchored at `dtstart`. Pass the
+ * event's IANA `tzid` so the rule carries it (e.g. `DTSTART;TZID=America/New_York:...` from
+ * `.toString()`) — note that, per `rrule`'s own convention, a rule with a non-UTC `tzid` expects
+ * `dtstart` to be a "floating" wall-clock time expressed as a UTC `Date` and rezones its generated
+ * dates using the *runtime's* local zone, which is why `expandOccurrences()` below does its own
+ * timezone conversion instead of relying on this.
+ */
+export function buildRRule(rule: RecurrenceRule, dtstart: Date, tzid?: string): RRuleNS.RRule {
+    return createRRule(rule, dtstart, rule.until ? new Date(rule.until) : null, tzid ?? null);
+}
+
+/**
+ * Converts between real instants and "wall-clock as UTC" milliseconds (the local date/time fields of
+ * an instant in some zone, packed into a UTC timestamp) — the standard floating-time trick for
+ * running `rrule`, which does all of its date arithmetic in UTC fields, in an arbitrary zone.
+ */
+interface ZoneConverter {
+    toWall(instantMs: number): number;
+    fromWall(wallMs: number): number;
+}
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function positiveMs(ms: number): number {
+    return ((ms % 1000) + 1000) % 1000;
+}
+
+/** The runtime's own local zone — used for a "floating" event with no (or an unrecognized) timezone. */
+const LOCAL_ZONE: ZoneConverter = {
+    toWall(instantMs) {
+        const d = new Date(instantMs);
+        return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds());
+    },
+    fromWall(wallMs) {
+        const w = new Date(wallMs);
+        return new Date(
+            w.getUTCFullYear(),
+            w.getUTCMonth(),
+            w.getUTCDate(),
+            w.getUTCHours(),
+            w.getUTCMinutes(),
+            w.getUTCSeconds(),
+            w.getUTCMilliseconds(),
+        ).getTime();
+    },
+};
+
+function ianaZone(formatter: Intl.DateTimeFormat): ZoneConverter {
+    const toWall = (instantMs: number): number => {
+        const fields: Record<string, number> = {};
+        for (const part of formatter.formatToParts(new Date(instantMs))) {
+            fields[part.type] = Number(part.value);
+        }
+        // `% 24`: some engines render midnight as hour "24" even with `hourCycle: "h23"`.
+        return Date.UTC(fields.year, fields.month - 1, fields.day, fields.hour % 24, fields.minute, fields.second, positiveMs(instantMs));
+    };
+    return {
+        toWall,
+        // Two-pass offset resolution: the offset at the naive guess, then re-evaluated at the first
+        // candidate, which settles on the correct side of a DST transition. An ambiguous (fall-back)
+        // wall time resolves to its first (daylight) instance; a nonexistent (spring-forward) one lands
+        // one hour earlier in standard time.
+        fromWall(wallMs) {
+            const firstGuess = wallMs - (toWall(wallMs) - wallMs);
+            return wallMs - (toWall(firstGuess) - firstGuess);
+        },
+    };
+}
+
+const zoneCache = new Map<string, ZoneConverter>();
+
+/** Resolves `timezone` (an IANA zone id) to a converter, falling back to the runtime's local zone when
+ * it's empty or not a zone `Intl` recognizes. */
+function resolveZone(timezone: string | undefined): ZoneConverter {
+    const key = timezone ?? "";
+    let zone = zoneCache.get(key);
+    if (!zone) {
+        try {
+            zone = key
+                ? ianaZone(
+                      new Intl.DateTimeFormat("en-US", {
+                          timeZone: key,
+                          hourCycle: "h23",
+                          year: "numeric",
+                          month: "2-digit",
+                          day: "2-digit",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          second: "2-digit",
+                      }),
+                  )
+                : LOCAL_ZONE;
+        } catch {
+            zone = LOCAL_ZONE;
+        }
+        zoneCache.set(key, zone);
+    }
+    return zone;
 }
 
 /** A single expanded occurrence of a (possibly recurring) `CalendarEvent`, ready to render on a grid. */
@@ -79,28 +180,47 @@ export interface CalendarOccurrence extends CalendarEvent {
  * Expands `event` into every occurrence whose interval overlaps `[rangeStart, rangeEnd]`. A
  * non-recurring event yields itself (in a one-element array) if it overlaps, or `[]` otherwise —
  * callers don't need to special-case recurring vs. not.
+ *
+ * Recurrence is expanded in the event's own `timezone` (an IANA zone id; an empty or unrecognized
+ * value falls back to the runtime's local zone, i.e. floating time), so every occurrence keeps the
+ * master's local wall-clock start/end time and local weekday — a weekly Monday 23:00
+ * America/New_York event stays on Monday 23:00 New York time across DST changes, rather than being
+ * expanded on the UTC weekday/time of its first instance.
  */
 export function expandOccurrences(event: CalendarEvent, rangeStart: Date, rangeEnd: Date): CalendarOccurrence[] {
     const start = new Date(event.startDate);
     const end = new Date(event.endDate);
-    const durationMs = end.getTime() - start.getTime();
 
     if (!event.recurrenceRule) {
         const overlaps = start < rangeEnd && end > rangeStart;
         return overlaps ? [{ ...event, occurrenceKey: event.uid, isRecurringOccurrence: false }] : [];
     }
 
-    const rule = buildRRule(event.recurrenceRule, start);
-    // Widen the query window by one occurrence's duration so an occurrence that started before
-    // `rangeStart` but is still in progress (still overlaps the visible window) isn't missed.
-    const queryStart = new Date(rangeStart.getTime() - durationMs);
-    const occurrenceStarts = rule.between(queryStart, rangeEnd, true);
+    const zone = resolveZone(event.timezone);
+    const startWall = zone.toWall(start.getTime());
+    // The duration in wall-clock terms, so an occurrence also keeps its local end time across DST.
+    const wallDurationMs = zone.toWall(end.getTime()) - startWall;
+    const { until } = event.recurrenceRule;
+    const rule = createRRule(
+        event.recurrenceRule,
+        new Date(startWall),
+        until ? new Date(zone.toWall(new Date(until).getTime())) : null,
+        null,
+    );
+    // Query in the wall-clock frame, widened by one occurrence's duration (so an occurrence that started
+    // before `rangeStart` but is still in progress isn't missed) plus a day on each side to absorb the
+    // zone's offset; the exact instant-based overlap filter at the end trims the excess.
+    const queryStart = new Date(zone.toWall(rangeStart.getTime()) - wallDurationMs - MS_PER_DAY);
+    const queryEnd = new Date(zone.toWall(rangeEnd.getTime()) + MS_PER_DAY);
+    const occurrenceStarts = rule
+        .between(queryStart, queryEnd, true)
+        .map((occWall) => ({ start: new Date(zone.fromWall(occWall.getTime())), wall: occWall.getTime() }));
     const exceptions = new Set(event.recurrenceRule.exceptions.map((d) => new Date(d).getTime()));
 
     return occurrenceStarts
-        .filter((occStart) => !exceptions.has(occStart.getTime()))
-        .map((occStart) => {
-            const occEnd = new Date(occStart.getTime() + durationMs);
+        .filter((occ) => !exceptions.has(occ.start.getTime()))
+        .map(({ start: occStart, wall }) => {
+            const occEnd = new Date(zone.fromWall(wall + wallDurationMs));
             return {
                 ...event,
                 startDate: occStart.toISOString(),

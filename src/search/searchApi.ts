@@ -5,8 +5,9 @@
 /**
  * Client wrapper for `@rapidmx/restapi`'s `BaseSearchRoute` (mounted at `/mail/search` — see
  * `src/mongo/routes/SearchRoute.ts`/`src/sql/routes/SearchRoute.ts`), the full-text search endpoint across
- * a mailbox's messages/contacts/calendar events/notes/tasks. Always scoped server-side to the caller's own
- * mailbox — there is no `mailboxUid` param to pass here.
+ * a mailbox's messages/contacts/calendar events/notes/tasks. Scoped server-side to the caller's own mailbox
+ * unless an optional `mailboxUid` (one the caller can access, e.g. the currently open shared mailbox) is
+ * passed.
  *
  * The structured filter params below mirror `specs/search.md` §14's operator grammar
  * (`from:`/`to:`/`cc:`/`subject:`/`has:attachment`/`before:`/`after:`/`in:`/`is:`/`label:`), already parsed
@@ -67,6 +68,9 @@ export interface SearchParams {
     flags?: string[];
     /** `label:` — one or more `Label.uid`s, matched as an AND (all must be present). */
     labels?: string[];
+    /** Which of the caller's accessible mailboxes to search (e.g. the one currently open). Omitted, the
+     * server falls back to the caller's own mailbox; access to a supplied one is checked server-side. */
+    mailboxUid?: string;
 }
 
 /** Exported so `admin/matterSearchApi.ts` can build the identical query-param set against a different
@@ -113,6 +117,9 @@ export function buildSearchParams(text: string, params: SearchParams): URLSearch
     if (params.labels?.length) {
         query.set("label", params.labels.join(","));
     }
+    if (params.mailboxUid) {
+        query.set("mailboxUid", params.mailboxUid);
+    }
     return query;
 }
 
@@ -138,6 +145,8 @@ export interface CandidateParams {
     labels?: string[];
     limit?: number;
     cursor?: string;
+    /** Same as `SearchParams.mailboxUid`. */
+    mailboxUid?: string;
 }
 
 export interface CandidateResult {
@@ -178,6 +187,9 @@ function buildCandidateParams(params: CandidateParams): URLSearchParams {
     }
     if (params.limit) {
         query.set("limit", String(params.limit));
+    }
+    if (params.mailboxUid) {
+        query.set("mailboxUid", params.mailboxUid);
     }
     return query;
 }
