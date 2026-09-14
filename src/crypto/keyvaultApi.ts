@@ -5,7 +5,7 @@
 /**
  * Typed wrappers over `@rapidmx/restapi`'s E2E encryption endpoints (`BaseKeyVaultRoute`,
  * `BaseKeyLookupRoute`, `BaseEncryptionPolicyRoute` — mounted in `server` at `mail/mailboxes` and
- * `mail/encryption-policy`, see `src/{mongo,sql}/routes/{KeyVaultRoute,KeyLookupRoute,
+ * `system/encryption-policy`, see `src/{mongo,sql}/routes/{KeyVaultRoute,KeyLookupRoute,
  * EncryptionPolicyRoute}.ts`). These calls carry only wrapped/ciphertext key material and public
  * certificates — the server never sees an unwrapped private key or master key; see `crypto/masterKey.ts`
  * and `crypto/keys.ts` for the client-side cryptography that produces the values passed here.
@@ -250,12 +250,12 @@ export interface EncryptionPolicy {
 /** The system-wide encryption policy (readable by any authenticated user, used to decide what encryption
  * controls a compose UI should offer). */
 export function getEncryptionPolicy(): Promise<EncryptionPolicy> {
-    return apiFetch(`/mail/encryption-policy`);
+    return apiFetch(`/system/encryption-policy`);
 }
 
 /** Admin-only (`RequiresTrustedRole`) — updates the system-wide encryption policy. */
 export function updateEncryptionPolicy(patch: Partial<EncryptionPolicy>): Promise<EncryptionPolicy> {
-    return apiFetch(`/mail/encryption-policy`, {
+    return apiFetch(`/system/encryption-policy`, {
         method: "PUT",
         body: JSON.stringify(patch),
     });

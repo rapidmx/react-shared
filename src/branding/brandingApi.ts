@@ -5,7 +5,7 @@
 /**
  * Typed wrapper over `@rapidmx/restapi`'s `Branding` route (`BaseBrandingRoute`) — a single, admin-managed,
  * publicly-readable row of product chrome (logo, title/company name, custom stylesheet, header/footer HTML).
- * `GET /mail/branding` needs no auth (every viewer, including an anonymous booking-page visitor, can read
+ * `GET /system/branding` needs no auth (every viewer, including an anonymous booking-page visitor, can read
  * it); every write is `@RequiresTrustedRole()` on the backend.
  */
 
@@ -28,7 +28,7 @@ export interface Branding {
 }
 
 export function getBranding(): Promise<Branding> {
-    return apiFetch("/mail/branding");
+    return apiFetch("/system/branding");
 }
 
 export interface UpdateBrandingInput {
@@ -42,7 +42,7 @@ export interface UpdateBrandingInput {
 }
 
 export function updateBranding(input: UpdateBrandingInput): Promise<Branding> {
-    return apiFetch("/mail/branding", {
+    return apiFetch("/system/branding", {
         method: "PUT",
         body: JSON.stringify(input),
     });
@@ -67,26 +67,26 @@ async function uploadBrandingAsset(path: string, file: File): Promise<Branding> 
  * `Content-Type: application/json`) the same way `mailApi.ts`'s `uploadAttachment()` does, since
  * `BaseBrandingRoute.uploadLogo()` reads the raw request body directly. */
 export function uploadBrandingLogo(file: File): Promise<Branding> {
-    return uploadBrandingAsset("/mail/branding/logo", file);
+    return uploadBrandingAsset("/system/branding/logo", file);
 }
 
 /** Uploads `file` as the compact nav-header icon, independently of `uploadBrandingLogo()`'s full logo. */
 export function uploadBrandingIcon(file: File): Promise<Branding> {
-    return uploadBrandingAsset("/mail/branding/icon", file);
+    return uploadBrandingAsset("/system/branding/icon", file);
 }
 
 export function uploadBrandingStylesheet(file: File): Promise<Branding> {
-    return uploadBrandingAsset("/mail/branding/stylesheet", file);
+    return uploadBrandingAsset("/system/branding/stylesheet", file);
 }
 
 export function deleteBrandingLogo(): Promise<void> {
-    return apiFetch("/mail/branding/logo", { method: "DELETE" });
+    return apiFetch("/system/branding/logo", { method: "DELETE" });
 }
 
 export function deleteBrandingIcon(): Promise<void> {
-    return apiFetch("/mail/branding/icon", { method: "DELETE" });
+    return apiFetch("/system/branding/icon", { method: "DELETE" });
 }
 
 export function deleteBrandingStylesheet(): Promise<void> {
-    return apiFetch("/mail/branding/stylesheet", { method: "DELETE" });
+    return apiFetch("/system/branding/stylesheet", { method: "DELETE" });
 }

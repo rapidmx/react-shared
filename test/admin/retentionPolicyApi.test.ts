@@ -14,14 +14,14 @@ describe("getRetentionPolicy", () => {
     it("fetches the singleton policy", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, { messageRetentionDays: 90, auditLogRetentionDays: 2190 }));
         const result = await getRetentionPolicy();
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/retention-policy", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/retention-policy", expect.anything());
         expect(result).toEqual({ messageRetentionDays: 90, auditLogRetentionDays: 2190 });
     });
 
     it("returns an empty object when nothing has been configured yet", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, {}));
         const result = await getRetentionPolicy();
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/retention-policy", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/retention-policy", expect.anything());
         expect(result).toEqual({});
     });
 });
@@ -31,7 +31,7 @@ describe("updateRetentionPolicy", () => {
         const fetchMock = mockFetch(() => jsonResponse(200, { messageRetentionDays: 90 }));
         const result = await updateRetentionPolicy({ messageRetentionDays: 90 });
         expect(fetchMock).toHaveBeenCalledWith(
-            "/api/mail/retention-policy",
+            "/api/system/retention-policy",
             expect.objectContaining({ method: "PUT", body: JSON.stringify({ messageRetentionDays: 90 }) }),
         );
         expect(result).toEqual({ messageRetentionDays: 90 });

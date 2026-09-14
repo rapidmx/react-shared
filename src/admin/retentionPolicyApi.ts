@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 /**
  * Typed wrappers over `@rapidmx/restapi`'s deployment-wide `RetentionPolicy` singleton
- * (`BaseRetentionPolicyRoute`, mounted at `mail/retention-policy`). `GET` is readable by any
+ * (`BaseRetentionPolicyRoute`, mounted at `system/retention-policy`). `GET` is readable by any
  * authenticated user; `PUT` is trusted-admin-only server-side. Enforcement itself (actually purging
  * expired messages/audit-log entries) lives entirely in restapi's own `RetentionEnforcementJob` — this
  * file only reads/writes the configuration.
@@ -28,14 +28,14 @@ export interface RetentionPolicy {
 export const MIN_AUDIT_LOG_RETENTION_DAYS = 2190;
 
 export function getRetentionPolicy(): Promise<RetentionPolicy> {
-    return apiFetch(`/mail/retention-policy`);
+    return apiFetch(`/system/retention-policy`);
 }
 
 /** Partial patch — only supplied fields are changed. There is no way to clear a previously-configured
  * field back to "no automatic purge" through this endpoint (matches the route's own real behavior,
  * not a client-side limitation to work around). */
 export function updateRetentionPolicy(patch: Partial<RetentionPolicy>): Promise<RetentionPolicy> {
-    return apiFetch(`/mail/retention-policy`, {
+    return apiFetch(`/system/retention-policy`, {
         method: "PUT",
         body: JSON.stringify(patch),
     });

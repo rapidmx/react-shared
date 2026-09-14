@@ -26,7 +26,7 @@ describe("getBranding", () => {
     it("fetches the singleton branding row", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, branding));
         const result = await getBranding();
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/branding", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/branding", expect.anything());
         expect(result).toEqual(branding);
     });
 });
@@ -37,7 +37,7 @@ describe("updateBranding", () => {
         const fetchMock = mockFetch(() => jsonResponse(200, updated));
         const result = await updateBranding({ title: "New Title" });
         expect(fetchMock).toHaveBeenCalledWith(
-            "/api/mail/branding",
+            "/api/system/branding",
             expect.objectContaining({ method: "PUT", body: JSON.stringify({ title: "New Title" }) }),
         );
         expect(result).toEqual(updated);
@@ -47,12 +47,12 @@ describe("updateBranding", () => {
 describe("uploadBrandingLogo", () => {
     it("posts the file's raw bytes with its own content-type, not JSON", async () => {
         const file = new File(["png-bytes"], "logo.png", { type: "image/png" });
-        const updated: Branding = { ...branding, logoUrl: "/api/mail/branding/logo" };
+        const updated: Branding = { ...branding, logoUrl: "/api/system/branding/logo" };
         const fetchMock = mockFetch(() => jsonResponse(200, updated));
 
         const result = await uploadBrandingLogo(file);
 
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/branding/logo", expect.objectContaining({ method: "POST", body: file }));
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/branding/logo", expect.objectContaining({ method: "POST", body: file }));
         const init = fetchMock.mock.calls[0][1] as RequestInit;
         expect((init.headers as Record<string, string>)["Content-Type"]).toBe("image/png");
         expect(result).toEqual(updated);
@@ -108,12 +108,12 @@ describe("uploadBrandingLogo", () => {
 describe("uploadBrandingIcon", () => {
     it("posts the file's raw bytes", async () => {
         const file = new File(["png-bytes"], "icon.png", { type: "image/png" });
-        const updated: Branding = { ...branding, iconUrl: "/api/mail/branding/icon" };
+        const updated: Branding = { ...branding, iconUrl: "/api/system/branding/icon" };
         const fetchMock = mockFetch(() => jsonResponse(200, updated));
 
         const result = await uploadBrandingIcon(file);
 
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/branding/icon", expect.objectContaining({ method: "POST", body: file }));
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/branding/icon", expect.objectContaining({ method: "POST", body: file }));
         expect(result).toEqual(updated);
     });
 });
@@ -121,13 +121,13 @@ describe("uploadBrandingIcon", () => {
 describe("uploadBrandingStylesheet", () => {
     it("posts the file's raw bytes", async () => {
         const file = new File(["body{}"], "theme.css", { type: "text/css" });
-        const updated: Branding = { ...branding, stylesheetUrl: "/api/mail/branding/stylesheet" };
+        const updated: Branding = { ...branding, stylesheetUrl: "/api/system/branding/stylesheet" };
         const fetchMock = mockFetch(() => jsonResponse(200, updated));
 
         const result = await uploadBrandingStylesheet(file);
 
         expect(fetchMock).toHaveBeenCalledWith(
-            "/api/mail/branding/stylesheet",
+            "/api/system/branding/stylesheet",
             expect.objectContaining({ method: "POST", body: file }),
         );
         expect(result).toEqual(updated);
@@ -138,7 +138,7 @@ describe("deleteBrandingLogo", () => {
     it("DELETEs the logo", async () => {
         const fetchMock = mockFetch(() => emptyResponse(204));
         await deleteBrandingLogo();
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/branding/logo", expect.objectContaining({ method: "DELETE" }));
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/branding/logo", expect.objectContaining({ method: "DELETE" }));
     });
 });
 
@@ -146,7 +146,7 @@ describe("deleteBrandingIcon", () => {
     it("DELETEs the icon", async () => {
         const fetchMock = mockFetch(() => emptyResponse(204));
         await deleteBrandingIcon();
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/branding/icon", expect.objectContaining({ method: "DELETE" }));
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/branding/icon", expect.objectContaining({ method: "DELETE" }));
     });
 });
 
@@ -154,6 +154,6 @@ describe("deleteBrandingStylesheet", () => {
     it("DELETEs the stylesheet", async () => {
         const fetchMock = mockFetch(() => emptyResponse(204));
         await deleteBrandingStylesheet();
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/branding/stylesheet", expect.objectContaining({ method: "DELETE" }));
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/branding/stylesheet", expect.objectContaining({ method: "DELETE" }));
     });
 });

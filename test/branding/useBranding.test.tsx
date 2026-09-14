@@ -37,7 +37,7 @@ describe("useBranding", () => {
                 companyName: "Acme",
                 title: "Acme Mail",
                 logoUrl: "https://cdn.example.com/logo.png",
-                stylesheetUrl: "/api/mail/branding/stylesheet",
+                stylesheetUrl: "/api/system/branding/stylesheet",
             }),
         );
         render(<Harness />);
@@ -50,7 +50,7 @@ describe("useBranding", () => {
         const link = document.getElementById("branding-stylesheet") as HTMLLinkElement | null;
         expect(link).not.toBeNull();
         expect(link?.rel).toBe("stylesheet");
-        expect(link?.getAttribute("href")).toBe("/api/mail/branding/stylesheet");
+        expect(link?.getAttribute("href")).toBe("/api/system/branding/stylesheet");
     });
 
     it("prefers a configured icon over the logo for iconSrc", async () => {
@@ -95,7 +95,7 @@ describe("useBranding", () => {
         const existingLink = document.createElement("link");
         existingLink.id = "branding-stylesheet";
         existingLink.rel = "stylesheet";
-        existingLink.href = "/api/mail/branding/stylesheet";
+        existingLink.href = "/api/system/branding/stylesheet";
         document.head.appendChild(existingLink);
 
         let resolveFetch: (res: Response) => void;
@@ -110,17 +110,17 @@ describe("useBranding", () => {
         expect(document.getElementById("branding-stylesheet")).toBeNull();
 
         resolveFetch(
-            jsonResponse(200, { companyName: "Acme", title: "Acme Mail", stylesheetUrl: "/api/mail/branding/stylesheet?v=2" }),
+            jsonResponse(200, { companyName: "Acme", title: "Acme Mail", stylesheetUrl: "/api/system/branding/stylesheet?v=2" }),
         );
         await waitFor(() => expect(document.getElementById("branding-stylesheet")).not.toBeNull());
         const recreatedLink = document.getElementById("branding-stylesheet") as HTMLLinkElement;
         expect(recreatedLink).not.toBe(existingLink);
-        expect(recreatedLink.getAttribute("href")).toBe("/api/mail/branding/stylesheet?v=2");
+        expect(recreatedLink.getAttribute("href")).toBe("/api/system/branding/stylesheet?v=2");
     });
 
     it("leaves the stylesheet link in place on unmount - it may be server-rendered and shared across shells", async () => {
         mockFetch(() =>
-            jsonResponse(200, { companyName: "Acme", title: "Acme Mail", stylesheetUrl: "/api/mail/branding/stylesheet" }),
+            jsonResponse(200, { companyName: "Acme", title: "Acme Mail", stylesheetUrl: "/api/system/branding/stylesheet" }),
         );
         const { unmount } = render(<Harness />);
         await waitFor(() => expect(document.getElementById("branding-stylesheet")).not.toBeNull());

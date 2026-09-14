@@ -25,7 +25,7 @@ export interface UseBrandingResult {
  * Fetches the admin-configured `Branding` singleton once on mount and applies its cosmetic side effects
  * (browser-tab title, injected custom stylesheet `<link>`) directly to `document` — the same "resolve real
  * client state once mounted, no SSR prop threading" convention `useIsMobile`/`MailShell`'s query-param reads
- * already use. `GET /mail/branding` needs no auth and never `404`s (see `BaseBrandingRoute.get()`), so a
+ * already use. `GET /system/branding` needs no auth and never `404`s (see `BaseBrandingRoute.get()`), so a
  * fetch failure here can only be a real network/server problem — swallowed rather than surfaced, since
  * branding is purely decorative and every other part of the shell already depends on the same API being
  * reachable.

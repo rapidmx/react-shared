@@ -181,7 +181,7 @@ describe("getEncryptionPolicy", () => {
             jsonResponse(200, { encryptSameOrg: "optional", encryptFederated: "optional", encryptExternal: "optional" }),
         );
         const result = await getEncryptionPolicy();
-        expect(fetchMock).toHaveBeenCalledWith("/api/mail/encryption-policy", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/encryption-policy", expect.anything());
         expect(result.encryptSameOrg).toBe("optional");
     });
 });
@@ -193,7 +193,7 @@ describe("updateEncryptionPolicy", () => {
         );
         await updateEncryptionPolicy({ encryptSameOrg: "prohibited" });
         expect(fetchMock).toHaveBeenCalledWith(
-            "/api/mail/encryption-policy",
+            "/api/system/encryption-policy",
             expect.objectContaining({ method: "PUT", body: JSON.stringify({ encryptSameOrg: "prohibited" }) }),
         );
     });
