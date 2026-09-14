@@ -192,6 +192,16 @@ export function checkSignEnrollmentStatus(mailboxUid: string, enrollmentId: stri
     );
 }
 
+/** Cancels a pending automated enrollment of this mailbox, so no key is installed from it afterwards, and returns its
+ * resulting status. Owner-only. `rekey()` is refused (409) while an enrollment holding a wrapped key is in flight, so
+ * this is how an owner with an enrollment stuck at the CA gets to rotate their keys. */
+export function cancelSignEnrollment(mailboxUid: string, enrollmentId: string): Promise<EnrollmentResult> {
+    return apiFetch(
+        `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment/${encodeURIComponent(enrollmentId)}`,
+        { method: "DELETE" },
+    );
+}
+
 /** An escrow scope's public key, exposed only via `getEscrowInfo()` below. Mirrors `@rapidmx/restapi`'s
  * `EscrowScopePublicKey` exactly - the same shape as `PublicKey` minus `useType` (an escrow scope's key
  * is only ever used for encryption, never signing). */
@@ -244,12 +254,17 @@ export function removeMasterKeyWrap(mailboxUid: string, method: string, methodId
 
 export interface RekeyInput {
     wrappedKeys: WrappedPrivateKey[];
+    /** Every wrap of the new master key. For a mailbox assigned an escrow scope, this must include a fresh escrow wrap
+     * for that scope (`buildEscrowWrap()`): `rekey()` drops the old escrow wraps and refuses (409) an escrowed
+     * mailbox's rekey without a replacement. */
     masterKeyWraps: MasterKeyWrap[];
     keys: PublicKey[];
 }
 
 /** Full, atomic replacement of the mailbox's key-vault contents — the only real revocation mechanism
- * for a captured wrap. Restricted server-side to the mailbox's actual owner. */
+ * for a captured wrap. Restricted server-side to the mailbox's actual owner. Refused (409) while a signing enrollment
+ * holding a wrapped key is in flight (see `cancelSignEnrollment()`), or when an escrowed mailbox's request carries no
+ * replacement escrow wrap. */
 export function rekey(mailboxUid: string, input: RekeyInput): Promise<KeyVault> {
     return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/rekey`, {
         method: "PUT",

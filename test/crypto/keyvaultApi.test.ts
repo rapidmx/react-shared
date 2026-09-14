@@ -7,6 +7,7 @@ import { jsonResponse, mockFetch } from "../testUtils.js";
 import { ApiRequestError } from "../../src/util/api.js";
 import {
     addMasterKeyWrap,
+    cancelSignEnrollment,
     checkSignEnrollmentStatus,
     enrollKey,
     getEncryptionPolicy,
@@ -124,6 +125,18 @@ describe("checkSignEnrollmentStatus", () => {
         await checkSignEnrollmentStatus("mb1", "enr/1");
         const [url] = fetchMock.mock.calls[0];
         expect(url).toBe("/api/mail/mailboxes/mb1/keyvault/keys/sign-enrollment/enr%2F1");
+    });
+});
+
+describe("cancelSignEnrollment", () => {
+    it("deletes the encoded enrollment and returns its resulting status", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { status: "failed", error: "Cancelled by the mailbox owner." }));
+        const result = await cancelSignEnrollment("mb1", "enr/1");
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/mailboxes/mb1/keyvault/keys/sign-enrollment/enr%2F1",
+            expect.objectContaining({ method: "DELETE" }),
+        );
+        expect(result).toEqual({ status: "failed", error: "Cancelled by the mailbox owner." });
     });
 });
 
