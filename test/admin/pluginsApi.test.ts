@@ -7,6 +7,9 @@ import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
 import {
     addPlugin,
     getPluginStatus,
+    getPluginUpdates,
+    listPluginNamespaces,
+    searchPlugins,
     listPlugins,
     lookupPluginPackage,
     removePlugin,
@@ -48,5 +51,17 @@ describe("pluginsApi", () => {
             expect.objectContaining({ method: "PUT", body: JSON.stringify({ version: 2, enabled: false, settings: { "mail:x": null } }) }),
         );
         expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/p1", expect.objectContaining({ method: "DELETE" }));
+    });
+
+    it("lists namespaces, searches for plugins in all or one namespace, and checks for updates", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await listPluginNamespaces();
+        await searchPlugins();
+        await searchPlugins("@my-company");
+        await getPluginUpdates();
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/namespaces", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/search", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/search?namespace=%40my-company", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/updates", expect.anything());
     });
 });

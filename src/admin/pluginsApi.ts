@@ -79,6 +79,38 @@ export interface PluginStatus {
     instances: PluginInstanceStatus[];
 }
 
+/** A plugin package found by `searchPlugins()`. `version` is its latest published version. */
+export interface PluginSearchResult {
+    name: string;
+    version: string;
+    description?: string;
+    date?: string;
+    /** Whether this server's configuration lets an administrator add it. */
+    allowed: boolean;
+    /** Set when the package is already installed. */
+    installedUid?: string;
+    installedVersion?: string;
+    /** Whether `version` is newer than the installed version. */
+    updateAvailable: boolean;
+}
+
+/** An installed plugin's latest published version, from `getPluginUpdates()`. */
+export interface PluginUpdateInfo {
+    uid: string;
+    name: string;
+    installedVersion: string;
+    latestVersion?: string;
+    updateAvailable: boolean;
+    /** Why the registry couldn't be checked for this plugin. */
+    error?: string;
+}
+
+/** A namespace (npm scope) this server searches for plugins. */
+export interface PluginNamespace {
+    name: string;
+    registry?: string;
+}
+
 export interface UpdatePluginInput {
     /** The row's optimistic-lock counter. */
     version?: number;
@@ -96,6 +128,22 @@ export function listPlugins(): Promise<Plugin[]> {
 
 export function getPluginStatus(): Promise<PluginStatus> {
     return apiFetch(`${BASE}/status`);
+}
+
+/** The namespaces this server searches for plugins. */
+export function listPluginNamespaces(): Promise<PluginNamespace[]> {
+    return apiFetch(`${BASE}/namespaces`);
+}
+
+/** Plugin packages (named `*-plugin`) in `namespace`, or in every configured namespace when it's omitted. */
+export function searchPlugins(namespace?: string): Promise<PluginSearchResult[]> {
+    const query = namespace ? `?namespace=${encodeURIComponent(namespace)}` : "";
+    return apiFetch(`${BASE}/search${query}`);
+}
+
+/** Each installed plugin's latest published version. */
+export function getPluginUpdates(): Promise<PluginUpdateInfo[]> {
+    return apiFetch(`${BASE}/updates`);
 }
 
 /** A package's published versions and one version's manifest (the latest, unless `packageVersion` is given). */
