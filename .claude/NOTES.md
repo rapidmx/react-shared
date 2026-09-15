@@ -884,3 +884,37 @@ Not committed. Plan `cheerful-giggling-pine.md` section 6: the Calendly-style bo
   Merge = contacts first, dedupe by trimmed lowercase address, first wins, `limit` applied to the merged list.
 - Tests `test/mail/directoryApi.test.ts`, 100% on the file. Full run 83 files / 1027 tests, 100 / 99.5 / 100 / 100;
   tsc, lint, build clean.
+
+### 2026-09-15 — Reply/forward composition: full-body quotes, body layout, reply recipients
+
+JP: "when replying the cursor should be at the top and the original content below" - plus a confirmed Reply All bug
+(the replying mailbox got its own address in Cc, so it received a copy of its own reply). Fixed across this repo and
+web-client (see that repo's NOTES for the UI half).
+
+- **`mail/messageBodySanitizer.ts` (new)** is web-client `MessageDetailPane`'s display purifier, moved here verbatim
+  (`stripRemoteCssUrls()`, the DOMPurify instance with its two hooks) so the compose quote can reuse the same policy
+  instead of a second implementation. `sanitizeMessageBodyHtml()` = display (`FORBID_TAGS: link/meta/base`);
+  `sanitizeQuotedHtml()` also forbids style/title/form controls/frames/objects/media/svg/math and, via a
+  `RETURN_DOM_FRAGMENT` pass, removes every `img` whose `src` isn't a `data:` URI (a `cid:` image points at a part the
+  reply doesn't carry). **Fails closed:** no `window`, or `isSupported` false, returns `""` - DOMPurify's own
+  `sanitize()` returns the input unchanged when unsupported, which would be the opposite of what a caller wants.
+  Forbidden tags keep their text (DOMPurify's `KEEP_CONTENT`), so a `<button>b</button>` leaves "b" - accepted.
+  Note a leading `<style>`/`<meta>` in the input is parsed into `<head>` and simply vanishes, so a sanitizer test
+  asserting on it has to put text before it.
+- **`composeQuoting.ts`:** `QuotedBody` (`{ html?, text? }`), preferred over `bodyPreview` in `buildReplyQuote()`/
+  `buildForwardQuote()`; the HTML branch falls through to text (then preview) when sanitizing leaves nothing visible
+  (`hasVisibleContent()` counts an `<img>` as content). `buildComposeBodyHtml(signature?, quote?)` =
+  `<p></p>` + signature + (`<p></p>` between the two) + quote, `""` with neither. `buildReplyRecipients()` is
+  self-address exclusion + dedupe + Bcc dropped + the from-self (Sent Items) case; it returns `Recipient[]`, so the
+  caller keeps display names (web-client formats them with its own `formatRecipient()`).
+- **`recipientDisplayName()`** exists because of a restapi quirk found in the browser check: `ScanQueueJob` stores a
+  delivered message's `from.displayName` as `result.parsedFrom`, which is the **whole** From header
+  (`"Bob Allen" <bob@partner.test>`), so the attribution line and the reply chip read
+  `"Bob Allen" <bob@partner.test> <bob@partner.test>`. The name is reduced to the part before its own address, and a
+  name that is some *other* address is dropped (never shown as if it were the sender). Worth fixing in restapi too.
+- **Also found there, not fixed here:** the same job stores `recipients` as the **envelope** recipients only
+  (`entry.envelopeTo`), so a delivered message's record names nobody but the receiving mailbox - which is exactly why
+  Reply All put JP's own address in Cc. web-client now recovers the real To/Cc from the message's own headers.
+- Verification: 85 files / 1064 tests, 100% statements/functions/lines, 99.5% branches; `tsc`, `yarn lint`,
+  `yarn build` clean. Lint gotcha: `jsdoc/check-indentation` rejects a wrapped `-` bullet list inside a doc comment
+  (continuation lines are indented) - write the paragraphs flat instead.

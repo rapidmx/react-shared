@@ -15,6 +15,27 @@
     first, addresses de-duplicated case-insensitively, at most `limit` (default 8). One source failing (for example
     a 403 directory for a caller with no mailbox on the server) still returns the other's entries; an abort rejects
     with the `AbortError`.
+- **Reply/forward composition (`mail/compose/composeQuoting.js`):**
+  - `buildReplyQuote(message, body?)` and `buildForwardQuote(message, body?)` now quote the message's full body, passed
+    in as `QuotedBody` (`{ html?, text? }`: the sanitized HTML body the reader saw, the decrypted or verified content,
+    or the plain-text body). HTML is sanitized with `sanitizeQuotedHtml()`, text is HTML-escaped, and
+    `message.bodyPreview` (a truncated, server-derived excerpt) is only the fallback when neither could be loaded.
+    The reply attribution line now names the sender as `Name <address>`.
+  - `buildComposeBodyHtml(signatureHtml?, quotedHtml?)` lays out a compose body the way Outlook and Gmail do: an empty
+    paragraph first (where the caret goes), then the signature, then the quote.
+  - `buildReplyRecipients(message, ownAddresses, replyAll)` resolves a reply's To and Cc: never the replying mailbox's
+    own addresses (primary plus aliases, compared case-insensitively), never the same address twice, never Bcc
+    recipients, display names kept. Reply All adds the original To to To and the original Cc to Cc; a reply to a
+    message the mailbox sent itself goes to the original recipients instead of back to itself.
+  - `recipientDisplayName(recipient)` (used by all of the above) drops the address a display name may carry - an
+    ingested message's `from` holds its whole `"Bob Allen" <bob@example.com>` From header as the display name, which
+    would otherwise be addressed and quoted as `"Bob Allen" <bob@example.com> <bob@example.com>`. A name that is a
+    different address than the recipient's own is dropped entirely.
+- **`mail/messageBodySanitizer.js`:** the client-side message-body sanitizer (moved here from `@rapidmx/web-client`'s
+  `MessageDetailPane`): `sanitizeMessageBodyHtml()` for a displayed body, `sanitizeQuotedHtml()` for one quoted into a
+  compose body (also without styles, forms, frames, media and any image that isn't a `data:` URI), and
+  `stripRemoteCssUrls()`. Both drop every remote resource reference, so nothing quoted or displayed can ping a tracker,
+  and both return `""` (never the unsanitized input) where there is no DOM to sanitize with.
 
 ## v0.6.0
 
