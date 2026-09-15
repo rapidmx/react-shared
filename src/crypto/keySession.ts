@@ -51,10 +51,26 @@ export interface UnlockedKeys {
 }
 
 const sessions = new Map<string, UnlockedKeys>();
+
+/** The one method of `WeakRef` this module uses - typed locally because the build's `ES2020` lib predates it. */
+interface WeakHandle<T> {
+    deref(): T | undefined;
+}
+
+/** A weak reference to `target` where the runtime has `WeakRef` (every supported browser and Node), otherwise a
+ * strong one - a missing `WeakRef` must never make a lock skip an object. */
+function weakHandle<T extends object>(target: T): WeakHandle<T> {
+    const WeakRefCtor = (globalThis as { WeakRef?: new (target: T) => WeakHandle<T> }).WeakRef;
+    return WeakRefCtor ? new WeakRefCtor(target) : { deref: () => target };
+}
+
 /** Every `UnlockedKeys` object this store has handed out per mailbox and not yet destroyed - a re-unlock
  * replaces the store entry but leaves the previous object usable for in-flight consumers, so a lock must
- * reach all of them, not only the newest. */
-const issued = new Map<string, Set<UnlockedKeys>>();
+ * reach all of them, not only the newest. Held *weakly*: the current object is kept alive by `sessions`, and a
+ * replaced one (e.g. holding a pre-rotation master key) only for as long as some consumer still references it -
+ * once nothing does, it can be collected instead of lingering until the next lock. A lock destroys every one
+ * still reachable, which is every one anybody could still use. */
+const issued = new Map<string, Set<WeakHandle<UnlockedKeys>>>();
 /** Bumped by every `destroyUnlockedKeys()` call for that mailbox (`lockAllGeneration` for a destroy-all),
  * so an unlock still awaiting the vault/KDF when a lock happens can tell and discard what it unwrapped. */
 const lockGenerations = new Map<string, number>();
@@ -138,8 +154,11 @@ export function destroyUnlockedKeys(mailboxUid?: string): void {
         if (!objects) {
             continue;
         }
-        for (const unlocked of objects) {
-            destroyObject(unlocked);
+        for (const handle of objects) {
+            const unlocked = handle.deref();
+            if (unlocked) {
+                destroyObject(unlocked);
+            }
         }
         issued.delete(uid);
         sessions.delete(uid);
@@ -289,10 +308,17 @@ export async function unlockWithPassword(mailboxUid: string, mailboxKeys: Public
     // A re-unlock replacing existing keys (e.g. `settings/encryption`'s post-rotation refresh) deliberately
     // does NOT zero the previous entry's master key: an in-flight consumer that captured the old
     // `UnlockedKeys` object (e.g. a local-index build pass) is still legitimately using it, and nothing
-    // "destroyed" the session - only `destroyUnlockedKeys()` does that, and it destroys every issued object.
+    // "destroyed" the session - only `destroyUnlockedKeys()` does that, and it destroys every issued object still
+    // reachable. The store itself keeps the replaced object only weakly (see `issued`).
     sessions.set(mailboxUid, unlocked);
-    const objects = issued.get(mailboxUid) ?? new Set<UnlockedKeys>();
-    objects.add(unlocked);
+    const objects = issued.get(mailboxUid) ?? new Set<WeakHandle<UnlockedKeys>>();
+    // Drop handles whose object was already collected, so repeated re-unlocks don't grow the set.
+    for (const handle of objects) {
+        if (!handle.deref()) {
+            objects.delete(handle);
+        }
+    }
+    objects.add(weakHandle(unlocked));
     issued.set(mailboxUid, objects);
     notify({ mailboxUid, state: "unlocked" });
     return { unopenableKeys };

@@ -249,3 +249,47 @@ describe("updateEncryptionPolicy", () => {
         );
     });
 });
+
+describe("round 6: expectedMasterKeyGeneration", () => {
+    const wrappedKey = { ciphertext: "c", nonce: "n", algorithm: "AES-256-GCM" };
+    const wrap = { method: "passkey" as const, methodId: "cred-1", ciphertext: "c", nonce: "n", salt: "s", kdf: "k", schemeVersion: 1, createdAt: 1 };
+    const bodyOf = (fetchMock: ReturnType<typeof mockFetch>) => JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+
+    it("reads the vault's masterKeyGeneration", async () => {
+        mockFetch(() => jsonResponse(200, { wrappedKeys: [], masterKeyWraps: [], masterKeyGeneration: 3 }));
+        expect((await getKeyVault("mb1")).masterKeyGeneration).toBe(3);
+    });
+
+    it("passes it through on enrollKey, startSignEnrollment and rekey bodies when given", async () => {
+        let fetchMock = mockFetch(() => jsonResponse(200, { wrappedKeys: [], masterKeyWraps: [], masterKeyGeneration: 2 }));
+        await enrollKey("mb1", { useType: "encrypt", csr: "csr", wrappedKey, expectedMasterKeyGeneration: 2 });
+        expect(bodyOf(fetchMock)).toEqual({ useType: "encrypt", csr: "csr", wrappedKey, expectedMasterKeyGeneration: 2 });
+
+        fetchMock = mockFetch(() => jsonResponse(200, { enrollmentId: "enr-1" }));
+        await startSignEnrollment("mb1", { csr: "csr", wrappedKey, expectedMasterKeyGeneration: 0 });
+        expect(bodyOf(fetchMock)).toEqual({ csr: "csr", wrappedKey, expectedMasterKeyGeneration: 0 });
+
+        fetchMock = mockFetch(() => jsonResponse(200, { wrappedKeys: [], masterKeyWraps: [] }));
+        await rekey("mb1", { wrappedKeys: [], masterKeyWraps: [], keys: [], expectedMasterKeyGeneration: 5 });
+        expect(bodyOf(fetchMock)).toEqual({ wrappedKeys: [], masterKeyWraps: [], keys: [], expectedMasterKeyGeneration: 5 });
+    });
+
+    it("sends addMasterKeyWrap's generation (0 included) alongside the wrap, and the bare wrap without one", async () => {
+        let fetchMock = mockFetch(() => jsonResponse(200, { wrappedKeys: [], masterKeyWraps: [] }));
+        await addMasterKeyWrap("mb1", wrap, 0);
+        expect(bodyOf(fetchMock)).toEqual({ ...wrap, expectedMasterKeyGeneration: 0 });
+
+        fetchMock = mockFetch(() => jsonResponse(200, { wrappedKeys: [], masterKeyWraps: [] }));
+        await addMasterKeyWrap("mb1", wrap);
+        expect(bodyOf(fetchMock)).toEqual(wrap);
+        expect(bodyOf(fetchMock)).not.toHaveProperty("expectedMasterKeyGeneration");
+    });
+
+    it("surfaces the server's 409 for a rotated master key as an ordinary ApiRequestError", async () => {
+        mockFetch(() => jsonResponse(409, { message: "The master key was rotated." }));
+        const err = await addMasterKeyWrap("mb1", wrap, 1).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(ApiRequestError);
+        expect(err).not.toBeInstanceOf(VaultAlreadyInitializedError);
+        expect((err as ApiRequestError).status).toBe(409);
+    });
+});

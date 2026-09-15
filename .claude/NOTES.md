@@ -685,3 +685,22 @@ live in `test/crypto/round5Regressions.test.ts`, the rest next to each module's 
   ignores `folderUid`). `enrollKey()` rejects with new `VaultAlreadyInitializedError` (extends `ApiRequestError`,
   status 409) when wraps were supplied, the server answered 409, and a re-read of the vault confirms it has wraps
   (so a lost optimistic-lock 409 isn't misreported).
+
+### 2026-09-14 — Round-6 review fixes, W-A (key session references, master key generation contract)
+
+Not committed. Final full run: 81 files / 919 tests, 100% statements/functions/lines, 99.39% branches; `tsc` and
+`yarn lint` clean.
+
+- **Replaced master keys held until lock (LOW).** `issued` now holds `WeakHandle`s (`WeakRef` where the runtime has
+  it, else a strong `{ deref }` fallback - typed locally because the build lib is ES2020). The current object stays
+  alive through `sessions`; a replaced one only while a consumer references it. `destroyUnlockedKeys()` destroys every
+  handle that still derefs (so every object anyone can still use), and each unlock prunes dead handles. A collected
+  object's bytes are not zeroed (nothing can reach them); that is the trade-off for not pinning them. Tests stub
+  `WeakRef` with a fake whose target can be cleared to simulate collection.
+- **`expectedMasterKeyGeneration` (contract, additive).** Checked against restapi `BaseKeyVaultRoute`: a body field on
+  `enrollKey`, `startSignEnrollment`, `addMasterKeyWrap` and `rekey`, 409 on mismatch, 400 if not a non-negative
+  integer. `KeyVault.masterKeyGeneration?: number`; new `ExpectedMasterKeyGeneration` interface extended by
+  `EnrollKeyInput`, `SignEnrollmentRequest` and `RekeyInput` (JSON drops it when undefined);
+  `addMasterKeyWrap(mailboxUid, wrap, expectedMasterKeyGeneration?)` spreads it into the body only when given (0 is
+  sent). The 409 surfaces as a plain `ApiRequestError` (`enrollKey`'s `VaultAlreadyInitializedError` still needs wraps
+  in the request plus a vault that has wraps). web-client doesn't pass it yet.

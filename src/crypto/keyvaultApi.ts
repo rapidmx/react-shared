@@ -77,6 +77,19 @@ export interface KeyConflict {
 export interface KeyVault {
     wrappedKeys: WrappedPrivateKey[];
     masterKeyWraps: MasterKeyWrap[];
+    /** How many times the vault's master key has been rotated (`0` for never, and for no vault yet). Send it back as
+     * `expectedMasterKeyGeneration` on a write whose key material was sealed under the master key read with this vault
+     * (`enrollKey()`, `startSignEnrollment()`, `addMasterKeyWrap()`, `rekey()`), so restapi refuses it with `409` if
+     * another device rotated the master key meanwhile. Absent from servers that don't track it yet. */
+    masterKeyGeneration?: number;
+}
+
+/** The optional optimistic check restapi applies to vault writes carrying key material sealed under the master key. */
+export interface ExpectedMasterKeyGeneration {
+    /** The `KeyVault.masterKeyGeneration` read alongside the master key this request's material is sealed under. When
+     * given and the vault's generation has moved on, restapi answers `409` instead of installing material nobody can
+     * open with the current master key. Omitted, the write is accepted as before. */
+    expectedMasterKeyGeneration?: number;
 }
 
 /** Fetches the caller's key vault (wrapped private keys + wrapped master-key copies) for `mailboxUid`. */
@@ -104,8 +117,7 @@ export function signingKeyFingerprints(keys: PublicKey[] | undefined): string[] 
     return (keys ?? []).filter((key) => key.useType === "sign" && !key.revokedAt).map((key) => key.fingerprint.toLowerCase());
 }
 
-export interface EnrollKeyInput {
-
+export interface EnrollKeyInput extends ExpectedMasterKeyGeneration {
     useType: "sign" | "encrypt";
     /** PEM-encoded PKCS#10 CSR — required (and only meaningful) for `useType: "encrypt"`; the server
      * calls its own internal CA against this CSR. */
@@ -151,7 +163,7 @@ export async function enrollKey(mailboxUid: string, input: EnrollKeyInput): Prom
     }
 }
 
-export interface SignEnrollmentRequest {
+export interface SignEnrollmentRequest extends ExpectedMasterKeyGeneration {
     /** A PEM-encoded PKCS#10 CSR for the signing key pair to enroll. */
     csr: string;
     wrappedKey: Omit<WrappedPrivateKey, "fingerprint" | "useType">;
@@ -234,11 +246,13 @@ export function getEscrowInfo(mailboxUid: string): Promise<EscrowInfo> {
 }
 
 /** Adds a wrapped copy of the master key for a new unlock method (e.g. registering a new passkey),
- * independent of key enrollment. Requires an already-initialized vault. */
-export function addMasterKeyWrap(mailboxUid: string, wrap: MasterKeyWrap): Promise<KeyVault> {
+ * independent of key enrollment. Requires an already-initialized vault. `expectedMasterKeyGeneration`, when given, is
+ * sent alongside the wrap (see `ExpectedMasterKeyGeneration`): a `409` then means the master key was rotated since. */
+export function addMasterKeyWrap(mailboxUid: string, wrap: MasterKeyWrap, expectedMasterKeyGeneration?: number): Promise<KeyVault> {
+    const body = expectedMasterKeyGeneration === undefined ? wrap : { ...wrap, expectedMasterKeyGeneration };
     return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/wraps`, {
         method: "POST",
-        body: JSON.stringify(wrap),
+        body: JSON.stringify(body),
     });
 }
 
@@ -252,7 +266,7 @@ export function removeMasterKeyWrap(mailboxUid: string, method: string, methodId
     });
 }
 
-export interface RekeyInput {
+export interface RekeyInput extends ExpectedMasterKeyGeneration {
     wrappedKeys: WrappedPrivateKey[];
     /** Every wrap of the new master key. For a mailbox assigned an escrow scope, this must include a fresh escrow wrap
      * for that scope (`buildEscrowWrap()`): `rekey()` drops the old escrow wraps and refuses (409) an escrowed

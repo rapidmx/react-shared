@@ -507,3 +507,107 @@ describe("unlockWithPassword - round 5", () => {
         expect(getUnlockedKeys(MAILBOX_UID)).toBeDefined();
     });
 });
+
+describe("destroyUnlockedKeys - round 6: replaced objects are held weakly", () => {
+    /** Stands in for `WeakRef` so a test can simulate the garbage collector reclaiming an object. */
+    class FakeWeakRef<T extends object> {
+        static created: FakeWeakRef<object>[] = [];
+        target: T | undefined;
+        constructor(target: T) {
+            this.target = target;
+            FakeWeakRef.created.push(this);
+        }
+        deref(): T | undefined {
+            return this.target;
+        }
+    }
+
+    afterEach(() => {
+        FakeWeakRef.created = [];
+        vi.unstubAllGlobals();
+    });
+
+    it("tracks each handed-out object only through a weak reference, destroying the reachable ones on lock", async () => {
+        vi.stubGlobal("WeakRef", FakeWeakRef);
+        const { vault, mailboxKeys } = await enrollForTest(["sign", "encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const first = getUnlockedKeys(MAILBOX_UID)!;
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const second = getUnlockedKeys(MAILBOX_UID)!;
+        expect(FakeWeakRef.created.map((ref) => ref.target)).toEqual([first, second]);
+
+        // Nothing references `first` any more, so the collector reclaims it; the next unlock drops its dead handle.
+        const firstMasterKey = first.masterKey;
+        FakeWeakRef.created[0].target = undefined;
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const third = getUnlockedKeys(MAILBOX_UID)!;
+
+        // `second` is still referenced (by this test) when the lock comes; `third` is the live session.
+        const secondRef = FakeWeakRef.created.find((ref) => ref.target === second)!;
+        destroyUnlockedKeys(MAILBOX_UID);
+
+        for (const held of [second, third]) {
+            expect(held.destroyed).toBe(true);
+            expect(held.masterKey.every((b) => b === 0)).toBe(true);
+            expect(held.signingPrivateKey).toBeUndefined();
+        }
+        expect(secondRef.target).toBe(second);
+        // The store no longer held `first` at all - it didn't keep that master key alive until the lock.
+        expect(first.destroyed).toBeUndefined();
+        expect(firstMasterKey.some((b) => b !== 0)).toBe(true);
+        expect(getUnlockedKeys(MAILBOX_UID)).toBeUndefined();
+    });
+
+    it("skips an object collected before the lock, destroying the rest", async () => {
+        vi.stubGlobal("WeakRef", FakeWeakRef);
+        const { vault, mailboxKeys } = await enrollForTest(["sign"]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const current = getUnlockedKeys(MAILBOX_UID)!;
+        const replaced = FakeWeakRef.created[0].target as typeof current;
+        FakeWeakRef.created[0].target = undefined;
+
+        destroyUnlockedKeys();
+
+        expect(current.destroyed).toBe(true);
+        expect(replaced.destroyed).toBeUndefined();
+        expect(getUnlockedKeys(MAILBOX_UID)).toBeUndefined();
+    });
+
+    it("falls back to strong references where WeakRef doesn't exist, still destroying every object on lock", async () => {
+        vi.stubGlobal("WeakRef", undefined);
+        const { vault, mailboxKeys } = await enrollForTest(["sign"]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const first = getUnlockedKeys(MAILBOX_UID)!;
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const second = getUnlockedKeys(MAILBOX_UID)!;
+
+        destroyUnlockedKeys();
+
+        expect(first.destroyed).toBe(true);
+        expect(second.destroyed).toBe(true);
+        expect(first.masterKey.every((b) => b === 0)).toBe(true);
+    });
+
+    it("uses the runtime's real WeakRef by default", async () => {
+        const created: object[] = [];
+        const RealWeakRef = (globalThis as unknown as { WeakRef: new (target: object) => { deref(): object | undefined } }).WeakRef;
+        vi.stubGlobal(
+            "WeakRef",
+            class extends RealWeakRef {
+                constructor(target: object) {
+                    super(target);
+                    created.push(target);
+                }
+            },
+        );
+        const { vault, mailboxKeys } = await enrollForTest(["encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+
+        expect(created).toEqual([getUnlockedKeys(MAILBOX_UID)]);
+    });
+});
