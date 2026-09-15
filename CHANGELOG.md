@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-15
+
+### Changed
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+### Removed
+- Removed bookingApi, which moved to @rapidmx/booking-plugin
+
 ## [0.5.0] - 2026-09-15
 
 ### Added
@@ -351,7 +359,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/rapidmx/react-shared/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/rapidmx/react-shared/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/rapidmx/react-shared/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rapidmx/react-shared/compare/v0.2.0...v0.3.0
