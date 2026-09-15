@@ -40,7 +40,7 @@
 import { DisplayBody, MimeAttachment, MimeHeaderField, decodeHeaderText, extractAddresses, parseMimeEntity, parseParameterizedHeader, plainTextToHtml } from "./mime.js";
 import { toBase64 } from "./encoding.js";
 import { computeCertFingerprint, extractCertificateEmails } from "./smime.js";
-import { ComparableOuterHeaders, ProtectedHeaders, parseEncryptedMessage, parseSignedOnlyMessage } from "./smimeMessage.js";
+import { ComparableOuterHeaders, ProtectedHeaders, parseEncryptedMessageWithKeys, parseSignedOnlyMessage } from "./smimeMessage.js";
 
 export { signingKeyFingerprints } from "./keyvaultApi.js";
 
@@ -275,10 +275,20 @@ function checkIdentityAndHeaders(input: SignerBindingInput, certDer: Uint8Array)
  * `signingFingerprint` is always trusted too (mail this mailbox signed itself). Omitted or empty, a valid signature
  * from any other certificate is `*_unverified_signer`, never verified. `readerAddress` - the unlocked mailbox's own
  * address - enables `notAddressedToReader`.
+ *
+ * An encrypted message is decrypted with `unlocked`'s active encryption key or any of its `retainedEncryptionKeys` (the
+ * older keys a rotation replaced - see `keySession.ts`), matched by recipient identifier first.
  */
 export async function evaluateMessageSecurity(
     rawMime: string,
-    unlocked: { encryptionPrivateKey?: CryptoKey; encryptionCertDer?: Uint8Array; signingFingerprint?: string } | undefined,
+    unlocked:
+        | {
+              encryptionPrivateKey?: CryptoKey;
+              encryptionCertDer?: Uint8Array;
+              retainedEncryptionKeys?: { certDer: Uint8Array; privateKey: CryptoKey }[];
+              signingFingerprint?: string;
+          }
+        | undefined,
     pinnedSignerFingerprints?: string | string[],
     readerAddress?: string,
 ): Promise<MessageSecurityResult> {
@@ -370,10 +380,16 @@ export async function evaluateMessageSecurity(
     }
 
     if (isEncryptedContentType(contentType)) {
-        if (!unlocked?.encryptionPrivateKey || !unlocked.encryptionCertDer) {
+        // The active key first, then the retained older ones (see `keySession.ts`'s `retainedEncryptionKeys`), so mail
+        // encrypted to a key since replaced still opens. Only ever used to decrypt here - never to encrypt or sign.
+        const keys = [
+            ...(unlocked?.encryptionPrivateKey && unlocked.encryptionCertDer ? [{ certDer: unlocked.encryptionCertDer, privateKey: unlocked.encryptionPrivateKey }] : []),
+            ...(unlocked?.retainedEncryptionKeys ?? []).map(({ certDer, privateKey }) => ({ certDer, privateKey })),
+        ];
+        if (keys.length === 0) {
             return { state: "encrypted", decryptError: NO_KEY_ERROR };
         }
-        const parsed = await parseEncryptedMessage(body, unlocked.encryptionCertDer, unlocked.encryptionPrivateKey, actualOuterHeaders);
+        const parsed = await parseEncryptedMessageWithKeys(body, keys, actualOuterHeaders);
         if (!parsed.decrypted) {
             return { state: "encrypted", decryptError: parsed.unsupportedContentEncryption ? UNSUPPORTED_ENCRYPTION_ERROR : NO_KEY_ERROR };
         }

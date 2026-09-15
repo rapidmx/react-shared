@@ -289,12 +289,92 @@ export async function encryptForRecipients(content: Uint8Array, recipientCertDer
  * function's own caller already knows in advance, so it tries every recipient slot in turn with the
  * one keypair it has, succeeding on whichever slot was actually built for it and discarding the rest
  * — the same shape as trying every wrapped-key entry in `KeyVault.masterKeyWraps` until one unwraps.
+ * A slot whose recipient identifier names this certificate is tried first. See
+ * `decryptEnvelopedDataWithKeys()` for several candidate keys.
  */
 export async function decryptEnvelopedData(
     envelopedDer: Uint8Array,
     recipientCertDer: Uint8Array,
     recipientPrivateKey: CryptoKey,
 ): Promise<Uint8Array> {
+    return decryptEnvelopedDataWithKeys(envelopedDer, [{ certDer: recipientCertDer, privateKey: recipientPrivateKey }]);
+}
+
+/** One candidate decryption keypair for `decryptEnvelopedDataWithKeys()`. */
+export interface DecryptionKey {
+    /** Base64-decoded DER certificate of the key. */
+    certDer: Uint8Array;
+    privateKey: CryptoKey;
+}
+
+/** At most this many candidate keys are considered by `decryptEnvelopedDataWithKeys()` (further ones are ignored) - the
+ * active encryption key plus `keySession.ts`'s `MAX_RETAINED_ENCRYPTION_KEYS` retained ones. */
+export const MAX_DECRYPTION_KEYS = 21;
+
+/** Trial decryptions (a key tried against a slot whose recipient identifier doesn't name it) allowed for every key
+ * after the first, together. The first key keeps the unbounded every-slot trial `decryptEnvelopedData()` always did;
+ * this budget stops a message with many recipient slots from costing `slots x keys` ECDH operations. */
+export const MAX_TRIAL_DECRYPTIONS = 64;
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+    return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+/** The recipient identifier of one `RecipientInfo`: an issuer and serial number, or a subject key identifier. Only
+ * key transport (`variant` 1) and key agreement (`variant` 2) recipients carry one naming a certificate; key agreement
+ * uses the first encrypted key's identifier, which is the only one pkijs's `decrypt()` reads. */
+function recipientIdentifier(recipientInfo: pkijs.RecipientInfo): pkijs.IssuerAndSerialNumber | asn1js.OctetString | undefined {
+    if (recipientInfo.variant === 1) {
+        return (recipientInfo.value as pkijs.KeyTransRecipientInfo).rid;
+    }
+    if (recipientInfo.variant === 2) {
+        // pkijs refuses to parse a key agreement recipient without an encrypted key, so `[0]` always exists; a parsed
+        // identifier is variant 1 (issuer and serial number) or 2 (a `RecipientKeyIdentifier`).
+        const rid = (recipientInfo.value as pkijs.KeyAgreeRecipientInfo).recipientEncryptedKeys.encryptedKeys[0].rid;
+        return rid.variant === 1 ? (rid.value as pkijs.IssuerAndSerialNumber) : (rid.value as pkijs.RecipientKeyIdentifier).subjectKeyIdentifier;
+    }
+    return undefined;
+}
+
+/** The subject key identifier extension's value, when the certificate has a readable one. */
+function subjectKeyIdentifier(certificate: pkijs.Certificate): Uint8Array | undefined {
+    const extension = certificate.extensions?.find((candidate) => candidate.extnID === "2.5.29.14");
+    const parsed = extension?.parsedValue as asn1js.OctetString | undefined;
+    return parsed instanceof asn1js.OctetString ? new Uint8Array(parsed.valueBlock.valueHexView) : undefined;
+}
+
+/** Whether a recipient slot's identifier names `certificate` (same serial number and issuer DER, or same subject key
+ * identifier). A slot with no certificate identifier (KEK, password) names nobody. */
+function recipientMatchesCertificate(recipientInfo: pkijs.RecipientInfo, certificate: pkijs.Certificate): boolean {
+    const identifier = recipientIdentifier(recipientInfo);
+    if (identifier instanceof pkijs.IssuerAndSerialNumber) {
+        return (
+            bytesEqual(new Uint8Array(identifier.serialNumber.valueBlock.valueHexView), new Uint8Array(certificate.serialNumber.valueBlock.valueHexView)) &&
+            bytesEqual(new Uint8Array(identifier.issuer.toSchema().toBER()), new Uint8Array(certificate.issuer.toSchema().toBER()))
+        );
+    }
+    if (identifier instanceof asn1js.OctetString) {
+        const ski = subjectKeyIdentifier(certificate);
+        return ski !== undefined && bytesEqual(new Uint8Array(identifier.valueBlock.valueHexView), ski);
+    }
+    return false;
+}
+
+/**
+ * Decrypts a CMS `EnvelopedData` structure with whichever of several candidate keys it was encrypted to - the mailbox's
+ * active encryption key followed by the retained older ones (`keySession.ts`'s `retainedEncryptionKeys`), so mail
+ * encrypted to a key since replaced stays readable.
+ *
+ * **Matching first:** every recipient slot whose identifier (issuer and serial number, or subject key identifier) names
+ * a candidate's certificate is tried with that key, in candidate order - normally one decryption, no guessing.
+ * **Trial otherwise** (e.g. the sender encrypted to a reissued certificate for the same key): the first candidate is
+ * tried against every remaining slot, then the others in order, sharing `MAX_TRIAL_DECRYPTIONS`.
+ *
+ * Only the first `MAX_DECRYPTION_KEYS` candidates are considered. A candidate whose certificate can't be parsed is
+ * skipped (the parse error is thrown only when no candidate is usable). Throws `UnsupportedContentEncryptionError` for
+ * non-AEAD content, and the last decryption error when no key opens any slot.
+ */
+export async function decryptEnvelopedDataWithKeys(envelopedDer: Uint8Array, keys: DecryptionKey[]): Promise<Uint8Array> {
     const contentInfo = pkijs.ContentInfo.fromBER(toArrayBuffer(envelopedDer));
     if (contentInfo.contentType !== pkijs.ContentInfo.ENVELOPED_DATA) {
         throw new Error("This CMS content is not EnvelopedData.");
@@ -304,22 +384,65 @@ export async function decryptEnvelopedData(
     if (!AEAD_CONTENT_ENCRYPTION_OIDS.has(contentEncryptionOid)) {
         throw new UnsupportedContentEncryptionError(contentEncryptionOid);
     }
-    const recipientCertificate = parseCertificate(recipientCertDer);
 
-    let lastError: unknown;
-    for (let index = 0; index < envelopedData.recipientInfos.length; index++) {
+    const candidates: { certificate: pkijs.Certificate; privateKey: CryptoKey }[] = [];
+    let parseError: unknown;
+    for (const key of keys.slice(0, MAX_DECRYPTION_KEYS)) {
         try {
-            const decrypted = await envelopedData.decrypt(index, { recipientCertificate, recipientPrivateKey });
-            return new Uint8Array(decrypted);
+            candidates.push({ certificate: parseCertificate(key.certDer), privateKey: key.privateKey });
         } catch (err) {
-            lastError = err;
+            parseError = err;
         }
     }
-    // The `new Error(...)` fallback covers an EnvelopedData with zero recipientInfos (the loop body
-    // never runs, so `lastError` stays its initial `undefined`) - not reachable through this module's
-    // own encryptForRecipients(), which always adds at least one recipient in practice, but kept as a
-    // defensive fallback since `lastError` could otherwise surface as a non-Error thrown value.
-    throw lastError instanceof Error ? lastError : new Error("No recipient slot in this EnvelopedData could be decrypted with this key.");
+    if (candidates.length === 0) {
+        throw parseError instanceof Error ? parseError : new Error("No decryption key was supplied.");
+    }
+
+    const slotCount = envelopedData.recipientInfos.length;
+    const tried = new Set<string>();
+    let lastError: unknown;
+    const attempt = async (index: number, candidate: number): Promise<Uint8Array | undefined> => {
+        tried.add(`${index}:${candidate}`);
+        const { certificate, privateKey } = candidates[candidate];
+        try {
+            return new Uint8Array(await envelopedData.decrypt(index, { recipientCertificate: certificate, recipientPrivateKey: privateKey }));
+        } catch (err) {
+            lastError = err;
+            return undefined;
+        }
+    };
+
+    for (let candidate = 0; candidate < candidates.length; candidate++) {
+        for (let index = 0; index < slotCount; index++) {
+            if (recipientMatchesCertificate(envelopedData.recipientInfos[index], candidates[candidate].certificate)) {
+                const decrypted = await attempt(index, candidate);
+                if (decrypted) {
+                    return decrypted;
+                }
+            }
+        }
+    }
+
+    let trialBudget = MAX_TRIAL_DECRYPTIONS;
+    for (let candidate = 0; candidate < candidates.length; candidate++) {
+        for (let index = 0; index < slotCount; index++) {
+            if (tried.has(`${index}:${candidate}`)) {
+                continue;
+            }
+            if (candidate > 0 && trialBudget-- <= 0) {
+                break;
+            }
+            const decrypted = await attempt(index, candidate);
+            if (decrypted) {
+                return decrypted;
+            }
+        }
+    }
+    // The `new Error(...)` fallback covers an EnvelopedData with zero recipientInfos (no attempt ever runs, so
+    // `lastError` stays its initial `undefined`) - not reachable through this module's own encryptForRecipients(),
+    // which always adds at least one recipient in practice, but kept as a defensive fallback since `lastError` could
+    // otherwise surface as a non-Error thrown value.
+    throw lastError instanceof Error ? lastError : new Error("No recipient slot in this EnvelopedData could be decrypted with these keys.");
 }
 
 /** SHA-256 fingerprint of a DER certificate, hex encoded — matches `keyvaultApi.ts`'s own `PublicKey.

@@ -37,6 +37,21 @@ export const ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE = "encrypt-private-key";
 
 export { KeysLockedError };
 
+/** How many retained (non-active) encryption keys an unlock opens at most: the most recently issued ones by
+ * `notBefore`. Each costs an AEAD open and a key import at unlock, and `smime.ts`'s `decryptEnvelopedDataWithKeys()`
+ * considers the active key plus this many (`MAX_DECRYPTION_KEYS`). Mail encrypted to a key older than the 20 most
+ * recent retained ones doesn't decrypt on this device; its wrapped key stays in the vault. */
+export const MAX_RETAINED_ENCRYPTION_KEYS = 20;
+
+/** An older encryption key an unlock opened besides the active one - see `UnlockedKeys.retainedEncryptionKeys`. */
+export interface RetainedEncryptionKey {
+    fingerprint: string;
+    /** Base64-decoded DER certificate, from the mailbox's published `PublicKey.publicKey`. */
+    certDer: Uint8Array;
+    /** Non-extractable ECDH private key. */
+    privateKey: CryptoKey;
+}
+
 export interface UnlockedKeys {
     /** `true` once `destroyUnlockedKeys()` has destroyed this object's keys (master key zeroed, private key
      * handles dropped). A caller holding an `UnlockedKeys` across an `await` or a user action must treat a
@@ -50,6 +65,14 @@ export interface UnlockedKeys {
     encryptionPrivateKey?: CryptoKey;
     encryptionCertDer?: Uint8Array;
     encryptionFingerprint?: string;
+    /** Every non-active encryption key the mailbox still has a wrapped private key for and a published `encrypt` key
+     * listed in its keys - superseded, expired *and* compromised ones - newest first, at most
+     * `MAX_RETAINED_ENCRYPTION_KEYS`. The spec retains an old encryption private key indefinitely on rotation, because
+     * discarding it makes old mail unreadable. **Decryption only:** `evaluateMessageSecurity()` tries these after the
+     * active key; nothing encrypts to or signs with them (`findActivePublicKey()` still picks the only key used for
+     * that). A compromised key is kept because reading one's own mail encrypted to it is still needed. Absent when there
+     * are none. */
+    retainedEncryptionKeys?: RetainedEncryptionKey[];
 }
 
 const sessions = new Map<string, UnlockedKeys>();
@@ -173,6 +196,11 @@ function destroyObject(unlocked: UnlockedKeys): void {
     unlocked.destroyed = true;
     delete unlocked.signingPrivateKey;
     delete unlocked.encryptionPrivateKey;
+    if (unlocked.retainedEncryptionKeys) {
+        // Emptied in place as well as removed, so a consumer that captured the array itself loses the handles too.
+        unlocked.retainedEncryptionKeys.length = 0;
+        delete unlocked.retainedEncryptionKeys;
+    }
 }
 
 /** Finds the wrapped private key whose fingerprint matches a given published public key. */
@@ -182,10 +210,11 @@ function findWrappedPrivateKey(vault: KeyVault, fingerprint: string) {
 
 /** What `unlockWithPassword()` resolves with (and the base of `unlockWithRecoveryCode()`'s result). */
 export interface UnlockResult {
-    /** Fingerprints of active *signing* keys whose wrapped private key couldn't be opened with the (correctly
-     * unwrapped) master key - e.g. a wrap sealed under a master key a later rekey replaced. The unlock still
-     * succeeds without them (no `signingPrivateKey`), so a user isn't locked out of reading mail by a signing
-     * key they can re-enroll. Empty when every active key opened. */
+    /** Fingerprints of the active *signing* key and any retained (non-active) *encryption* keys whose wrapped private
+     * key couldn't be opened or imported with the (correctly unwrapped) master key - e.g. a wrap sealed under a master
+     * key a later rekey replaced. The unlock still succeeds without them (no `signingPrivateKey`; the retained key is
+     * left out of `retainedEncryptionKeys`), so a user isn't locked out of reading mail by a key they can't use. Empty
+     * when every key opened. */
     unopenableKeys: string[];
 }
 
@@ -216,12 +245,55 @@ async function openPrivateKey(
     aad: Uint8Array,
     algorithm: EcKeyImportParams,
     usages: KeyUsage[],
+    extractable = true,
 ): Promise<CryptoKey> {
     const raw = await openWithKey(masterKey, wrapped, aad);
     try {
-        return await importPrivateKeyPkcs8(raw, algorithm, usages, true);
+        return await importPrivateKeyPkcs8(raw, algorithm, usages, extractable);
     } finally {
         raw.fill(0);
+    }
+}
+
+/**
+ * Opens the retained encryption keys onto `unlocked.retainedEncryptionKeys`: every published `encrypt` key in
+ * `mailboxKeys` other than the active one (`activeFingerprint`), whatever its revocation or expiry, that has a wrapped
+ * private key in the vault - de-duplicated by fingerprint, newest `notBefore` first, at most
+ * `MAX_RETAINED_ENCRYPTION_KEYS`. A key that won't open or import, or whose certificate won't decode, is skipped and
+ * added to `unopenableKeys`. Retained keys are imported non-extractable: only the active keys are ever exported (by
+ * `keyRotation.ts`). Each key is attached as it opens, so a failed unlock's `destroyObject()` drops those too.
+ */
+async function openRetainedEncryptionKeys(
+    mailboxUid: string,
+    mailboxKeys: PublicKey[],
+    vault: KeyVault,
+    unlocked: UnlockedKeys,
+    activeFingerprint: string | undefined,
+    unopenableKeys: string[],
+): Promise<void> {
+    const seen = new Set<string>(activeFingerprint !== undefined ? [activeFingerprint] : []);
+    const candidates: { publicKey: PublicKey; wrapped: WrappedPrivateKey }[] = [];
+    for (const publicKey of [...mailboxKeys].sort((a, b) => b.notBefore - a.notBefore)) {
+        const wrapped = publicKey.useType === "encrypt" && !seen.has(publicKey.fingerprint) ? findWrappedPrivateKey(vault, publicKey.fingerprint) : undefined;
+        if (!wrapped) {
+            continue;
+        }
+        seen.add(publicKey.fingerprint);
+        candidates.push({ publicKey, wrapped });
+        if (candidates.length === MAX_RETAINED_ENCRYPTION_KEYS) {
+            break;
+        }
+    }
+
+    const aad = buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE);
+    for (const { publicKey, wrapped } of candidates) {
+        try {
+            const certDer = fromBase64(publicKey.publicKey);
+            const privateKey = await openPrivateKey(unlocked.masterKey, wrapped, aad, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"], false);
+            (unlocked.retainedEncryptionKeys ??= []).push({ fingerprint: publicKey.fingerprint, certDer, privateKey });
+        } catch {
+            unopenableKeys.push(publicKey.fingerprint);
+        }
     }
 }
 
@@ -229,13 +301,15 @@ async function openPrivateKey(
  * Unlocks a mailbox's key vault with its password unlock method: fetches the vault, derives the
  * wrapping key from `password` using the *exact* KDF parameters that wrap was created with, unwraps
  * the master key, then unwraps and imports whichever signing/encryption private keys the mailbox has
- * currently-active public keys for. Stores the result in this module's in-memory session store.
+ * currently-active public keys for, plus the retained older encryption keys (`UnlockedKeys.retainedEncryptionKeys`).
+ * Stores the result in this module's in-memory session store.
  *
  * Throws (never silently no-ops) when there's no password wrap enrolled, or when the password is
  * wrong (AEAD authentication failure opening the password wrap) — callers should present this as
  * "incorrect password," not a generic error, but this module doesn't presume a specific UI's error copy.
  * Once the master key has opened, the password is known to be right: an active signing key that then
- * won't open is skipped and listed in `UnlockResult.unopenableKeys`; an active encryption key that won't
+ * won't open is skipped and listed in `UnlockResult.unopenableKeys` (so is a retained encryption key); an active
+ * encryption key that won't
  * open still fails the unlock, with `UnopenableEncryptionKeyError`. Throws `KeysLockedError` when
  * `destroyUnlockedKeys()` locked this mailbox (or all mailboxes) while the unlock was in flight.
  */
@@ -328,7 +402,7 @@ export async function unlockWithRecoveryCode(mailboxUid: string, mailboxKeys: Pu
 
 /**
  * Shared tail of every unlock method once its wrap has yielded `masterKey`: opens and imports the active signing and
- * encryption private keys, aborts with `KeysLockedError` if the mailbox was locked since `generation` was taken, then
+ * encryption private keys and the retained encryption keys (`openRetainedEncryptionKeys()`), aborts with `KeysLockedError` if the mailbox was locked since `generation` was taken, then
  * stores the result (tracked weakly in `issued`) and notifies. Zeroes `masterKey` on any failure.
  */
 async function openSession(
@@ -376,6 +450,8 @@ async function openSession(
             unlocked.encryptionCertDer = fromBase64(encryptionPublicKey.publicKey);
             unlocked.encryptionFingerprint = encryptionPublicKey.fingerprint;
         }
+
+        await openRetainedEncryptionKeys(mailboxUid, mailboxKeys, vault, unlocked, encryptionPublicKey?.fingerprint, unopenableKeys);
         if (lockGeneration(mailboxUid) !== generation) {
             // Locked (e.g. logout) while this unlock was awaiting - never restore keys after that.
             throw new KeysLockedError();

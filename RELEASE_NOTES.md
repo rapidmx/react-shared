@@ -80,6 +80,12 @@ release.
 - **Revocation reasons:** a key revoked as `superseded` (a routine rotation), whether pinned, previous or the mailbox's
   own, is still trusted to verify mail it signed (`isTrustedForVerification()`). A key revoked as `compromised`, or
   revoked with no reason, is never trusted. `findActivePublicKey()` still skips every revoked key.
+- **Retained encryption keys:** unlocking (password or recovery code) also opens the mailbox's older encryption keys
+  still in the vault - superseded, expired and compromised ones, the 20 most recent - as
+  `UnlockedKeys.retainedEncryptionKeys`, so `evaluateMessageSecurity()` decrypts mail encrypted to a key since replaced.
+  A retained key that won't open is listed in `unopenableKeys` instead of failing the unlock. Decryption matches the
+  message's recipient identifiers to the right key before trying others (`decryptEnvelopedDataWithKeys()`,
+  `parseEncryptedMessageWithKeys()`). Retained keys are never used to encrypt or sign.
 - **`fetchSignerKeyState(folderUids, address)`** and **`signerKeyStateFor(contacts, address)`** return the pinned and
   previous signing keys and any signing-key conflict, for a key-changed comparison, without triggering key discovery.
 

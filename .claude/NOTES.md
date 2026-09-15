@@ -770,3 +770,36 @@ statements/functions/lines, 99.42% branches; `tsc` and `yarn lint` clean.
   (besides the verified/unverified-signer states) carries `signerCertificate`. No pins at all is still
   `*_unverified_signer`. Existing tests that expected `untrusted_signer` for a From-naming certificate with a wrong pin
   were updated to `signer_key_changed`.
+
+### 2026-09-15 — Retained encryption keys (decrypt mail encrypted to a replaced key)
+
+Not committed. Final full run: 83 files / 1003 tests, 100% statements/functions/lines, 99.45% branches; `tsc` and
+`yarn lint` clean.
+
+- **Gap closed.** Unlock only opened `findActivePublicKey(mailboxKeys, "encrypt")`, so once restapi marked an older
+  encryption key `revokedAt` + `"superseded"` on installing a new one, mail encrypted to the old key stopped
+  decrypting, although the vault still held its wrap (the spec retains old encryption private keys indefinitely).
+- **`UnlockedKeys.retainedEncryptionKeys?: RetainedEncryptionKey[]`** (`{ fingerprint, certDer, privateKey }`), filled by
+  `openSession()` (so password and recovery unlock both get it): every published `encrypt` key other than the active
+  one with a vault wrap, whatever its revocation reason or expiry (compromised included: reading your own mail still
+  needs it), de-duplicated, newest `notBefore` first, **at most `MAX_RETAINED_ENCRYPTION_KEYS` = 20** (older ones aren't
+  opened at all and aren't reported). Imported non-extractable (only the active keys are exported, by `keyRotation.ts`).
+  A retained key that won't decode/open/import goes into `unopenableKeys`; only the active encryption key still throws
+  `UnopenableEncryptionKeyError`. The active key stays in the existing fields. Absent when there are none.
+- **Destroy.** `destroyObject()` empties the array in place (`length = 0`, so a consumer holding the array loses the
+  handles) and deletes the property; PKCS#8 plaintext is zeroed by `openPrivateKey()` as before.
+- **Decrypt.** New `smime.decryptEnvelopedDataWithKeys(der, DecryptionKey[])`; `decryptEnvelopedData()` delegates with one
+  key. Matching first: a slot's identifier (KeyTrans `rid`, or KeyAgree `encryptedKeys[0].rid` - issuer DER + serial
+  bytes, or subject key identifier vs the certificate's SKI extension) naming a candidate's certificate is tried with that
+  key only. Then trial: first candidate (active) against every untried slot (the old unbounded behaviour), the rest
+  sharing `MAX_TRIAL_DECRYPTIONS` = 64; at most `MAX_DECRYPTION_KEYS` = 21 candidates; unparseable candidate certificates
+  are skipped. New `smimeMessage.parseEncryptedMessageWithKeys(body, keys, outer?)`; `parseEncryptedMessage()` delegates.
+  `evaluateMessageSecurity()`'s `unlocked` type gains optional `retainedEncryptionKeys` and passes active + retained, so
+  search tier 3 and web-client's local index builder benefit unchanged.
+- **Unchanged:** `findActivePublicKey()`; compose/sign only use the active fields. `rewrapPrivateKeysUnderNewMasterKey()`
+  still rewraps only the active keys (web-client's rotation re-seals every vault entry itself, so nothing is lost there;
+  anyone using this helper with `rekey()` would drop retained wraps, as before).
+- pkijs can't parse a KeyAgree recipient with zero encrypted keys, so `encryptedKeys[0]` needs no guard. Tests in
+  `test/crypto/retainedEncryptionKeys.test.ts` (unlock x2 methods, skip+report, bound via pkcs8 import count, lock mid-open,
+  destroy, superseded/compromised decrypt, issuer-serial / SKI / RSA KeyTrans matching with a `decrypt` spy, reissued-cert
+  trial, KEK slots, both bounds, single-key behaviour).

@@ -46,7 +46,8 @@ import {
     splitMultipart,
 } from "./mime.js";
 import {
-    decryptEnvelopedData,
+    type DecryptionKey,
+    decryptEnvelopedDataWithKeys,
     encryptForRecipients,
     signDetached,
     signOpaque,
@@ -404,6 +405,17 @@ export async function parseEncryptedMessage(
     recipientPrivateKey: CryptoKey,
     actualOuterHeaders?: ComparableOuterHeaders,
 ): Promise<ParsedEncryptedMessage> {
+    return parseEncryptedMessageWithKeys(base64Body, [{ certDer: recipientCertDer, privateKey: recipientPrivateKey }], actualOuterHeaders);
+}
+
+/** `parseEncryptedMessage()` with several candidate keys - the active encryption key first, then retained older ones -
+ * decrypted by `smime.ts`'s `decryptEnvelopedDataWithKeys()` (recipient-identifier matching first, then a bounded
+ * trial). Same never-throws contract. */
+export async function parseEncryptedMessageWithKeys(
+    base64Body: string,
+    keys: DecryptionKey[],
+    actualOuterHeaders?: ComparableOuterHeaders,
+): Promise<ParsedEncryptedMessage> {
     const envelopedDer = decodeBase64Text(base64Body);
     if (!envelopedDer) {
         return { decrypted: false };
@@ -411,7 +423,7 @@ export async function parseEncryptedMessage(
 
     let decrypted: Uint8Array;
     try {
-        decrypted = await decryptEnvelopedData(envelopedDer, recipientCertDer, recipientPrivateKey);
+        decrypted = await decryptEnvelopedDataWithKeys(envelopedDer, keys);
     } catch (err) {
         return err instanceof UnsupportedContentEncryptionError ? { decrypted: false, unsupportedContentEncryption: true } : { decrypted: false };
     }
