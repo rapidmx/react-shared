@@ -236,6 +236,7 @@ describe("signer identity binding", () => {
             attachments: [],
             signerFingerprint: pin.toLowerCase(),
             signerEmails: ["alice@example.com"],
+            signerCertificate: toBase64(alice.certDer),
         });
     });
 
@@ -274,6 +275,7 @@ describe("signer identity binding", () => {
             attachments: [],
             signerFingerprint: await computeCertFingerprint(alice.certDer),
             signerEmails: ["alice@example.com"],
+            signerCertificate: toBase64(alice.certDer),
             html: '<pre style="white-space: pre-wrap; word-wrap: break-word; font-family: inherit">&lt;b&gt;not markup&lt;/b&gt;</pre>',
         });
         const spoofed = await evaluateMessageSecurity(signedMime(["From: carol@example.com"], inner, signature), undefined);

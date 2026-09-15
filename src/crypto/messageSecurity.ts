@@ -30,6 +30,7 @@
  * is `"signature_failed"` with `signatureFailureReason` saying which check failed.
  */
 import { DisplayBody, MimeAttachment, MimeHeaderField, decodeHeaderText, extractAddresses, parseMimeEntity, parseParameterizedHeader, plainTextToHtml } from "./mime.js";
+import { toBase64 } from "./encoding.js";
 import { computeCertFingerprint, extractCertificateEmails } from "./smime.js";
 import { ComparableOuterHeaders, ProtectedHeaders, parseEncryptedMessage, parseSignedOnlyMessage } from "./smimeMessage.js";
 
@@ -112,6 +113,11 @@ export interface MessageSecurityResult {
     signerFingerprint?: string;
     /** The email addresses that signer certificate asserts (lowercased), alongside `signerFingerprint`. */
     signerEmails?: string[];
+    /** Base64 DER of the certificate that verified the signature - what `keyvaultApi.ts`'s `trustSigner()` pins for
+     * a "trust this signer" action. Present alongside `signerFingerprint` for `"signed_verified"`,
+     * `"encrypted_verified"` and the `*_unverified_signer` states; never for `"signature_failed"`, even when its
+     * signature itself was valid (a failed binding or pin mismatch is not something to offer trusting). */
+    signerCertificate?: string;
 }
 
 function isSignedOnlyContentType(contentTypeValue: string): boolean {
@@ -277,10 +283,18 @@ export async function evaluateMessageSecurity(
         protectedHeaders: ProtectedHeaders | undefined,
         protectedFields: MimeHeaderField[] | undefined,
         compareSubject: boolean,
-    ): Promise<{ failure?: SignatureFailureReason; trusted: boolean; signer: Pick<MessageSecurityResult, "signerFingerprint" | "signerEmails"> }> => {
+    ): Promise<{
+        failure?: SignatureFailureReason;
+        trusted: boolean;
+        signer: Pick<MessageSecurityResult, "signerFingerprint" | "signerEmails">;
+        acceptedSigner: Pick<MessageSecurityResult, "signerFingerprint" | "signerEmails" | "signerCertificate">;
+    }> => {
         const certDer = signerCertificateDer ?? new Uint8Array();
         const fingerprint = await computeCertFingerprint(certDer);
         const signer = signerCertificateDer ? { signerFingerprint: fingerprint, signerEmails: extractCertificateEmails(certDer) } : {};
+        // The certificate itself (for "trust this signer") only accompanies a signature that didn't fail - and an accepted
+        // signer always has a certificate (a missing one fails the binding check closed), so `certDer` is the real one.
+        const acceptedSigner = { ...signer, signerCertificate: toBase64(certDer) };
         const trustedPins = unlocked?.signingFingerprint ? [...callerPins, unlocked.signingFingerprint.toLowerCase()] : callerPins;
         const failure = await checkSignerBinding({
             signerCertificateDer,
@@ -292,7 +306,7 @@ export async function evaluateMessageSecurity(
             pinnedSignerFingerprint: callerPins.length > 0 ? trustedPins : undefined,
             compareSubject,
         });
-        return { failure, trusted: trustedPins.includes(fingerprint), signer };
+        return { failure, trusted: trustedPins.includes(fingerprint), signer, acceptedSigner };
     };
 
     const addressing = (protectedHeaders: ProtectedHeaders | undefined): Pick<MessageSecurityResult, "notAddressedToReader"> => {
@@ -316,7 +330,7 @@ export async function evaluateMessageSecurity(
         if (!parsed.verified) {
             return { state: "signature_failed", signatureFailureReason: "invalid_signature" };
         }
-        const { failure, trusted, signer } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, true);
+        const { failure, trusted, signer, acceptedSigner } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, true);
         if (failure) {
             return { state: "signature_failed", signatureFailureReason: failure, ...signer };
         }
@@ -326,7 +340,7 @@ export async function evaluateMessageSecurity(
             subject: parsed.protectedHeaders?.subject || undefined,
             ...exposedHeaders(parsed.protectedHeaders),
             attachments: parsed.attachments,
-            ...signer,
+            ...acceptedSigner,
             ...addressing(parsed.protectedHeaders),
         };
     }
@@ -353,11 +367,11 @@ export async function evaluateMessageSecurity(
         if (!parsed.signatureVerified) {
             return { state: "signature_failed", signatureFailureReason: "invalid_signature", ...content };
         }
-        const { failure, trusted, signer } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, false);
+        const { failure, trusted, signer, acceptedSigner } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, false);
         if (failure) {
             return { state: "signature_failed", signatureFailureReason: failure, ...content, ...signer };
         }
-        return { state: trusted ? "encrypted_verified" : "encrypted_unverified_signer", ...content, ...signer };
+        return { state: trusted ? "encrypted_verified" : "encrypted_unverified_signer", ...content, ...acceptedSigner };
     }
 
     return { state: "unprotected" };

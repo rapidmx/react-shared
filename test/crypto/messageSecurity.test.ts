@@ -4,6 +4,7 @@
 import "reflect-metadata";
 import * as x509 from "@peculiar/x509";
 import { describe, expect, it } from "vitest";
+import { fromBase64, toBase64 } from "../../src/crypto/encoding.js";
 import { evaluateMessageSecurity } from "../../src/crypto/messageSecurity.js";
 import { computeCertFingerprint } from "../../src/crypto/smime.js";
 import { ProtectedHeaders, assembleOutboundMime, buildEncryptedMessage, buildSignedOnlyMessage } from "../../src/crypto/smimeMessage.js";
@@ -232,6 +233,59 @@ describe("evaluateMessageSecurity", () => {
             // Content still renders alongside the warning - a failed signature is not a reason to hide
             // the (successfully decrypted, AEAD-authenticated) body from the reader.
             expect(result.text).toBe("Secret body.");
+        });
+    });
+
+    describe("signerCertificate (trust this signer)", () => {
+        it("carries the base64 DER signer certificate on signed_verified and signed_unverified_signer", async () => {
+            const alice = await generateTestIdentity("alice@example.com", "sign");
+            const part = await buildSignedOnlyMessage("text/plain; charset=utf-8", "Hello, Bob.", HEADERS, alice.certDer, alice.privateKey);
+            const rawMime = assembleOutboundMime(HEADERS, part);
+            const pin = await computeCertFingerprint(alice.certDer);
+
+            const unverified = await evaluateMessageSecurity(rawMime, undefined);
+            expect(unverified).toMatchObject({ state: "signed_unverified_signer", signerFingerprint: pin, signerCertificate: toBase64(alice.certDer) });
+            const verified = await evaluateMessageSecurity(rawMime, undefined, pin);
+            expect(verified).toMatchObject({ state: "signed_verified", signerFingerprint: pin, signerCertificate: toBase64(alice.certDer) });
+            expect(fromBase64(verified.signerCertificate!)).toEqual(alice.certDer);
+        });
+
+        it("carries it on encrypted_verified and encrypted_unverified_signer", async () => {
+            const alice = await generateTestIdentity("alice@example.com", "sign");
+            const bob = await generateTestIdentity("bob@example.com", "encrypt");
+            const part = await buildEncryptedMessage("text/plain; charset=utf-8", "Secret body.", HEADERS, HEADERS, [bob.certDer], {
+                certDer: alice.certDer,
+                privateKey: alice.privateKey,
+            });
+            const rawMime = assembleOutboundMime(HEADERS, part);
+            const unlocked = { encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer };
+            const pin = await computeCertFingerprint(alice.certDer);
+
+            expect(await evaluateMessageSecurity(rawMime, unlocked)).toMatchObject({ state: "encrypted_unverified_signer", signerCertificate: toBase64(alice.certDer) });
+            expect(await evaluateMessageSecurity(rawMime, unlocked, pin)).toMatchObject({ state: "encrypted_verified", signerCertificate: toBase64(alice.certDer) });
+        });
+
+        it("is never set for signature_failed, even when the signature itself was valid", async () => {
+            const alice = await generateTestIdentity("alice@example.com", "sign");
+            const bob = await generateTestIdentity("bob@example.com", "encrypt");
+            const mallory = await generateTestIdentity("mallory@example.com", "sign");
+            const wrongPin = await computeCertFingerprint(mallory.certDer);
+
+            const signed = assembleOutboundMime(HEADERS, await buildSignedOnlyMessage("text/plain", "Hi.", HEADERS, alice.certDer, alice.privateKey));
+            const signedResult = await evaluateMessageSecurity(signed, undefined, wrongPin);
+            expect(signedResult).toMatchObject({ state: "signature_failed", signatureFailureReason: "untrusted_signer", signerFingerprint: await computeCertFingerprint(alice.certDer) });
+            expect(signedResult).not.toHaveProperty("signerCertificate");
+
+            const encrypted = assembleOutboundMime(
+                HEADERS,
+                await buildEncryptedMessage("text/plain", "Secret.", HEADERS, HEADERS, [bob.certDer], { certDer: alice.certDer, privateKey: alice.privateKey }),
+            );
+            const encryptedResult = await evaluateMessageSecurity(encrypted, { encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer }, wrongPin);
+            expect(encryptedResult).toMatchObject({ state: "signature_failed", signerFingerprint: await computeCertFingerprint(alice.certDer) });
+            expect(encryptedResult).not.toHaveProperty("signerCertificate");
+
+            const tampered = signed.replace(Buffer.from("Hi.").toString("base64"), Buffer.from("Yo.").toString("base64"));
+            expect(await evaluateMessageSecurity(tampered, undefined)).not.toHaveProperty("signerCertificate");
         });
     });
 });

@@ -11,6 +11,11 @@
  */
 import { hkdfDerive } from "./masterKey.js";
 
+/** KDF label for a recovery-code wrap - there's no Argon2id step for these (the code itself is already
+ * high-entropy), just a direct HKDF derivation. Re-exported from `masterKeyWraps.ts`, which writes it; defined here
+ * so `keySession.ts` can read it without importing `masterKeyWraps.ts` (which imports `keySession.ts`). */
+export const RECOVERY_KDF_LABEL = "hkdf-sha256";
+
 /** Crockford base32 alphabet — excludes I/L/O/U to avoid transcription ambiguity with 1/0/V, the same
  * reasoning as TOTP/backup-code schemes elsewhere. */
 const CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";

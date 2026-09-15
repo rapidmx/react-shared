@@ -15,7 +15,9 @@ import {
     getUnlockedKeys,
     subscribeKeySession,
     unlockWithPassword,
+    unlockWithRecoveryCode,
 } from "../../src/crypto/keySession.js";
+import { buildRecoveryWraps } from "../../src/crypto/masterKeyWraps.js";
 import { buildAad, generateMasterKey, openWithKey, sealWithKey } from "../../src/crypto/masterKey.js";
 import { argon2idKdfLabel, deriveFromPassword, generateSalt } from "../../src/crypto/passwordUnlock.js";
 import type { KeyVault, MasterKeyWrap, PublicKey } from "../../src/crypto/keyvaultApi.js";
@@ -36,7 +38,7 @@ const PASSWORD = "a fine password";
 async function enrollForTest(
     useTypes: ("sign" | "encrypt")[],
     mailboxUid: string = MAILBOX_UID,
-): Promise<{ vault: KeyVault; mailboxKeys: PublicKey[] }> {
+): Promise<{ vault: KeyVault; mailboxKeys: PublicKey[]; mk: Uint8Array }> {
     const mk = generateMasterKey();
     const mkAad = buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE);
     const salt = generateSalt();
@@ -71,7 +73,7 @@ async function enrollForTest(
         wrappedKeys.push({ ciphertext: sealedPriv.ciphertext, nonce: sealedPriv.nonce, algorithm: "AES-256-GCM", fingerprint, useType });
     }
 
-    return { vault: { wrappedKeys, masterKeyWraps: [passwordWrap] }, mailboxKeys };
+    return { vault: { wrappedKeys, masterKeyWraps: [passwordWrap] }, mailboxKeys, mk };
 }
 
 afterEach(() => {
@@ -609,5 +611,154 @@ describe("destroyUnlockedKeys - round 6: replaced objects are held weakly", () =
         await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
 
         expect(created).toEqual([getUnlockedKeys(MAILBOX_UID)]);
+    });
+});
+
+describe("unlockWithRecoveryCode", () => {
+    const REJECTED = "That recovery code didn't unlock this mailbox.";
+    const WRONG_CODE = "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF-GGGG";
+
+    /** An enrolled vault plus `count` real recovery wraps of its master key (after the password wrap). */
+    async function enrollWithRecovery(useTypes: ("sign" | "encrypt")[], count = 3) {
+        const enrolled = await enrollForTest(useTypes);
+        const { wraps, codes } = await buildRecoveryWraps(MAILBOX_UID, enrolled.mk, count);
+        const vault: KeyVault = { ...enrolled.vault, masterKeyWraps: [...enrolled.vault.masterKeyWraps, ...wraps] };
+        getKeyVault.mockResolvedValue(vault);
+        return { ...enrolled, vault, codes, wraps };
+    }
+
+    it("opens the master key and private keys with any enrolled code, reporting which wrap and how many remain", async () => {
+        const { mailboxKeys, codes, mk } = await enrollWithRecovery(["sign", "encrypt"]);
+        const listener = vi.fn();
+        const unsubscribe = subscribeKeySession(listener);
+
+        for (const [i, code] of codes.entries()) {
+            const result = await unlockWithRecoveryCode(MAILBOX_UID, mailboxKeys, code);
+            expect(result).toEqual({ unopenableKeys: [], recoveryMethodId: `recovery-${i + 1}`, remainingRecoveryCodes: 2 });
+            const unlocked = getUnlockedKeys(MAILBOX_UID)!;
+            expect(unlocked.masterKey).toEqual(mk);
+            expect(unlocked.signingPrivateKey!.algorithm.name).toBe("ECDSA");
+            expect(unlocked.encryptionPrivateKey!.algorithm.name).toBe("ECDH");
+            expect(unlocked.encryptionFingerprint).toBe("fp-encrypt");
+        }
+        expect(listener).toHaveBeenCalledTimes(3);
+        expect(listener).toHaveBeenLastCalledWith({ mailboxUid: MAILBOX_UID, state: "unlocked" });
+        unsubscribe();
+    });
+
+    it("accepts lowercase, spaced and undashed variants of a code", async () => {
+        const { mailboxKeys, codes } = await enrollWithRecovery(["encrypt"], 2);
+        const code = codes[1];
+        for (const variant of [code.toLowerCase(), ` ${code.replace(/-/g, " ")} `, code.replace(/-/g, "")]) {
+            await expect(unlockWithRecoveryCode(MAILBOX_UID, mailboxKeys, variant)).resolves.toMatchObject({ recoveryMethodId: "recovery-2", remainingRecoveryCodes: 1 });
+        }
+    });
+
+    it("rejects a wrong code, an empty code, and a vault with no recovery wraps with the same generic error", async () => {
+        const { vault, mailboxKeys } = await enrollWithRecovery(["encrypt"], 2);
+        const listener = vi.fn();
+        const unsubscribe = subscribeKeySession(listener);
+
+        const wrong = await unlockWithRecoveryCode(MAILBOX_UID, mailboxKeys, WRONG_CODE).catch((e: unknown) => e);
+        const empty = await unlockWithRecoveryCode(MAILBOX_UID, mailboxKeys, "").catch((e: unknown) => e);
+        getKeyVault.mockResolvedValue({ ...vault, masterKeyWraps: vault.masterKeyWraps.filter((w) => w.method !== "recovery") });
+        const none = await unlockWithRecoveryCode(MAILBOX_UID, mailboxKeys, WRONG_CODE).catch((e: unknown) => e);
+
+        for (const err of [wrong, empty, none]) {
+            expect(err).toBeInstanceOf(Error);
+            expect(err).not.toBeInstanceOf(KeysLockedError);
+            expect(err).not.toBeInstanceOf(UnopenableEncryptionKeyError);
+            expect((err as Error).message).toBe(REJECTED);
+        }
+        expect(getUnlockedKeys(MAILBOX_UID)).toBeUndefined();
+        expect(listener).not.toHaveBeenCalled();
+        unsubscribe();
+    });
+
+    it("never tries a recovery wrap with a foreign KDF, and moves past a corrupt one", async () => {
+        const { vault, mailboxKeys, codes } = await enrollWithRecovery(["encrypt"], 2);
+        const [first, second] = vault.masterKeyWraps.filter((w) => w.method === "recovery");
+        getKeyVault.mockResolvedValue({
+            ...vault,
+            masterKeyWraps: [vault.masterKeyWraps[0], { ...first, kdf: "argon2id:m=8,t=1,p=1" }, { ...first, methodId: "recovery-x", salt: "!" }, second],
+        });
+
+        await expect(unlockWithRecoveryCode(MAILBOX_UID, mailboxKeys, codes[0])).rejects.toThrow(REJECTED);
+        await expect(unlockWithRecoveryCode(MAILBOX_UID, mailboxKeys, codes[1])).resolves.toEqual({
+            unopenableKeys: [],
+            recoveryMethodId: "recovery-2",
+            remainingRecoveryCodes: 2,
+        });
+    });
+
+    it("omits recoveryMethodId for a recovery wrap stored without one, and reports no remaining codes for a sole wrap", async () => {
+        const { vault, mailboxKeys, codes, wraps } = await enrollWithRecovery(["encrypt"], 1);
+        const withoutId = { ...wraps[0] };
+        delete withoutId.methodId;
+        getKeyVault.mockResolvedValue({ ...vault, masterKeyWraps: [vault.masterKeyWraps[0], withoutId] });
+
+        const result = await unlockWithRecoveryCode(MAILBOX_UID, mailboxKeys, codes[0]);
+        expect(result).toEqual({ unopenableKeys: [], remainingRecoveryCodes: 0 });
+        expect(result).not.toHaveProperty("recoveryMethodId");
+    });
+
+    it("shares unlockWithPassword's unopenable-key handling", async () => {
+        const { vault, mailboxKeys, codes } = await enrollWithRecovery(["sign", "encrypt"], 1);
+        const corrupt = (useType: "sign" | "encrypt"): KeyVault => ({
+            ...vault,
+            wrappedKeys: vault.wrappedKeys.map((k) => (k.useType === useType ? { ...k, ciphertext: toBase64(new Uint8Array(64)) } : k)),
+        });
+
+        getKeyVault.mockResolvedValue(corrupt("sign"));
+        await expect(unlockWithRecoveryCode(MAILBOX_UID, mailboxKeys, codes[0])).resolves.toEqual({
+            unopenableKeys: ["fp-sign"],
+            recoveryMethodId: "recovery-1",
+            remainingRecoveryCodes: 0,
+        });
+        destroyUnlockedKeys();
+
+        getKeyVault.mockResolvedValue(corrupt("encrypt"));
+        const err = await unlockWithRecoveryCode(MAILBOX_UID, mailboxKeys, codes[0]).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(UnopenableEncryptionKeyError);
+        expect(getUnlockedKeys(MAILBOX_UID)).toBeUndefined();
+    });
+
+    it.each([
+        ["this mailbox", () => destroyUnlockedKeys(MAILBOX_UID)],
+        ["every mailbox", () => destroyUnlockedKeys()],
+    ])("throws KeysLockedError and zeroes the opened master key when %s is locked mid-unlock", async (_label, lock) => {
+        const { vault, mailboxKeys, codes, mk } = await enrollWithRecovery(["sign", "encrypt"], 2);
+        let release!: () => void;
+        getKeyVault.mockImplementation(
+            () =>
+                new Promise((resolve) => {
+                    release = () => resolve(vault);
+                }),
+        );
+        const listener = vi.fn();
+        const unsubscribe = subscribeKeySession(listener);
+        const fills = vi.spyOn(Uint8Array.prototype, "fill");
+
+        const pending = unlockWithRecoveryCode(MAILBOX_UID, mailboxKeys, codes[1]);
+        await Promise.resolve();
+        lock();
+        release();
+
+        await expect(pending).rejects.toBeInstanceOf(KeysLockedError);
+        expect(getUnlockedKeys(MAILBOX_UID)).toBeUndefined();
+        expect(listener).not.toHaveBeenCalled();
+        // The opened master key (a fresh copy equal to `mk` before zeroing) was zeroed - not just the wrapping keys.
+        const zeroedTargets = fills.mock.contexts.filter((target, i) => fills.mock.calls[i][0] === 0 && (target as Uint8Array).length === 32) as Uint8Array[];
+        expect(zeroedTargets.every((t) => t.every((b) => b === 0))).toBe(true);
+        // One wrapping key per tried wrap (2) plus the master key.
+        expect(zeroedTargets.length).toBe(3);
+        expect(mk.some((b) => b !== 0)).toBe(true);
+        fills.mockRestore();
+        unsubscribe();
+    });
+
+    it("leaves unlockWithPassword working on the same vault", async () => {
+        const { mailboxKeys } = await enrollWithRecovery(["encrypt"], 1);
+        await expect(unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD)).resolves.toEqual({ unopenableKeys: [] });
     });
 });

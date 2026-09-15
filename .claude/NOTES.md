@@ -704,3 +704,38 @@ Not committed. Final full run: 81 files / 919 tests, 100% statements/functions/l
   `addMasterKeyWrap(mailboxUid, wrap, expectedMasterKeyGeneration?)` spreads it into the body only when given (0 is
   sent). The 409 surfaces as a plain `ApiRequestError` (`enrollKey`'s `VaultAlreadyInitializedError` still needs wraps
   in the request plus a vault that has wraps). web-client doesn't pass it yet.
+
+### 2026-09-14 — Recovery-code unlock, password replacement, "trust this signer" client
+
+Not committed. Final full run: 81 files / 955 tests, 100% statements/functions/lines, 99.41% branches; `tsc` and
+`yarn lint` clean.
+
+- **Product decision (JP): a recovery code is single-use.** After unlocking with one, its wrap is removed; setting a new
+  password is offered but optional. web-client drives that UI; this package provides the primitives.
+- **`keySession.unlockWithRecoveryCode(mailboxUid, mailboxKeys, code)`** → `RecoveryUnlockResult { unopenableKeys,
+  recoveryMethodId?, remainingRecoveryCodes }`. Tries every `recovery` wrap with `kdf: "hkdf-sha256"` (normalized code)
+  until one opens. Corrupt or foreign-KDF wraps are skipped, and each wrapping key is zeroed after use. A wrong code,
+  an empty code and a vault with no recovery wraps all reject with the same plain `Error`. The key-opening/lock-generation/
+  store/notify tail is now one internal `openSession()` shared with `unlockWithPassword()`, whose behaviour is unchanged.
+  `RECOVERY_KDF_LABEL` moved to `recoveryCode.ts` (re-exported from `masterKeyWraps.ts`) to avoid a keySession ↔
+  masterKeyWraps import cycle.
+- **`masterKeyWraps.consumeRecoveryCode(mailboxUid, methodId)`** wraps `removeMasterKeyWrap(uid, "recovery", methodId)`.
+  **`replacePasswordWrap(mailboxUid, unlocked, newPassword, expectedMasterKeyGeneration?, params?)`** + `PasswordWrapReplaceError
+  { reason, restored?, cause? }`. Checked against restapi `BaseKeyVaultRoute`:
+  - Removing a wrap is 409 when no non-escrow wrap would remain, 400 when `methodId` is omitted and several wraps match,
+    and 403 for escrow.
+  - Removing doesn't check `expectedMasterKeyGeneration`; adding does (409).
+  - restapi does NOT enforce a single password wrap. But password wraps have no `methodId`, so two can't be removed
+    individually, which forces remove-then-add.
+  - The helper builds the wrap first, then refuses without writing (`master_key_rotated` / `multiple_password_wraps` /
+    `no_other_unlock_method`), removes, and adds.
+  - On a failed add it re-posts the old wrap (own fields only, with the generation read) and reports `restored`.
+  - **Callers must replace the password before consuming the recovery code**, because the unconsumed code's wrap is the
+    "other unlock method" that makes the replace safe.
+- **Trust this signer.** `MessageSecurityResult.signerCertificate` (base64 DER) is set for `signed_verified`,
+  `encrypted_verified` and both `*_unverified_signer` states. It is deliberately never set for `signature_failed`, even
+  when that result carries `signerFingerprint`. New `keyvaultApi.trustSigner(mailboxUid, { address, certificate })` →
+  `POST /mail/mailboxes/:id/keys/trust`, returning `KeyLookupResult`. A 409 (different signing key already pinned) becomes
+  `SignerKeyConflictError extends ApiRequestError`, and 400/403/404 pass through. The contract was confirmed with the
+  restapi route being added in parallel. This closes the round-5 note that "trust this signer" needed restapi work.
+- Two exact-`toEqual` fixtures in `smimeRegressions.test.ts` gained `signerCertificate`.

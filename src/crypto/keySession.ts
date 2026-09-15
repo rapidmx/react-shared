@@ -15,16 +15,18 @@
  * `unlockWithPassword()` below, once per mailbox per session, before rendering the mailbox's real
  * content — see that component's own doc comment.
  *
- * **Password is the only unlock method implemented so far.** Passkey (`passkeyUnlock.ts`) and recovery
- * code (`recoveryCode.ts`) derivation already exist and could unwrap the same `MasterKeyWrap` shape,
- * but no UI calls them yet — a real follow-up, not a silent gap: a mailbox enrolled *only* with a
- * passkey has no way to unlock through this module today.
+ * **Password and recovery code are the unlock methods implemented so far** (`unlockWithPassword()`,
+ * `unlockWithRecoveryCode()`, which share one master-key-to-session step). Passkey (`passkeyUnlock.ts`)
+ * derivation exists and could unwrap the same `MasterKeyWrap` shape, but nothing calls it yet — a real
+ * follow-up, not a silent gap: a mailbox enrolled *only* with a passkey has no way to unlock through this
+ * module today.
  */
 import { type KeyVault, type PublicKey, type WrappedPrivateKey, findActivePublicKey, getKeyVault } from "./keyvaultApi.js";
 import { fromBase64 } from "./encoding.js";
 import { importPrivateKeyPkcs8 } from "./keys.js";
 import { KeysLockedError, buildAad, openWithKey } from "./masterKey.js";
 import { deriveFromPassword, parseArgon2idKdfLabel } from "./passwordUnlock.js";
+import { RECOVERY_KDF_LABEL, deriveFromRecoveryCode } from "./recoveryCode.js";
 
 /** AAD purpose labels — MUST exactly match what `KeyEnrollmentGate.tsx` used when it originally
  * sealed each of these values, or `openWithKey()` fails (GCM authenticates the AAD, not just the
@@ -139,7 +141,7 @@ export function getUnlockedKeys(mailboxUid: string): UnlockedKeys | undefined {
  * with the zeroed master key throws `KeysLockedError` (see `masterKey.ts`).
  *
  * Every object handed out for the mailbox is destroyed - including ones a re-unlock already replaced in the
- * store - and an `unlockWithPassword()` still in flight for it when this runs throws `KeysLockedError`
+ * store - and an `unlockWithPassword()`/`unlockWithRecoveryCode()` still in flight for it when this runs throws `KeysLockedError`
  * instead of restoring keys after the lock.
  */
 export function destroyUnlockedKeys(mailboxUid?: string): void {
@@ -178,7 +180,7 @@ function findWrappedPrivateKey(vault: KeyVault, fingerprint: string) {
     return vault.wrappedKeys.find((k) => k.fingerprint === fingerprint);
 }
 
-/** What `unlockWithPassword()` resolves with. */
+/** What `unlockWithPassword()` resolves with (and the base of `unlockWithRecoveryCode()`'s result). */
 export interface UnlockResult {
     /** Fingerprints of active *signing* keys whose wrapped private key couldn't be opened with the (correctly
      * unwrapped) master key - e.g. a wrap sealed under a master key a later rekey replaced. The unlock still
@@ -257,6 +259,85 @@ export async function unlockWithPassword(mailboxUid: string, mailboxKeys: Public
         buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE),
     );
 
+    return openSession(mailboxUid, mailboxKeys, vault, masterKey, generation);
+}
+
+/** What `unlockWithRecoveryCode()` resolves with. */
+export interface RecoveryUnlockResult extends UnlockResult {
+    /** The `methodId` of the recovery wrap the code opened (e.g. `"recovery-3"`). Recovery codes are single-use:
+     * pass it to `masterKeyWraps.ts`'s `consumeRecoveryCode()` once the unlock flow is done. Absent only for a
+     * recovery wrap stored without a `methodId`, which `buildRecoveryWraps()` never produces. */
+    recoveryMethodId?: string;
+    /** How many *other* recovery wraps the vault holds - the codes left once this one is consumed. */
+    remainingRecoveryCodes: number;
+}
+
+/** The one rejection for a recovery code that opens nothing - a wrong code and a vault with no recovery wraps
+ * alike, so a UI can say "that recovery code didn't work" without learning (or revealing) which it was. */
+const RECOVERY_CODE_REJECTED = "That recovery code didn't unlock this mailbox.";
+
+/**
+ * Unlocks a mailbox's key vault with one of its recovery codes: fetches the vault, tries every `"recovery"` wrap
+ * (`kdf: "hkdf-sha256"`) with `deriveFromRecoveryCode(code, salt)` until one opens the master key, then opens the
+ * signing/encryption private keys and stores the session exactly as `unlockWithPassword()` does - the same
+ * `unopenableKeys` handling, `UnopenableEncryptionKeyError`, `KeysLockedError` on a lock mid-unlock, and
+ * `subscribeKeySession()` notification. `code` is normalized first (case, spacing, dashes, O/I/L slips).
+ *
+ * A wrong code and a vault with no recovery wraps both reject with the same plain `Error` (never saying which
+ * wrap was tried or failed) - the recovery-code counterpart of `unlockWithPassword()`'s wrong-password rejection.
+ *
+ * A recovery code is single-use, but this function writes nothing: the caller removes the used wrap afterwards
+ * with `consumeRecoveryCode(mailboxUid, result.recoveryMethodId)` (and may first offer a new password via
+ * `replacePasswordWrap()` - see that function for why that order is the safe one).
+ */
+export async function unlockWithRecoveryCode(mailboxUid: string, mailboxKeys: PublicKey[], code: string): Promise<RecoveryUnlockResult> {
+    const generation = lockGeneration(mailboxUid);
+    const vault = await getKeyVault(mailboxUid);
+    const recoveryWraps = vault.masterKeyWraps.filter((w) => w.method === "recovery");
+    const aad = buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE);
+
+    let opened: { masterKey: Uint8Array; methodId?: string } | undefined;
+    for (const wrap of recoveryWraps) {
+        if (wrap.kdf !== RECOVERY_KDF_LABEL) {
+            continue;
+        }
+        let wrappingKey: Uint8Array | undefined;
+        try {
+            wrappingKey = await deriveFromRecoveryCode(code, fromBase64(wrap.salt));
+            opened = { masterKey: await openWithKey(wrappingKey, { ciphertext: wrap.ciphertext, nonce: wrap.nonce }, aad), methodId: wrap.methodId };
+        } catch {
+            // Wrong code for this wrap (AEAD failure), an empty code, or a corrupt wrap - all just "not this one".
+        } finally {
+            wrappingKey?.fill(0);
+        }
+        if (opened) {
+            break;
+        }
+    }
+    if (!opened) {
+        throw new Error(RECOVERY_CODE_REJECTED);
+    }
+
+    const result = await openSession(mailboxUid, mailboxKeys, vault, opened.masterKey, generation);
+    return {
+        ...result,
+        ...(opened.methodId !== undefined ? { recoveryMethodId: opened.methodId } : {}),
+        remainingRecoveryCodes: recoveryWraps.length - 1,
+    };
+}
+
+/**
+ * Shared tail of every unlock method once its wrap has yielded `masterKey`: opens and imports the active signing and
+ * encryption private keys, aborts with `KeysLockedError` if the mailbox was locked since `generation` was taken, then
+ * stores the result (tracked weakly in `issued`) and notifies. Zeroes `masterKey` on any failure.
+ */
+async function openSession(
+    mailboxUid: string,
+    mailboxKeys: PublicKey[],
+    vault: KeyVault,
+    masterKey: Uint8Array,
+    generation: string,
+): Promise<UnlockResult> {
     const unlocked: UnlockedKeys = { masterKey };
     const unopenableKeys: string[] = [];
 

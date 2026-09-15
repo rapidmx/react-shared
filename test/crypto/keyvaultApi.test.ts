@@ -16,13 +16,62 @@ import {
     lookupKeys,
     rekey,
     removeMasterKeyWrap,
+    SignerKeyConflictError,
     startSignEnrollment,
+    trustSigner,
     updateEncryptionPolicy,
     VaultAlreadyInitializedError,
 } from "../../src/crypto/keyvaultApi.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
+});
+
+describe("trustSigner", () => {
+    const lookup = {
+        keys: [{ publicKey: "MIIB", type: "x509", useType: "sign", fingerprint: "ab12", notBefore: 1, notAfter: 2 }],
+        encryptPreference: { preferEncrypt: "mutual" },
+    };
+
+    it("posts the address and certificate to the encoded mailbox's keys/trust endpoint and returns the key lookup result", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, lookup));
+        const result = await trustSigner("mb/1", { address: "alice@example.com", certificate: "MIIB" });
+        const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe("/api/mail/mailboxes/mb%2F1/keys/trust");
+        expect(init.method).toBe("POST");
+        expect(JSON.parse(init.body as string)).toEqual({ address: "alice@example.com", certificate: "MIIB" });
+        expect(result).toEqual(lookup);
+    });
+
+    it("sends only address and certificate, even if the input object carries more", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, lookup));
+        await trustSigner("mb1", { address: "a@example.com", certificate: "c", extra: true } as never);
+        expect(JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string)).toEqual({ address: "a@example.com", certificate: "c" });
+    });
+
+    it("maps a 409 to SignerKeyConflictError (still an ApiRequestError with status 409)", async () => {
+        mockFetch(() => jsonResponse(409, { message: "A different signing key is already pinned.", code: "IDENTIFIER_EXISTS" }));
+        const err = await trustSigner("mb1", { address: "a@example.com", certificate: "c" }).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(SignerKeyConflictError);
+        expect(err).toBeInstanceOf(ApiRequestError);
+        expect(err).toMatchObject({ name: "SignerKeyConflictError", status: 409, message: "A different signing key is already pinned." });
+    });
+
+    it.each([400, 403, 404])("rethrows a %i as a plain ApiRequestError", async (status) => {
+        mockFetch(() => jsonResponse(status, { message: "nope" }));
+        const err = await trustSigner("mb1", { address: "a@example.com", certificate: "c" }).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(ApiRequestError);
+        expect(err).not.toBeInstanceOf(SignerKeyConflictError);
+        expect((err as ApiRequestError).status).toBe(status);
+    });
+
+    it("rethrows a non-API failure unchanged", async () => {
+        const boom = new TypeError("network down");
+        mockFetch(() => {
+            throw boom;
+        });
+        await expect(trustSigner("mb1", { address: "a@example.com", certificate: "c" })).rejects.toBe(boom);
+    });
 });
 
 describe("getKeyVault", () => {

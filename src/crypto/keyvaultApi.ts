@@ -302,7 +302,47 @@ export function lookupKeys(mailboxUid: string, addr: string): Promise<KeyLookupR
     return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/lookup?${query.toString()}`);
 }
 
-export type PolicyState = "automatic" | "optional" | "prohibited";
+/** What `trustSigner()` pins: the sender's address and the certificate that signed their message. */
+export interface TrustSignerInput {
+    address: string;
+    /** Base64 DER of the signer certificate - `MessageSecurityResult.signerCertificate`. */
+    certificate: string;
+}
+
+/**
+ * Thrown by `trustSigner()` when restapi answers `409`: a different signing key is already pinned for that address, so
+ * trusting this one would silently replace it. Still an `ApiRequestError` (`status` 409). A UI should show this as a
+ * key conflict for the user to resolve deliberately, not retry.
+ */
+export class SignerKeyConflictError extends ApiRequestError {
+    constructor(message: string, code?: string) {
+        super(message, 409, code);
+        this.name = "SignerKeyConflictError";
+    }
+}
+
+/**
+ * "Trust this signer": pins `certificate` as `address`'s signing key on the caller's contact for that address
+ * (`POST /mail/mailboxes/:id/keys/trust`), after which `evaluateMessageSecurity()` given that contact's pins reports
+ * the sender's signed mail as verified. Resolves with the contact's resulting key state, the same shape as
+ * `lookupKeys()`. Rejects with `SignerKeyConflictError` on `409` (a different signing key is already pinned), and a
+ * plain `ApiRequestError` for `400` (an invalid certificate, or one that doesn't name `address`) and `403`/`404`.
+ */
+export async function trustSigner(mailboxUid: string, input: TrustSignerInput): Promise<KeyLookupResult> {
+    try {
+        return await apiFetch<KeyLookupResult>(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/trust`, {
+            method: "POST",
+            body: JSON.stringify({ address: input.address, certificate: input.certificate }),
+        });
+    } catch (err) {
+        if (err instanceof ApiRequestError && err.status === 409) {
+            throw new SignerKeyConflictError(err.message, err.code);
+        }
+        throw err;
+    }
+}
+
+export type PolicyState ="automatic" | "optional" | "prohibited";
 
 export interface EncryptionPolicy {
     encryptSameOrg: PolicyState;
