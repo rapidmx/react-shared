@@ -868,3 +868,19 @@ Not committed. Plan `cheerful-giggling-pine.md` section 6: the Calendly-style bo
   tsconfig.json`, `yarn lint`, `yarn build` clean. `tsc -p tsconfig.test.json` has 3 pre-existing errors (useBranding,
   escrowKeys, retainedEncryptionKeys tests), identical with the change stashed.
 - web-client still consumes 0.4.0 through its yarn patch; it stops importing `bookingApi` in the same change.
+
+### 2026-09-15 — Recipient suggestions (`mail/directoryApi.ts`)
+
+- **Contract** (restapi `BaseDirectoryRoute`, server path `/api/mail/directory`): `GET ?q=&limit=` (server mailboxes +
+  distribution lists; 403 for a caller with no mailbox on the server and no trusted role) and `GET /contacts?q=&limit=&
+  mailboxUid=` (caller's own contacts folders, plus `mailboxUid`'s if readable). Both 400 for q < 2 or > 100 chars or a
+  bad limit; default limit 8, cap 20; 120 requests/min per user each. Entries `{ displayName, address, kind }`, kind
+  `user|shared|room|equipment|list|contact`.
+- `normalizeQuery()` trims and cuts to 100 so the client never draws a 400; < 2 chars resolves `[]` with no request.
+  `wellFormed()` drops entries without a string address (and non-array bodies).
+- `fetchRecipientSuggestions()` uses `Promise.allSettled`: either source may fail (403 directory, 429, network) and the
+  other's entries still return; both failing rejects with the contacts error (a non-`Error` reason becomes an
+  `ApiRequestError` status 0); an `AbortError` from either always rethrows so callers can ignore stale requests.
+  Merge = contacts first, dedupe by trimmed lowercase address, first wins, `limit` applied to the merged list.
+- Tests `test/mail/directoryApi.test.ts`, 100% on the file. Full run 83 files / 1027 tests, 100 / 99.5 / 100 / 100;
+  tsc, lint, build clean.

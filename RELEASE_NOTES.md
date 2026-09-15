@@ -1,5 +1,21 @@
 # Release Notes
 
+## Unreleased
+
+### Features
+
+- **Recipient suggestions:** new `mail/directoryApi.js` for compose autocomplete, over `@rapidmx/restapi`'s new
+  `GET /mail/directory` and `GET /mail/directory/contacts` (needs the next restapi release).
+  - `searchDirectory(query, { limit, signal })` searches the server's mailboxes (people, shared mailboxes, rooms and
+    equipment) and distribution lists; `searchContactSuggestions(query, { mailboxUid, limit, signal })` searches the
+    caller's contacts, plus `mailboxUid`'s when the caller may read it. Both resolve to `RecipientSuggestion`
+    (`{ displayName, address, kind }`), make no request for a query shorter than 2 characters and cut one longer than
+    100.
+  - `fetchRecipientSuggestions(query, options)` runs both and merges them with `mergeRecipientSuggestions()`: contacts
+    first, addresses de-duplicated case-insensitively, at most `limit` (default 8). One source failing (for example
+    a 403 directory for a caller with no mailbox on the server) still returns the other's entries; an abort rejects
+    with the `AbortError`.
+
 ## v0.6.0
 
 ### Breaking changes
