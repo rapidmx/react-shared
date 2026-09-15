@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-15
+
+### Added
+- Added searchPlugins, getPluginUpdates and listPluginNamespaces to pluginsApi for finding plugins in the configured namespaces and checking installed plugins for updates
+- Added planPluginChange() and PluginChangePlan for GET /system/plugins/plan
+- Added requires to PluginManifest
+- Added expectedPlan to addPlugin() and UpdatePluginInput, and expectedPlanOf() to build it from a previewed plan, so the server can refuse a change whose dependencies differ from what was confirmed
+- Added the custom role and actions to listed mailbox access members, and allowed to PluginUpdateInfo, matching restapi
+- Added getMyMailboxAccess() for GET /mail/mailboxes/:id/access/me, the caller's own effective access to a mailbox
+- Added null in updateRetentionPolicy() to clear a retention period, matching restapi
+- Added mailboxScopedData to PluginManifest, matching restapi
+- Added scheduled-send retry fields, missing status union values and processing attempts, pinned signing fingerprint helpers, and VaultAlreadyInitializedError for enrollKey conflicts
+- Added cancelSignEnrollment for restapi's new owner cancel endpoint, and document that rekey needs a replacement escrow wrap for escrowed mailboxes and is refused while a sign enrollment is in flight
+- Added optional expectedMasterKeyGeneration to enrollKey, startSignEnrollment, rekey and addMasterKeyWrap, and masterKeyGeneration to KeyVault
+- Added unlockWithRecoveryCode, which tries each recovery code wrap and opens the session like password unlock, reporting the used code and how many remain
+- Added consumeRecoveryCode and replacePasswordWrap, which replaces a forgotten password wrap safely and restores the old wrap if adding the new one fails
+- Added trustSigner for pinning an unpinned sender's signing certificate, with SignerKeyConflictError for a different pinned key, and expose signerCertificate on verified and unverified-signer results
+- Added resolveKeyConflict with PinnedKeyChangedError, and fetchSignerKeyState and signerKeyStateFor for key-changed comparisons without discovery
+- Added decryptEnvelopedDataWithKeys and parseEncryptedMessageWithKeys, bounding retained keys and trial decryptions
+- Added verification seals: an HMAC keyed per mailbox from the master key over the verified signer, result, raw content hash and master key generation, written once per generation
+- Added evaluateMessageSecurityWithSeal, which returns a seal to store after live verification and reports verified_at_first_open, with a laterCompromised warning, when only the signer key's status has since changed
+- Added setMessageVerificationSeal with VerificationSealConflictError and Message.verificationSeal and verificationSealGeneration
+
+### Changed
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Return { plugin, dependencies } from addPlugin()
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Include the previewed plugin version in expectedPlanOf()
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Reject S/MIME detached signatures that carry their own content, use the certificate pkijs matched to the signature instead of the first one, fail pin checks closed, and require the signer certificate's email to match the From address
+- Only decrypt AES-GCM S/MIME content, and parse MIME properly: folded headers, preambles, unquoted boundaries and base64 or quoted-printable bodies
+- Expand recurring events in the event's time zone, keep local times when dragging events across days, and detach one occurrence by creating it first while keeping the meeting identity
+- Honour subject: and has:attachment in encrypted search with limited decrypt concurrency, pass a mailboxUid to search, and read date-only search bounds as local midnight
+- Use apiUrl() with credentials for every raw fetch, page flagged messages and calendar events, and add list paging params to request list wrappers
+- Send minimal contact patches, add escrow scope and federated receipt mailbox fields, allow null to clear mailbox fields, and add apply_label and matter export audit actions
+- Import unwrapped private keys as non-extractable, zero the master key on destroy, detect idle time across sleep and iframe focus, add subscribeKeySession(), and normalize recovery code input
+- Trap focus in modals and drawers and let only the topmost overlay handle Escape
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Base64-encode the signed body of S/MIME signed-only messages so MTA line rewrapping can't break the signature
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Refuse to seal, open or derive with a destroyed or all-zero master key via KeysLockedError, and drop private key handles when keys are destroyed
+- Expand all-day recurring events in UTC, keep all-day drags on whole dates, use the pre-transition offset in DST gaps, and shift exceptions and detached occurrences when a series moves
+- Treat duplicate From, To, Cc or Sender headers as header tampering, refuse identity binding for malformed SANs, and flag messages not addressed to the reader
+- Strip CR, LF and NUL from generated headers and RFC 2047-encode non-ASCII subjects and names
+- Read raw MIME as bytes and apply part charsets, decode quoted-printable linearly, and strip HTML for encrypted search in a single capped pass
+- Page flagged messages with caps and dedupe, keep newer overlays on top, fix vCard escaping, unfolding and group prefixes, and add escrow audit verify reasons and new model fields
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Schedule a send through sendMessage's scheduledSendTime option, since restapi no longer lets a PUT set scheduledSendTime, and remove setMessageScheduledSendTime
+- Document that moving a message out of Outbox cancels its scheduled send server-side
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Only report a signature as verified when the signer matches a pinned or own signing fingerprint, returning signed_unverified_signer or encrypted_unverified_signer with the signer's fingerprint and emails otherwise
+- Require exactly two parts in multipart/signed, expose protected headers and inner attachments, and flag protected Cc and Subject mismatches
+- Skip unopenable signing keys on unlock and report them, failing with UnopenableEncryptionKeyError only for the encryption key
+- Destroy every key object handed out for a mailbox on lock, and abort unlocks, rewraps and tier-3 searches that a lock overtakes
+- Shift DST-gap recurrence exceptions by wall-clock time, decode quoted-printable consistently, keep address group syntax, and split vCards only at line starts
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Hold handed-out key objects weakly so replaced master keys aren't kept alive until lock, while every reachable object is still destroyed on lock
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Replace Contact.keyConflict with keyConflicts carrying the observed key, and add previousKeys, rejectedKeys, issuerCertificate and revocationReason to the key types
+- Trust previous and superseded signing keys for verification while never trusting compromised or reasonless revoked keys, via isTrustedForVerification
+- Report a valid signature from a pinned sender with a different key as signer_key_changed with its certificate
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Open retained encryption keys on unlock and decrypt with the key matching each recipient slot, so mail encrypted to a superseded or older key stays readable
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+### Fixed
+- Fixed lint errors: a duplicate keyvaultApi import and unnecessary type assertions
+
+### Removed
+- Removed the unused rewrapPrivateKeysUnderNewMasterKey, which dropped retained key wraps
+
 ## [0.4.0] - 2026-09-14
 
 ### Added
@@ -271,7 +351,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/rapidmx/react-shared/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/rapidmx/react-shared/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rapidmx/react-shared/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rapidmx/react-shared/releases/tag/v0.2.0
