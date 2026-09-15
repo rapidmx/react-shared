@@ -14,7 +14,7 @@ This library is used by:
 
 This package is deliberately framework-free beyond React itself — no router, no HTTP client, no state
 management library. `src/` is organized by feature/system, mirroring `@rapidmx/restapi`'s own
-`src/<feature>/` convention: `mail/`, `calendar/`, `contacts/`, `tasks/`, `booking/`, `admin/`, `branding/`,
+`src/<feature>/` convention: `mail/`, `calendar/`, `contacts/`, `tasks/`, `admin/`, `branding/`,
 `search/`, `auth/`, and `util/` for the small set of things every feature depends on (`api.ts`'s
 `apiFetch()`, `apiQuery.ts`'s pagination helper, `dateInput.ts`, `useIsMobile.ts`). Each `*Api.ts` module is
 a thin `fetch` wrapper around one [`@rapidmx/restapi`](https://github.com/RapidMX/restapi) resource, and a

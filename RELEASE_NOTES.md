@@ -1,5 +1,15 @@
 # Release Notes
 
+## Unreleased
+
+### Breaking changes
+
+- **Booking moved out:** `booking/bookingApi.js` (`listBookingTypes()`, `createBookingType()`, `getBookingSlots()`,
+  `bookSlot()`, `bookingManageUrl()` and the rest of the booking types and bookings client, with its `BookingType`,
+  `PublicBooking` and related types) is removed. It now ships in `@rapidmx/booking-plugin`, with the `/mail/booking-types`
+  and `/mail/bookings` routes. Resource booking fields on mailboxes (`autoAcceptBookings`, `bookingWindowDays` and
+  friends) are unchanged.
+
 ## v0.5.0
 
 Platform-agnostic data/business-logic layer for RapidMX's React frontends - typed API clients and hooks shared

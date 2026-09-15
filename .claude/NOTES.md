@@ -851,3 +851,20 @@ set/identical/replaced, 409 different and not replaceable, 400 invalid, 403). Fi
   making them non-extractable is a possible follow-up.
 - **web-client follow-up:** `MessageDetailPane.tsx`'s `SECURITY_INDICATOR` is a `Record<state, ...>` and needs a
   `verified_at_first_open` entry once it upgrades; it should also switch to the seal-aware evaluator and store `sealToWrite`.
+
+### 2026-09-15 — Removed `booking/bookingApi.ts` (moved to `@rapidmx/booking-plugin`)
+
+Not committed. Plan `cheerful-giggling-pine.md` section 6: the Calendly-style booking feature leaves core and ships as
+`@rapidmx/booking-plugin` (new `D:/github/rapidmx/booking` repo, created from this repo at c215cf4, which takes the
+`bookingApi.ts` source and its test).
+
+- Deleted `src/booking/bookingApi.ts` and `test/booking/bookingApi.test.ts` (the whole `booking/` folders). Nothing else
+  imported them and there is no barrel, so no re-exports to remove; `yarn build` no longer emits `dist/booking/`.
+- Kept the mailbox resource-booking fields in `mail/mailApi.ts` (`autoAcceptBookings`, `bookingWindowDays`, ...) - those
+  are room/resource scheduling, not booking types. `brandingApi.ts`'s "anonymous booking-page visitor" comment still
+  holds (the plugin's public pages read branding).
+- README's feature folder list drops `booking/`; RELEASE_NOTES.md gains an Unreleased breaking-changes bullet.
+- Verification: 82 files / 1015 tests, 100% statements/functions/lines, 99.49% branches (gates unchanged); `tsc -p
+  tsconfig.json`, `yarn lint`, `yarn build` clean. `tsc -p tsconfig.test.json` has 3 pre-existing errors (useBranding,
+  escrowKeys, retainedEncryptionKeys tests), identical with the change stashed.
+- web-client still consumes 0.4.0 through its yarn patch; it stops importing `bookingApi` in the same change.
