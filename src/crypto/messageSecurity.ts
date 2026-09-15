@@ -25,9 +25,17 @@
  * checks 1, 3 and 4 alone prove only that *someone* holding a certificate naming the sender signed it - a
  * self-issued certificate with SAN `ceo@victim.com` passes them. Without a matching pin the result is
  * `"signed_unverified_signer"`/`"encrypted_unverified_signer"` instead, carrying `signerFingerprint` and
- * `signerEmails` so a UI can show "signed by an unverified certificate" and offer to trust it. A pin that was
- * supplied but doesn't match is `"signature_failed"` (`untrusted_signer`), and a failure of checks 1, 3 or 4
- * is `"signature_failed"` with `signatureFailureReason` saying which check failed.
+ * `signerEmails` so a UI can show "signed by an unverified certificate" and offer to trust it. A failure of checks 1, 3
+ * or 4 is `"signature_failed"` with `signatureFailureReason` saying which check failed.
+ *
+ * **Pinned, but a different key.** When pins were supplied and checks 1, 3 and 4 pass but the signer matches no pin, the
+ * result is `"signature_failed"` with `signatureFailureReason: "signer_key_changed"`: the sender's certificate names
+ * them and the message is intact, but it isn't the key the reader pinned (a rotation the reader hasn't accepted, or an
+ * impersonation). Only this failure also carries `signerCertificate`, so a UI can compare it with the pinned keys
+ * (`contactsApi.ts`'s `fetchSignerKeyState()`) and let the user accept or reject it (`keyvaultApi.ts`'s
+ * `resolveKeyConflict()`). A pin mismatch whose certificate also fails check 3 or 4 (or couldn't be resolved) stays
+ * `untrusted_signer`. Previously pinned keys count as pins (see `signingKeyFingerprints()`), so mail signed before an
+ * accepted or automatic rotation still verifies.
  */
 import { DisplayBody, MimeAttachment, MimeHeaderField, decodeHeaderText, extractAddresses, parseMimeEntity, parseParameterizedHeader, plainTextToHtml } from "./mime.js";
 import { toBase64 } from "./encoding.js";
@@ -51,12 +59,15 @@ export type MessageSecurityState =
 
 /** Why a message is `"signature_failed"`. `invalid_signature`: the CMS signature itself is malformed or
  * doesn't verify over the content (or a `multipart/signed` body doesn't hold exactly two parts).
- * `untrusted_signer`: pinned fingerprints were supplied and the signer certificate matches none of them (or no
- * signer certificate could be resolved at all). `signer_identity_mismatch`: the signer certificate doesn't name
- * the message's `From` address (or `From` doesn't hold exactly one address). `header_mismatch`: the
- * signed/protected `From`/`To`/`Cc` (or a signed-only message's `Subject`) disagree with the outer envelope's,
- * or either header block repeats a `From`/`To`/`Cc`/`Sender` field. */
-export type SignatureFailureReason = "invalid_signature" | "untrusted_signer" | "signer_identity_mismatch" | "header_mismatch";
+ * `signer_key_changed`: pinned fingerprints were supplied and the signer certificate matches none of them, but it
+ * names the sender and every header check passes - the sender appears to use a new key (see this module's doc
+ * comment); the result carries `signerCertificate`. `untrusted_signer`: pinned fingerprints were supplied and the signer
+ * certificate matches none of them and also fails the identity or header checks (or no signer certificate could be
+ * resolved at all). `signer_identity_mismatch`: the signer certificate doesn't name the message's `From` address (or
+ * `From` doesn't hold exactly one address). `header_mismatch`: the signed/protected `From`/`To`/`Cc` (or a signed-only
+ * message's `Subject`) disagree with the outer envelope's, or either header block repeats a `From`/`To`/`Cc`/`Sender`
+ * field. */
+export type SignatureFailureReason = "invalid_signature" | "signer_key_changed" | "untrusted_signer" | "signer_identity_mismatch" | "header_mismatch";
 
 /** The header fields recovered from inside the signed/encrypted entity (RFC 9788 header protection), decoded
  * for display where they are text. */
@@ -115,8 +126,10 @@ export interface MessageSecurityResult {
     signerEmails?: string[];
     /** Base64 DER of the certificate that verified the signature - what `keyvaultApi.ts`'s `trustSigner()` pins for
      * a "trust this signer" action. Present alongside `signerFingerprint` for `"signed_verified"`,
-     * `"encrypted_verified"` and the `*_unverified_signer` states; never for `"signature_failed"`, even when its
-     * signature itself was valid (a failed binding or pin mismatch is not something to offer trusting). */
+     * `"encrypted_verified"`, the `*_unverified_signer` states, and `"signature_failed"` with reason
+     * `"signer_key_changed"` (for a key-changed comparison and `resolveKeyConflict()`'s `certificate`). Never for any
+     * other `"signature_failed"`, even when its signature itself was valid (a failed binding is not something to offer
+     * trusting). */
     signerCertificate?: string;
 }
 
@@ -203,19 +216,28 @@ function normalizePins(pins: string | string[] | undefined): string[] {
 }
 
 /** Checks 2-4 from this module's doc comment for an already cryptographically verified signature.
- * Returns `undefined` when the signer is accepted, otherwise the failure reason.
+ * Returns `undefined` when the signer is accepted, otherwise the failure reason. A pin mismatch is
+ * `"signer_key_changed"` when checks 3 and 4 pass for the certificate, and `"untrusted_signer"` when they don't (or no
+ * certificate was resolved).
  *
  * With no `pinnedSignerFingerprint` (or an empty array), check 2 is skipped and `undefined` means only that the
  * certificate names the sender consistently - NOT that the signer is trusted. Use `evaluateMessageSecurity()`
  * (which reports that case as `*_unverified_signer`) unless you enforce a pin yourself. */
 export async function checkSignerBinding(input: SignerBindingInput): Promise<SignatureFailureReason | undefined> {
-    const { protectedHeaders, outerHeaders } = input;
     const pins = normalizePins(input.pinnedSignerFingerprint);
     // Fail closed: an absent certificate hashes/extracts as empty, which can never match a pin or From.
     const certDer = input.signerCertificateDer ?? new Uint8Array();
     if (pins.length > 0 && !pins.includes(await computeCertFingerprint(certDer))) {
-        return "untrusted_signer";
+        // A certificate that otherwise binds cleanly to the sender is a key change for the user to judge; anything else
+        // (no certificate, wrong identity, header tampering) stays a plain untrusted signer.
+        return input.signerCertificateDer && checkIdentityAndHeaders(input, certDer) === undefined ? "signer_key_changed" : "untrusted_signer";
     }
+    return checkIdentityAndHeaders(input, certDer);
+}
+
+/** Checks 3-4 from this module's doc comment. */
+function checkIdentityAndHeaders(input: SignerBindingInput, certDer: Uint8Array): SignatureFailureReason | undefined {
+    const { protectedHeaders, outerHeaders } = input;
     if (hasRepeatedAddressField(input.outerFields) || hasRepeatedAddressField(input.protectedFields)) {
         return "header_mismatch";
     }
@@ -248,7 +270,8 @@ export async function checkSignerBinding(input: SignerBindingInput): Promise<Sig
  * content type all degrade to a result the caller can render directly.
  *
  * `pinnedSignerFingerprints` - the sender's trusted signing-key fingerprint(s): `signingKeyFingerprints()` of the
- * sender's `Contact.keys` (see `contactsApi.ts`'s `fetchPinnedSigningFingerprints()`). The unlocked mailbox's own
+ * sender's `Contact.keys` and `Contact.previousKeys` (see `contactsApi.ts`'s `fetchPinnedSigningFingerprints()`). A
+ * supplied pin that the signer doesn't match is `signer_key_changed` or `untrusted_signer`. The unlocked mailbox's own
  * `signingFingerprint` is always trusted too (mail this mailbox signed itself). Omitted or empty, a valid signature
  * from any other certificate is `*_unverified_signer`, never verified. `readerAddress` - the unlocked mailbox's own
  * address - enables `notAddressedToReader`.
@@ -292,8 +315,9 @@ export async function evaluateMessageSecurity(
         const certDer = signerCertificateDer ?? new Uint8Array();
         const fingerprint = await computeCertFingerprint(certDer);
         const signer = signerCertificateDer ? { signerFingerprint: fingerprint, signerEmails: extractCertificateEmails(certDer) } : {};
-        // The certificate itself (for "trust this signer") only accompanies a signature that didn't fail - and an accepted
-        // signer always has a certificate (a missing one fails the binding check closed), so `certDer` is the real one.
+        // The certificate itself (for "trust this signer" or a key-changed comparison) only accompanies a signature that
+        // didn't fail or failed only as `signer_key_changed` - both always have a certificate (a missing one fails the
+        // binding check closed as another reason), so `certDer` is the real one.
         const acceptedSigner = { ...signer, signerCertificate: toBase64(certDer) };
         const trustedPins = unlocked?.signingFingerprint ? [...callerPins, unlocked.signingFingerprint.toLowerCase()] : callerPins;
         const failure = await checkSignerBinding({
@@ -332,7 +356,7 @@ export async function evaluateMessageSecurity(
         }
         const { failure, trusted, signer, acceptedSigner } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, true);
         if (failure) {
-            return { state: "signature_failed", signatureFailureReason: failure, ...signer };
+            return { state: "signature_failed", signatureFailureReason: failure, ...(failure === "signer_key_changed" ? acceptedSigner : signer) };
         }
         return {
             state: trusted ? "signed_verified" : "signed_unverified_signer",
@@ -369,7 +393,7 @@ export async function evaluateMessageSecurity(
         }
         const { failure, trusted, signer, acceptedSigner } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, false);
         if (failure) {
-            return { state: "signature_failed", signatureFailureReason: failure, ...content, ...signer };
+            return { state: "signature_failed", signatureFailureReason: failure, ...content, ...(failure === "signer_key_changed" ? acceptedSigner : signer) };
         }
         return { state: trusted ? "encrypted_verified" : "encrypted_unverified_signer", ...content, ...acceptedSigner };
     }

@@ -7,7 +7,14 @@
 
 import { apiFetch } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
-import { type EncryptionPreference, type PublicKey, signingKeyFingerprints } from "../crypto/keyvaultApi.js";
+import {
+    type EncryptionPreference,
+    type KeyConflict,
+    type PreviousKey,
+    type PublicKey,
+    type RejectedKey,
+    signingKeyFingerprints,
+} from "../crypto/keyvaultApi.js";
 
 export type ContactAddressKind = "home" | "work" | "other";
 
@@ -61,17 +68,19 @@ export interface Contact {
      * via `crypto/keyvaultApi.ts`'s `lookupKeys()` at compose time, never fetched on message receipt
      * (that would leak read timing to the sender's server). */
     encryptPreference?: EncryptionPreference;
-    /** This contact's published public keys, as last discovered. Trust is TOFU (trust-on-first-use) —
-     * see `keyConflict` for what happens when a newly observed key differs from this one. */
+    /** This contact's pinned public keys. Trust is TOFU (trust-on-first-use) — see `keyConflicts` for what
+     * happens when a newly observed key differs from one of these. */
     keys?: PublicKey[];
-    /** Set when an observed key conflicts with the currently pinned key above — blocks silent
-     * acceptance until the user takes explicit action (the spec's Key Conflict Handling). The
-     * previously pinned `keys` are retained unchanged while this is set. */
-    keyConflict?: {
-        observedFingerprint: string;
-        observedAt: number;
-        source: "header" | "discovery";
-    };
+    /** Observed keys that conflict with the currently pinned key of the same `useType`, at most one per `useType` —
+     * each blocks silent acceptance until the user resolves it (`keyvaultApi.ts`'s `resolveKeyConflict()`, the spec's
+     * Key Conflict Handling). The pinned `keys` are retained unchanged while a conflict is set. */
+    keyConflicts?: KeyConflict[];
+    /** Keys that were pinned before and replaced (by the user accepting a conflict, or by restapi's automatic
+     * same-issuer renewal of an expired or revoked key), newest first, at most 5 per `useType`. Signing keys here
+     * still count as trusted signers — see `signingKeyFingerprints()`. */
+    previousKeys?: PreviousKey[];
+    /** Keys the user rejected when resolving a conflict. */
+    rejectedKeys?: RejectedKey[];
 }
 
 /** Lists a folder's contacts, alphabetically by display name. Never includes soft-deleted contacts — see
@@ -80,28 +89,27 @@ export function listContacts(folderUid: string, params: ListParams = {}): Promis
     return apiFetch(`/mail/contacts?${buildQuery(params, { folderUid, sort: JSON.stringify({ displayName: "ASC" }) })}`);
 }
 
-/** The pinned signing-key fingerprints of every contact in `contacts` with an email equal (case-insensitively) to
- * `address` - see `keyvaultApi.ts`'s `signingKeyFingerprints()`. De-duplicated; `[]` when no contact matches or none
- * has a pinned signing key. */
-export function pinnedSigningFingerprintsFor(contacts: Contact[], address: string): string[] {
+function contactsMatching(contacts: Contact[], address: string): Contact[] {
     const wanted = address.trim().toLowerCase();
-    const matching = contacts.filter((contact) => contact.emails.some((email) => email.address.trim().toLowerCase() === wanted));
-    return [...new Set(matching.flatMap((contact) => signingKeyFingerprints(contact.keys)))];
+    return contacts.filter((contact) => contact.emails.some((email) => email.address.trim().toLowerCase() === wanted));
 }
 
-/** Page size and page cap for `fetchPinnedSigningFingerprints()` (500 is restapi's own `limit` cap). */
+/** The trusted signing-key fingerprints of every contact in `contacts` with an email equal (case-insensitively) to
+ * `address`: each contact's pinned `keys` and its `previousKeys`, so mail signed before a key rotation still verifies -
+ * see `keyvaultApi.ts`'s `signingKeyFingerprints()` for the rules (expired and superseded keys kept, compromised or reasonless revoked keys excluded). De-duplicated;
+ * `[]` when no contact matches or none has a trusted signing key. */
+export function pinnedSigningFingerprintsFor(contacts: Contact[], address: string): string[] {
+    return [...new Set(contactsMatching(contacts, address).flatMap((contact) => signingKeyFingerprints(contact.keys, contact.previousKeys)))];
+}
+
+/** Page size and page cap for `fetchPinnedSigningFingerprints()` and `fetchSignerKeyState()` (500 is restapi's own
+ * `limit` cap). */
 export const PINNED_FINGERPRINT_PAGE_SIZE = 500;
 export const PINNED_FINGERPRINT_MAX_PAGES = 20;
 
-/**
- * Fetches the pinned signing-key fingerprints for a message sender's `address` from the contacts in `folderUids`
- * (the reader's contacts folders), for `evaluateMessageSecurity()`'s `pinnedSignerFingerprints`. Reads only what key
- * discovery already stored on the reader's own contacts - never triggers a Discovery lookup, which must not happen
- * on message receipt (it would leak read timing to the sender's server). Pages through each folder
- * (`PINNED_FINGERPRINT_PAGE_SIZE`, at most `PINNED_FINGERPRINT_MAX_PAGES` pages per folder). A caller rendering many
- * messages should cache the contact list and use `pinnedSigningFingerprintsFor()` instead.
- */
-export async function fetchPinnedSigningFingerprints(folderUids: string[], address: string): Promise<string[]> {
+/** Every contact in `folderUids`, paged (`PINNED_FINGERPRINT_PAGE_SIZE`, at most `PINNED_FINGERPRINT_MAX_PAGES` pages
+ * per folder). A plain contacts read - never a Discovery lookup. */
+async function listContactsInFolders(folderUids: string[]): Promise<Contact[]> {
     const contacts: Contact[] = [];
     for (const folderUid of folderUids) {
         for (let page = 0; page < PINNED_FINGERPRINT_MAX_PAGES; page++) {
@@ -112,7 +120,63 @@ export async function fetchPinnedSigningFingerprints(folderUids: string[], addre
             }
         }
     }
-    return pinnedSigningFingerprintsFor(contacts, address);
+    return contacts;
+}
+
+/**
+ * Fetches the trusted signing-key fingerprints (pinned and previous - see `pinnedSigningFingerprintsFor()`) for a
+ * message sender's `address` from the contacts in `folderUids` (the reader's contacts folders), for
+ * `evaluateMessageSecurity()`'s `pinnedSignerFingerprints`. Reads only what is already stored on the reader's own
+ * contacts - never triggers a Discovery lookup, which must not happen on message receipt (it would leak read timing to
+ * the sender's server). Pages through each folder (`PINNED_FINGERPRINT_PAGE_SIZE`, at most
+ * `PINNED_FINGERPRINT_MAX_PAGES` pages per folder). A caller rendering many messages should cache the contact list and
+ * use `pinnedSigningFingerprintsFor()` instead.
+ */
+export async function fetchPinnedSigningFingerprints(folderUids: string[], address: string): Promise<string[]> {
+    return pinnedSigningFingerprintsFor(await listContactsInFolders(folderUids), address);
+}
+
+/** A sender's stored signing-key state, for a key-changed comparison - see `signerKeyStateFor()`. */
+export interface SignerKeyState {
+    /** The currently pinned signing keys (every `useType: "sign"` key, revoked and expired ones included, so a UI can
+     * show their dates and status), de-duplicated by fingerprint. */
+    pinned: PublicKey[];
+    /** Previously pinned signing keys, newest `replacedAt` first, de-duplicated by fingerprint. */
+    previous: PreviousKey[];
+    /** The first unresolved signing-key conflict found, if any. */
+    conflict?: KeyConflict;
+}
+
+function uniqueByFingerprint<T extends PublicKey>(keys: T[]): T[] {
+    const seen = new Set<string>();
+    return keys.filter((key) => {
+        const fingerprint = key.fingerprint.toLowerCase();
+        if (seen.has(fingerprint)) {
+            return false;
+        }
+        seen.add(fingerprint);
+        return true;
+    });
+}
+
+/** The signing-key state of every contact in `contacts` with an email equal (case-insensitively) to `address`, merged -
+ * what a UI needs to compare a `signer_key_changed` message's certificate with the pinned and previous keys (their
+ * fingerprints and `notBefore`/`notAfter`/`revokedAt`/`replacedAt` dates) before calling `resolveKeyConflict()`. Empty
+ * `pinned`/`previous` and no `conflict` when no contact matches. */
+export function signerKeyStateFor(contacts: Contact[], address: string): SignerKeyState {
+    const matching = contactsMatching(contacts, address);
+    const pinned = uniqueByFingerprint(matching.flatMap((contact) => (contact.keys ?? []).filter((key) => key.useType === "sign")));
+    const previous = uniqueByFingerprint(
+        matching.flatMap((contact) => (contact.previousKeys ?? []).filter((key) => key.useType === "sign")).sort((a, b) => b.replacedAt - a.replacedAt),
+    );
+    const conflict = matching.flatMap((contact) => contact.keyConflicts ?? []).find((entry) => entry.useType === "sign");
+    return { pinned, previous, ...(conflict ? { conflict } : {}) };
+}
+
+/** Fetches `signerKeyStateFor()` for `address` from the contacts in `folderUids`, paging exactly like
+ * `fetchPinnedSigningFingerprints()`. Reads only stored contacts - never triggers a Discovery lookup. */
+export async function fetchSignerKeyState(folderUids: string[], address: string): Promise<SignerKeyState> {
+    return signerKeyStateFor(await listContactsInFolders(folderUids), address);
 }
 
 /**

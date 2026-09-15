@@ -739,3 +739,34 @@ Not committed. Final full run: 81 files / 955 tests, 100% statements/functions/l
   `SignerKeyConflictError extends ApiRequestError`, and 400/403/404 pass through. The contract was confirmed with the
   restapi route being added in parallel. This closes the round-5 note that "trust this signer" needed restapi work.
 - Two exact-`toEqual` fixtures in `smimeRegressions.test.ts` gained `signerCertificate`.
+
+### 2026-09-15 — Key rotation continuity client (previousKeys, keyConflicts, resolveKeyConflict, signer_key_changed)
+
+Not committed. Built against the restapi contract being added in parallel. Final full run: 82 files / 978 tests, 100%
+statements/functions/lines, 99.42% branches; `tsc` and `yarn lint` clean.
+
+- **Types (breaking).** `Contact.keyConflict` / `KeyLookupResult.keyConflict` are gone. Now `keyConflicts?: KeyConflict[]`
+  (at most one per useType; `KeyConflict { useType, observedKey: PublicKey, observedAt, source }`),
+  `previousKeys?: PreviousKey[]` (`PreviousKey extends PublicKey { replacedAt, replacement: "automatic" | "user" }`,
+  newest first, <= 5 per useType) and `Contact.rejectedKeys?: RejectedKey[]`. `PublicKey.issuerCertificate?` (base64 DER).
+- **`resolveKeyConflict(mailboxUid, ResolveKeyConflictInput)`** → `POST .../keys/resolve`, body sent field-by-field
+  (`certificate` only when given). 409 → `PinnedKeyChangedError extends ApiRequestError`; 400/403/404 pass through.
+- **Decision: previous keys are trusted signers.** `signingKeyFingerprints(keys, previousKeys?)` (now de-duplicated),
+  `pinnedSigningFingerprintsFor()` and `fetchPinnedSigningFingerprints()` include `previousKeys` of either replacement
+  kind. Same revocation rule as current keys (and the mailbox's own `keys`, which web-client passes through
+  `signingKeyFingerprints()` for mail from its own address).
+- **Contract amendment (same day): revocation reasons.** `PublicKey.revocationReason?: "superseded" | "compromised"`.
+  New exported `isTrustedForVerification(key)`: expired → trusted; revoked + `"superseded"` → trusted; revoked +
+  `"compromised"` or revoked with no reason (legacy) → never trusted. Initially revoked previous keys were never trusted,
+  which would have failed every message signed before a routine rotation. `findActivePublicKey()` (choosing a key to
+  sign/encrypt with) still skips every revoked key, superseded included.
+- **`signerKeyStateFor(contacts, address)` / `fetchSignerKeyState(folderUids, address)`** → `SignerKeyState { pinned, previous,
+  conflict? }` for a key-changed comparison. `pinned` = all sign keys (revoked/expired included, for display), deduped
+  by fingerprint; `previous` sorted by `replacedAt` desc; `conflict` = first sign conflict. Contacts read only, no
+  Discovery; shares paging with `fetchPinnedSigningFingerprints()`.
+- **`signer_key_changed`.** New `SignatureFailureReason`; state stays `signature_failed`. `checkSignerBinding()` returns it
+  when pins were supplied, the signer matches none, a certificate was resolved AND the identity + header checks pass.
+  A pin mismatch that also fails identity/headers (or has no certificate) stays `untrusted_signer`. Only this reason
+  (besides the verified/unverified-signer states) carries `signerCertificate`. No pins at all is still
+  `*_unverified_signer`. Existing tests that expected `untrusted_signer` for a From-naming certificate with a wrong pin
+  were updated to `signer_key_changed`.

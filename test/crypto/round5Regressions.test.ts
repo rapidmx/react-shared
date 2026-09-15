@@ -108,14 +108,15 @@ describe("finding 1: no pin, no verified badge", () => {
         }
     });
 
-    it("is untrusted_signer against the real sender's pin, and signed_verified only for a matching pin", async () => {
-        const { raw, attackerFingerprint } = await forgery();
+    it("is signer_key_changed (never verified) against the real sender's pin, and signed_verified only for a matching pin", async () => {
+        const { attacker, raw, attackerFingerprint } = await forgery();
         const ceo = await generateIdentity("CN=ceo@victim.com");
         const ceoPin = await computeCertFingerprint(ceo.certDer);
         expect(await evaluateMessageSecurity(raw, undefined, [ceoPin])).toMatchObject({
             state: "signature_failed",
-            signatureFailureReason: "untrusted_signer",
+            signatureFailureReason: "signer_key_changed",
             signerFingerprint: attackerFingerprint,
+            signerCertificate: toBase64(attacker.certDer),
         });
         expect((await evaluateMessageSecurity(raw, undefined, [ceoPin, attackerFingerprint.toUpperCase()])).state).toBe("signed_verified");
     });
@@ -148,7 +149,7 @@ describe("finding 1: no pin, no verified badge", () => {
             attachments: [],
         });
         expect((await evaluateMessageSecurity(raw, unlocked, pin)).state).toBe("encrypted_verified");
-        expect((await evaluateMessageSecurity(raw, unlocked, "00ff")).signatureFailureReason).toBe("untrusted_signer");
+        expect((await evaluateMessageSecurity(raw, unlocked, "00ff")).signatureFailureReason).toBe("signer_key_changed");
     });
 
     it("signingKeyFingerprints() keeps unrevoked (even expired) signing keys, lowercased", () => {

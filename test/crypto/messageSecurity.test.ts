@@ -84,7 +84,8 @@ describe("evaluateMessageSecurity", () => {
             const rawMime = assembleOutboundMime(HEADERS, part);
 
             const wrongFingerprint = await computeCertFingerprint(someoneElse.certDer);
-            expect(await evaluateMessageSecurity(rawMime, undefined, wrongFingerprint)).toMatchObject({ state: "signature_failed", signatureFailureReason: "untrusted_signer" });
+            // Alice's certificate still names From, so a pin mismatch is a key change rather than a plain untrusted signer.
+            expect(await evaluateMessageSecurity(rawMime, undefined, wrongFingerprint)).toMatchObject({ state: "signature_failed", signatureFailureReason: "signer_key_changed" });
         });
 
         it("is signed_verified when a pinned fingerprint is supplied and matches the signer", async () => {
@@ -265,23 +266,27 @@ describe("evaluateMessageSecurity", () => {
             expect(await evaluateMessageSecurity(rawMime, unlocked, pin)).toMatchObject({ state: "encrypted_verified", signerCertificate: toBase64(alice.certDer) });
         });
 
-        it("is never set for signature_failed, even when the signature itself was valid", async () => {
-            const alice = await generateTestIdentity("alice@example.com", "sign");
-            const bob = await generateTestIdentity("bob@example.com", "encrypt");
+        it("is never set for signature_failed other than signer_key_changed, even when the signature itself was valid", async () => {
             const mallory = await generateTestIdentity("mallory@example.com", "sign");
-            const wrongPin = await computeCertFingerprint(mallory.certDer);
+            const bob = await generateTestIdentity("bob@example.com", "encrypt");
+            const alice = await generateTestIdentity("alice@example.com", "sign");
+            const pin = await computeCertFingerprint(alice.certDer);
 
-            const signed = assembleOutboundMime(HEADERS, await buildSignedOnlyMessage("text/plain", "Hi.", HEADERS, alice.certDer, alice.privateKey));
-            const signedResult = await evaluateMessageSecurity(signed, undefined, wrongPin);
-            expect(signedResult).toMatchObject({ state: "signature_failed", signatureFailureReason: "untrusted_signer", signerFingerprint: await computeCertFingerprint(alice.certDer) });
+            // Mallory's certificate doesn't name From: with a pin that's untrusted_signer, without one an identity mismatch.
+            const signed = assembleOutboundMime(HEADERS, await buildSignedOnlyMessage("text/plain", "Hi.", HEADERS, mallory.certDer, mallory.privateKey));
+            const signedResult = await evaluateMessageSecurity(signed, undefined, pin);
+            expect(signedResult).toMatchObject({ state: "signature_failed", signatureFailureReason: "untrusted_signer", signerFingerprint: await computeCertFingerprint(mallory.certDer) });
             expect(signedResult).not.toHaveProperty("signerCertificate");
+            const unpinnedResult = await evaluateMessageSecurity(signed, undefined);
+            expect(unpinnedResult).toMatchObject({ state: "signature_failed", signatureFailureReason: "signer_identity_mismatch" });
+            expect(unpinnedResult).not.toHaveProperty("signerCertificate");
 
             const encrypted = assembleOutboundMime(
                 HEADERS,
-                await buildEncryptedMessage("text/plain", "Secret.", HEADERS, HEADERS, [bob.certDer], { certDer: alice.certDer, privateKey: alice.privateKey }),
+                await buildEncryptedMessage("text/plain", "Secret.", HEADERS, HEADERS, [bob.certDer], { certDer: mallory.certDer, privateKey: mallory.privateKey }),
             );
-            const encryptedResult = await evaluateMessageSecurity(encrypted, { encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer }, wrongPin);
-            expect(encryptedResult).toMatchObject({ state: "signature_failed", signerFingerprint: await computeCertFingerprint(alice.certDer) });
+            const encryptedResult = await evaluateMessageSecurity(encrypted, { encryptionPrivateKey: bob.privateKey, encryptionCertDer: bob.certDer }, pin);
+            expect(encryptedResult).toMatchObject({ state: "signature_failed", signatureFailureReason: "untrusted_signer", signerFingerprint: await computeCertFingerprint(mallory.certDer) });
             expect(encryptedResult).not.toHaveProperty("signerCertificate");
 
             const tampered = signed.replace(Buffer.from("Hi.").toString("base64"), Buffer.from("Yo.").toString("base64"));

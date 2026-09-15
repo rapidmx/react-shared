@@ -28,6 +28,13 @@ export interface PublicKey {
     notAfter: number;
     /** UTC timestamp (epoch ms) at which this key was revoked, if applicable. */
     revokedAt?: number;
+    /** Why the key was revoked, alongside `revokedAt`: `"superseded"` for a routine rotation (the key is only retired,
+     * so mail it signed stays verifiable), `"compromised"` for a key that must not be trusted. A revoked key with no
+     * reason (legacy data) is treated as compromised - see `isTrustedForVerification()`. */
+    revocationReason?: "superseded" | "compromised";
+    /** Base64-encoded DER X.509 certificate of this key's direct issuer, when known. restapi uses it to recognize a
+     * same-CA renewal (see `PreviousKey.replacement`); a UI can show it in a key-changed comparison. */
+    issuerCertificate?: string;
 }
 
 /** A private key encrypted under the mailbox's master key (MK). Mirrors `@rapidmx/restapi`'s
@@ -67,10 +74,35 @@ export interface EncryptionPreference {
     preferEncrypt: "mutual" | "nopreference";
 }
 
+/** A newly observed key that differs from a contact's pinned key of the same `useType` - restapi records it instead of
+ * silently replacing the pin (the spec's Key Conflict Handling) until the user resolves it with `resolveKeyConflict()`.
+ * A contact holds at most one per `useType`. Mirrors `@rapidmx/restapi`'s `KeyConflict`. */
 export interface KeyConflict {
-    observedFingerprint: string;
+    useType: "sign" | "encrypt";
+    /** The key that was observed, in full, so a UI can compare it with the pinned one. */
+    observedKey: PublicKey;
+    /** UTC timestamp (epoch ms) at which the key was observed. */
     observedAt: number;
+    /** Where it was observed: an incoming message's key header, or server-side Discovery. */
     source: "header" | "discovery";
+}
+
+/** A contact key that used to be pinned and was replaced - newest first, at most 5 per `useType` on a contact.
+ * `replacement` says how: `"automatic"` when restapi replaced an expired or revoked pinned key with one from the same
+ * CA issuer, `"user"` when the user accepted a key conflict. Mirrors `@rapidmx/restapi`'s `PreviousKey`. */
+export interface PreviousKey extends PublicKey {
+    /** UTC timestamp (epoch ms) at which this key stopped being the pinned one. */
+    replacedAt: number;
+    replacement: "automatic" | "user";
+}
+
+/** A key the user rejected when resolving a conflict, remembered so the same key isn't raised again. Mirrors an entry
+ * of `@rapidmx/restapi`'s `Contact.rejectedKeys`. */
+export interface RejectedKey {
+    useType: "sign" | "encrypt";
+    fingerprint: string;
+    /** UTC timestamp (epoch ms) at which the key was rejected. */
+    rejectedAt: number;
 }
 
 /** The wire shape `GET`/`POST`/`PUT`/`DELETE` `/mail/mailboxes/:id/keyvault*` return. */
@@ -100,7 +132,9 @@ export function getKeyVault(mailboxUid: string): Promise<KeyVault> {
 /** The most recently issued, currently-valid (non-revoked, non-expired) published key of the given use
  * type — the one that should actually be used to sign/encrypt going forward. A mailbox or contact may
  * have several of the same `useType` on file after a rotation; older ones are kept for decrypting old
- * mail, never removed, per the spec's own key-lifecycle rules. Shared by `crypto/keySession.ts` (the
+ * mail, never removed, per the spec's own key-lifecycle rules. Every revoked key is skipped, whatever its
+ * `revocationReason` - a superseded key may still verify old mail (`isTrustedForVerification()`) but is never used for
+ * new mail. Shared by `crypto/keySession.ts` (the
  * mailbox's own keys) and `crypto/composeSecurity.ts` (a recipient's discovered keys). */
 export function findActivePublicKey(keys: PublicKey[], useType: "sign" | "encrypt"): PublicKey | undefined {
     const now = Date.now();
@@ -109,12 +143,37 @@ export function findActivePublicKey(keys: PublicKey[], useType: "sign" | "encryp
         .sort((a, b) => b.notBefore - a.notBefore)[0];
 }
 
-/** The fingerprints (lowercased) of every signing key in `keys` that hasn't been revoked - the trusted pins to pass
- * to `messageSecurity.ts`'s `evaluateMessageSecurity()` for a `Contact` (its TOFU-pinned `keys`, which only key
- * discovery can write) or a `Mailbox` (its own `keys`). Expired keys are kept: mail signed while a key was valid
- * stays verifiable after it expires. */
-export function signingKeyFingerprints(keys: PublicKey[] | undefined): string[] {
-    return (keys ?? []).filter((key) => key.useType === "sign" && !key.revokedAt).map((key) => key.fingerprint.toLowerCase());
+/**
+ * Whether `key` may still be trusted to *verify* existing signatures - never whether to sign or encrypt with it (that is
+ * `findActivePublicKey()`, which skips every revoked key). Expired keys are trusted: mail signed while a key was valid
+ * stays verifiable after it expires. A key revoked with `revocationReason: "superseded"` (a routine rotation) is trusted
+ * for the same reason. A key revoked as `"compromised"`, or revoked with no reason (legacy data, treated as
+ * compromised), is never trusted, because a message's claimed signing time can't show it was signed before the
+ * compromise.
+ */
+export function isTrustedForVerification(key: PublicKey): boolean {
+    return !key.revokedAt || key.revocationReason === "superseded";
+}
+
+/**
+ * The fingerprints (lowercased, de-duplicated) of every signing key in `keys` and `previousKeys` that is still trusted
+ * for verification (`isTrustedForVerification()`) - the trusted pins to pass to `messageSecurity.ts`'s
+ * `evaluateMessageSecurity()` for a `Contact` (its TOFU-pinned `keys` plus its `previousKeys`, which only key
+ * discovery, "trust this signer" and conflict resolution write) or a `Mailbox` (its own `keys`, so the user's own mail
+ * signed before their rotation still verifies).
+ *
+ * Key rotation continuity: a `PreviousKey` was pinned before it was replaced - by the user accepting a conflict
+ * (`replacement: "user"`) or by restapi's same-issuer renewal of an expired or revoked key (`"automatic"`, which moves
+ * the superseded key here with `revocationReason: "superseded"`) - so it is trusted for verification exactly like a
+ * current pin, and mail it signed before the rotation still verifies. Both replacement kinds are trusted alike, and the
+ * revocation rule is the same for current and previous keys: expired and superseded keys are trusted, compromised and
+ * reasonless revoked keys are not.
+ */
+export function signingKeyFingerprints(keys: PublicKey[] | undefined, previousKeys?: PreviousKey[]): string[] {
+    const fingerprints = [...(keys ?? []), ...(previousKeys ?? [])]
+        .filter((key) => key.useType === "sign" && isTrustedForVerification(key))
+        .map((key) => key.fingerprint.toLowerCase());
+    return [...new Set(fingerprints)];
 }
 
 export interface EnrollKeyInput extends ExpectedMasterKeyGeneration {
@@ -286,11 +345,15 @@ export function rekey(mailboxUid: string, input: RekeyInput): Promise<KeyVault> 
     });
 }
 
-/** The wire shape `GET /mail/mailboxes/:id/keys/lookup` returns. */
+/** The wire shape `GET /mail/mailboxes/:id/keys/lookup`, `POST .../keys/trust` and `POST .../keys/resolve` return: the
+ * contact's resulting key state. */
 export interface KeyLookupResult {
     keys: PublicKey[];
     encryptPreference?: EncryptionPreference;
-    keyConflict?: KeyConflict;
+    /** Unresolved key conflicts, at most one per `useType` - see `resolveKeyConflict()`. */
+    keyConflicts?: KeyConflict[];
+    /** Keys that were pinned before, newest first - see `PreviousKey`. */
+    previousKeys?: PreviousKey[];
 }
 
 /** Server-side Discovery: the server itself performs the `_rapidmx` DNS lookup and remote key-endpoint
@@ -337,6 +400,65 @@ export async function trustSigner(mailboxUid: string, input: TrustSignerInput): 
     } catch (err) {
         if (err instanceof ApiRequestError && err.status === 409) {
             throw new SignerKeyConflictError(err.message, err.code);
+        }
+        throw err;
+    }
+}
+
+/** What `resolveKeyConflict()` sends to `POST /mail/mailboxes/:id/keys/resolve`. */
+export interface ResolveKeyConflictInput {
+    /** The contact's email address. */
+    address: string;
+    /** Which pinned key's conflict to resolve. */
+    useType: "sign" | "encrypt";
+    /** `"accept"` pins the new key and moves the old one into `previousKeys` (`replacement: "user"`); `"reject"` keeps
+     * the pinned key and remembers the rejected fingerprint in `Contact.rejectedKeys`. */
+    action: "accept" | "reject";
+    /** The fingerprint of the pinned key the user was shown. restapi refuses with `409` (`PinnedKeyChangedError`) when
+     * the pinned key is no longer this one, so a decision made against a stale comparison is never applied. */
+    expectedPinnedFingerprint: string;
+    /** For `"accept"`: base64 DER of the certificate to pin (e.g. `MessageSecurityResult.signerCertificate` of a
+     * `signer_key_changed` result). Omitted, restapi pins the recorded conflict's `observedKey`. */
+    certificate?: string;
+}
+
+/** The contact's resulting key state after `resolveKeyConflict()`. */
+export type ResolveKeyConflictResult = KeyLookupResult;
+
+/**
+ * Thrown by `resolveKeyConflict()` when restapi answers `409`: the contact's pinned key is no longer
+ * `expectedPinnedFingerprint` (another device or an automatic renewal changed it meanwhile). Still an `ApiRequestError`
+ * (`status` 409). A UI should reload the key state and ask again rather than retry.
+ */
+export class PinnedKeyChangedError extends ApiRequestError {
+    constructor(message: string, code?: string) {
+        super(message, 409, code);
+        this.name = "PinnedKeyChangedError";
+    }
+}
+
+/**
+ * Resolves a contact's key conflict (`POST /mail/mailboxes/:id/keys/resolve`) - see `ResolveKeyConflictInput` for what
+ * each action does. Resolves with the contact's resulting key state. Rejects with `PinnedKeyChangedError` on `409`, and
+ * a plain `ApiRequestError` for `400` (an invalid body or certificate), `403` (no rights) and `404` (no such contact, no
+ * pinned key, or no recorded conflict when one is needed).
+ */
+export async function resolveKeyConflict(mailboxUid: string, input: ResolveKeyConflictInput): Promise<ResolveKeyConflictResult> {
+    const body = {
+        address: input.address,
+        useType: input.useType,
+        action: input.action,
+        expectedPinnedFingerprint: input.expectedPinnedFingerprint,
+        ...(input.certificate !== undefined ? { certificate: input.certificate } : {}),
+    };
+    try {
+        return await apiFetch<ResolveKeyConflictResult>(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/resolve`, {
+            method: "POST",
+            body: JSON.stringify(body),
+        });
+    } catch (err) {
+        if (err instanceof ApiRequestError && err.status === 409) {
+            throw new PinnedKeyChangedError(err.message, err.code);
         }
         throw err;
     }

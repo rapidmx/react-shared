@@ -24,6 +24,12 @@ release.
   - Detached signatures that carry their own content are rejected.
   - Only AES-GCM encrypted content is decrypted.
   - Duplicate From, To, Cc or Sender headers count as tampering.
+- **Key conflicts and pinned-key mismatches:**
+  - `Contact.keyConflict` and `KeyLookupResult.keyConflict` are replaced by `keyConflicts` (at most one `KeyConflict`
+    per use type, carrying the full `observedKey`).
+  - A signature from a pinned sender whose certificate names them and passes the header checks, but matches no pinned
+    key, is now `signature_failed` with reason `signer_key_changed` (was `untrusted_signer`), and carries
+    `signerCertificate`. `untrusted_signer` remains for a pin mismatch that also fails those checks.
 - **Unlock:**
   - `unlockWithPassword()` resolves `{ unopenableKeys }`: a signing key that won't open is skipped.
   - An encryption key that won't open rejects with `UnopenableEncryptionKeyError`.
@@ -61,6 +67,21 @@ release.
   read pinned keys without triggering key discovery.
 - **Verification results** expose `protectedHeaders` and the `attachments` found inside the signed or encrypted content
   (`extractAttachments()`, `MimeAttachment`).
+
+### Key rotation continuity
+
+- **`resolveKeyConflict(mailboxUid, { address, useType, action, expectedPinnedFingerprint, certificate? })`** accepts or
+  rejects a contact's key conflict. It throws `PinnedKeyChangedError` when the pinned key changed meanwhile. Needs the
+  next restapi release.
+- **Previous keys:** `Contact.previousKeys` and `KeyLookupResult.previousKeys` (`PreviousKey`), `Contact.rejectedKeys`,
+  `PublicKey.issuerCertificate` and `PublicKey.revocationReason` (`"superseded"` or `"compromised"`). Previous signing
+  keys count as trusted signers in `signingKeyFingerprints()`, `pinnedSigningFingerprintsFor()` and
+  `fetchPinnedSigningFingerprints()`, so mail signed before a rotation still verifies.
+- **Revocation reasons:** a key revoked as `superseded` (a routine rotation), whether pinned, previous or the mailbox's
+  own, is still trusted to verify mail it signed (`isTrustedForVerification()`). A key revoked as `compromised`, or
+  revoked with no reason, is never trusted. `findActivePublicKey()` still skips every revoked key.
+- **`fetchSignerKeyState(folderUids, address)`** and **`signerKeyStateFor(contacts, address)`** return the pinned and
+  previous signing keys and any signing-key conflict, for a key-changed comparison, without triggering key discovery.
 
 ### Plugins and mailboxes
 
