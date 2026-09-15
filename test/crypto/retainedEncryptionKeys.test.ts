@@ -25,7 +25,6 @@ import {
     unlockWithPassword,
     unlockWithRecoveryCode,
 } from "../../src/crypto/keySession.js";
-import { rewrapPrivateKeysUnderNewMasterKey } from "../../src/crypto/keyRotation.js";
 import { type KeyVault, type MasterKeyWrap, type PublicKey, type WrappedPrivateKey, findActivePublicKey } from "../../src/crypto/keyvaultApi.js";
 import { buildAad, generateMasterKey, sealWithKey } from "../../src/crypto/masterKey.js";
 import { buildRecoveryWraps } from "../../src/crypto/masterKeyWraps.js";
@@ -261,10 +260,6 @@ describe("unlock opens retained encryption keys", () => {
         const unlocked = getUnlockedKeys(MAILBOX_UID)!;
         expect(unlocked.encryptionFingerprint).toBe("fp-active");
         expect("retainedEncryptionKeys" in unlocked).toBe(false);
-
-        // Rotation still only rewraps the active keys it always did.
-        const rewrapped = await rewrapPrivateKeysUnderNewMasterKey(MAILBOX_UID, unlocked);
-        expect(rewrapped.wrappedKeys.map((k) => k.fingerprint)).toEqual(["fp-active"]);
     });
 
     it(`opens at most the ${MAX_RETAINED_ENCRYPTION_KEYS} most recent retained keys`, async () => {

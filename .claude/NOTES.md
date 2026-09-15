@@ -803,3 +803,51 @@ Not committed. Final full run: 83 files / 1003 tests, 100% statements/functions/
   `test/crypto/retainedEncryptionKeys.test.ts` (unlock x2 methods, skip+report, bound via pkcs8 import count, lock mid-open,
   destroy, superseded/compromised decrypt, issuer-serial / SKI / RSA KeyTrans matching with a `decrypt` spy, reissued-cert
   trial, KEK slots, both bounds, single-key behaviour).
+
+### 2026-09-15 — Verification seals; removed `rewrapPrivateKeysUnderNewMasterKey()`
+
+Not committed. Built against the restapi contract being added in parallel (`Message.verificationSeal?` +
+`verificationSealGeneration?`, `PUT /mail/messages/:id/verification-seal` `{ seal, masterKeyGeneration }`: 200
+set/identical/replaced, 409 different and not replaceable, 400 invalid, 403). Final full run (after the amendment): 83 files / 1029 tests, 100% statements/functions/lines, 99.49% branches; `tsc` and
+`yarn lint` clean.
+
+- **Why.** Verification is client-side, so later key events (pins replaced beyond `previousKeys`, a deleted contact,
+  a later revocation) turned mail that verified into "unverified"/"key changed". A seal records the first verification.
+- **`src/crypto/verificationSeal.ts`.** Seal key = `hkdfDerive(masterKey, "rapidmx-verification-seal-v1" salt,
+  "rapidmx:verification-seal:v1:<mailboxUid>")` (same pattern as web-client's `localIndexKey.ts`), imported as a
+  non-extractable HMAC key, raw bytes zeroed, never cached (so nothing to destroy; `destroyed` checked on entry and after
+  the derivation, zeroed MK throws via `hkdfDerive()`). Format `v1.<b64url JSON {v,mb,id,h,fp,st,t}>.<b64url 32-byte
+  tag>`; the tag covers length-prefixed (u32 BE) UTF-8 fields `v1, mailboxUid, messageUid, rawSha256, fingerprint, state,
+  verifiedAt` - not the JSON text. `h`/`fp` lowercased. Open computes the tag over the caller's uids + payload fields,
+  constant-time compares, then also checks payload uids and hash. Malformed anything → `undefined`; destroyed →
+  `KeysLockedError` even for garbage. Build throws plain `Error` for bad input or > 2048 chars.
+  `rawMimeSha256(string | Uint8Array)` uses `binaryStringToBytes()` (UTF-8 for a non-binary string).
+- **`evaluateMessageSecurityWithSeal()`** (in `messageSecurity.ts`; `evaluateMessageSecurity()` now delegates to a private
+  `evaluateLive()` returning `{ result, kind, signedContent? }` - public output unchanged). `signedContent` exists because a
+  signed-only `signer_key_changed` result carries no body publicly. Rules: live verified + no seal that opens → `sealToWrite`
+  (a stored seal that doesn't open still gets one; the PUT will 409, caller ignores). Key-status failures only
+  (`signer_key_changed`, `*_unverified_signer`) + seal opens + same fingerprint + state matching the message kind →
+  `verified_at_first_open` with `verifiedAt`, `sealedState`, `liveState`, `liveSignatureFailureReason`, content,
+  `laterCompromised` (from caller `signerKeys: PublicKey[]` - a record with that fingerprint failing
+  `isTrustedForVerification()`). `headerTamperDetected` blocks both writing and honouring. `unlocked` undefined → seals
+  ignored. Destroyed `unlocked` → `KeysLockedError`; a non-lock build failure just omits `sealToWrite`.
+- **Contract amendment (same day): generation-bound seals.** `VerificationSealInput`/`OpenedVerificationSeal` gain
+  `masterKeyGeneration`; payload `g`; MAC fields are now `v1, mailboxUid, messageUid, generation, rawSha256,
+  fingerprint, state, verifiedAt`. `openVerificationSeal(..., rawSha256, expectedMasterKeyGeneration?)` refuses another
+  generation explicitly. `VerificationSealOptions` gains required `masterKeyGeneration` (vault's current, `?? 0`) and
+  `sealGeneration?` (`Message.verificationSealGeneration`); the stored seal is opened with the current generation.
+  `sealToWrite` became `{ seal, masterKeyGeneration }` (chosen over a sibling `sealGenerationToWrite` so the two can't
+  be separated), written when live verified and (no seal opens OR `sealGeneration < masterKeyGeneration`).
+  **Decision:** seals are not carried across a rekey - an old-generation seal never opens under the new MK - so a
+  rotation after a suspected compromise can't bless seals written with the old key; messages re-seal lazily on their
+  next live verification. Server replaces a stored seal only when stored generation < current and request generation ==
+  current, else 409.
+- **`mailApi.ts`:** `Message.verificationSeal?`, `Message.verificationSealGeneration?`,
+  `setMessageVerificationSeal(messageUid, seal, masterKeyGeneration)` (body `{ seal, masterKeyGeneration }`),
+  `VerificationSealConflictError`.
+- **Removed `keyRotation.ts`** (`rewrapPrivateKeysUnderNewMasterKey()`, `RewrappedPrivateKeys`) and its test: no callers in
+  web-client/electron-client/server (grepped), and with retained keys it would drop wraps under `rekey()`. The active
+  session private keys are still imported extractable (comment updated) - nothing in the repos exports them any more, so
+  making them non-extractable is a possible follow-up.
+- **web-client follow-up:** `MessageDetailPane.tsx`'s `SECURITY_INDICATOR` is a `Record<state, ...>` and needs a
+  `verified_at_first_open` entry once it upgrades; it should also switch to the seal-aware evaluator and store `sealToWrite`.

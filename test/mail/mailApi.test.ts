@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
-import { configureApiBaseUrl } from "../../src/util/api.js";
+import { ApiRequestError, configureApiBaseUrl } from "../../src/util/api.js";
 import {
     approveReceipt,
     archiveMessage,
@@ -41,6 +41,8 @@ import {
     setMessageLabels,
     setMessageRead,
     setMessageRequestReceipt,
+    setMessageVerificationSeal,
+    VerificationSealConflictError,
     stopImpersonating,
     updateFolder,
     updateMailbox,
@@ -511,6 +513,45 @@ describe("setMessageRequestReceipt", () => {
             "/api/mail/messages/m1",
             expect.objectContaining({ method: "PUT", body: JSON.stringify({ uid: "m1", version: 0, requestReceipt: true }) }),
         );
+    });
+});
+
+describe("setMessageVerificationSeal", () => {
+    const seal = "v1.eyJ2IjoxfQ.AAAA";
+
+    it("PUTs { seal, masterKeyGeneration } to the encoded message's verification-seal route and returns the message", async () => {
+        const updated = { ...message, verificationSeal: seal, verificationSealGeneration: 2 };
+        const fetchMock = mockFetch(() => jsonResponse(200, updated));
+        const result = await setMessageVerificationSeal("m/1", seal, 2);
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/messages/m%2F1/verification-seal",
+            expect.objectContaining({ method: "PUT", body: JSON.stringify({ seal, masterKeyGeneration: 2 }) }),
+        );
+        expect(result).toEqual(updated);
+    });
+
+    it("maps a 409 to VerificationSealConflictError (still an ApiRequestError with status 409)", async () => {
+        mockFetch(() => jsonResponse(409, { message: "A different seal is stored.", code: "CONFLICT" }));
+        const err = await setMessageVerificationSeal("m1", seal, 0).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(VerificationSealConflictError);
+        expect(err).toBeInstanceOf(ApiRequestError);
+        expect(err).toMatchObject({ name: "VerificationSealConflictError", status: 409, message: "A different seal is stored.", code: "CONFLICT" });
+    });
+
+    it.each([400, 403])("rethrows a %i as a plain ApiRequestError", async (status) => {
+        mockFetch(() => jsonResponse(status, { message: "nope" }));
+        const err = await setMessageVerificationSeal("m1", seal, 0).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(ApiRequestError);
+        expect(err).not.toBeInstanceOf(VerificationSealConflictError);
+        expect((err as ApiRequestError).status).toBe(status);
+    });
+
+    it("rethrows a non-API failure unchanged", async () => {
+        const boom = new TypeError("network down");
+        mockFetch(() => {
+            throw boom;
+        });
+        await expect(setMessageVerificationSeal("m1", seal, 0)).rejects.toBe(boom);
     });
 });
 

@@ -41,13 +41,24 @@ import { DisplayBody, MimeAttachment, MimeHeaderField, decodeHeaderText, extract
 import { toBase64 } from "./encoding.js";
 import { computeCertFingerprint, extractCertificateEmails } from "./smime.js";
 import { ComparableOuterHeaders, ProtectedHeaders, parseEncryptedMessageWithKeys, parseSignedOnlyMessage } from "./smimeMessage.js";
+import { type PublicKey, isTrustedForVerification } from "./keyvaultApi.js";
+import { KeysLockedError } from "./masterKey.js";
+import { type SealKeyMaterial, type SealedVerificationState, buildVerificationSeal, openVerificationSeal, rawMimeSha256 } from "./verificationSeal.js";
 
 export { signingKeyFingerprints } from "./keyvaultApi.js";
 
 
 /** `"signed_unverified_signer"`/`"encrypted_unverified_signer"`: the signature is valid and its certificate
  * names the sender, but the certificate isn't one the reader trusts (no pinned key matched) - see this module's
- * doc comment. The encrypted variant's content was decrypted like `"encrypted_verified"`'s. */
+ * doc comment. The encrypted variant's content was decrypted like `"encrypted_verified"`'s.
+ *
+ * `"verified_at_first_open"`: only ever returned by `evaluateMessageSecurityWithSeal()`. The live check now fails only
+ * because of the signer key's status (`signer_key_changed`, or `*_unverified_signer` - the pins are gone or no longer
+ * trust the key), but the message carries a valid verification seal (`verificationSeal.ts`) for this exact raw MIME and
+ * this same signer certificate, recording that it verified when first opened. The result carries `verifiedAt`,
+ * `sealedState`, `signerFingerprint`, the recovered content, `liveState`/`liveSignatureFailureReason`, and
+ * `laterCompromised` when the signer key has since been revoked as compromised. A UI should show it as "verified when
+ * first opened" - distinct from the live verified states, and with a warning when `laterCompromised` is set. */
 export type MessageSecurityState =
     | "encrypted"
     | "signed_verified"
@@ -55,6 +66,7 @@ export type MessageSecurityState =
     | "signed_unverified_signer"
     | "encrypted_unverified_signer"
     | "signature_failed"
+    | "verified_at_first_open"
     | "unprotected";
 
 /** Why a message is `"signature_failed"`. `invalid_signature`: the CMS signature itself is malformed or
@@ -131,6 +143,29 @@ export interface MessageSecurityResult {
      * other `"signature_failed"`, even when its signature itself was valid (a failed binding is not something to offer
      * trusting). */
     signerCertificate?: string;
+    /** Only from `evaluateMessageSecurityWithSeal()`: a seal for a live `"signed_verified"`/`"encrypted_verified"` result
+     * when no stored seal opens under the current master key generation, or the stored seal is from an older generation.
+     * Persist it best effort with `mailApi.ts`'s `setMessageVerificationSeal(messageUid, sealToWrite.seal,
+     * sealToWrite.masterKeyGeneration)` (a `VerificationSealConflictError` means the server kept the stored seal - ignore
+     * it). */
+    sealToWrite?: SealToWrite;
+    /** For `"verified_at_first_open"`: when the sealed verification happened (epoch ms). */
+    verifiedAt?: number;
+    /** For `"verified_at_first_open"`: the verified state the seal recorded. */
+    sealedState?: SealedVerificationState;
+    /** For `"verified_at_first_open"`: the live state the seal overrode (`"signature_failed"` or `*_unverified_signer`). */
+    liveState?: MessageSecurityState;
+    /** For `"verified_at_first_open"` over a live `"signature_failed"`: its reason (always `"signer_key_changed"`). */
+    liveSignatureFailureReason?: SignatureFailureReason;
+    /** For `"verified_at_first_open"`: `true` when the caller's `signerKeys` show the signer key is now revoked as
+     * compromised (or revoked with no reason) - the seal proves it verified then, not that the key was safe then. */
+    laterCompromised?: boolean;
+}
+
+/** A seal for the caller to store, with the master key generation it was written under. */
+export interface SealToWrite {
+    seal: string;
+    masterKeyGeneration: number;
 }
 
 function isSignedOnlyContentType(contentTypeValue: string): boolean {
@@ -281,21 +316,39 @@ function checkIdentityAndHeaders(input: SignerBindingInput, certDer: Uint8Array)
  */
 export async function evaluateMessageSecurity(
     rawMime: string,
-    unlocked:
-        | {
-              encryptionPrivateKey?: CryptoKey;
-              encryptionCertDer?: Uint8Array;
-              retainedEncryptionKeys?: { certDer: Uint8Array; privateKey: CryptoKey }[];
-              signingFingerprint?: string;
-          }
-        | undefined,
+    unlocked: MessageSecurityKeys | undefined,
     pinnedSignerFingerprints?: string | string[],
     readerAddress?: string,
 ): Promise<MessageSecurityResult> {
+    return (await evaluateLive(rawMime, unlocked, pinnedSignerFingerprints, readerAddress)).result;
+}
+
+/** The keys `evaluateMessageSecurity()` reads from an unlocked session (`keySession.ts`'s `UnlockedKeys`). */
+export interface MessageSecurityKeys {
+    encryptionPrivateKey?: CryptoKey;
+    encryptionCertDer?: Uint8Array;
+    retainedEncryptionKeys?: { certDer: Uint8Array; privateKey: CryptoKey }[];
+    signingFingerprint?: string;
+}
+
+/** `evaluateMessageSecurity()`'s result plus what the seal-aware wrapper needs: which kind of protected message it was,
+ * and a signed-only message's verified content, which a `signer_key_changed` result doesn't carry publicly. */
+interface LiveEvaluation {
+    result: MessageSecurityResult;
+    kind: "signed" | "encrypted" | "other";
+    signedContent?: Partial<MessageSecurityResult>;
+}
+
+async function evaluateLive(
+    rawMime: string,
+    unlocked: MessageSecurityKeys | undefined,
+    pinnedSignerFingerprints: string | string[] | undefined,
+    readerAddress: string | undefined,
+): Promise<LiveEvaluation> {
     const { headers, body, fields } = parseMimeEntity(rawMime);
     const rawContentType = headers["content-type"];
     if (!rawContentType) {
-        return { state: "unprotected" };
+        return { result: { state: "unprotected" }, kind: "other" };
     }
     const contentType = parseParameterizedHeader(rawContentType);
     const callerPins = normalizePins(pinnedSignerFingerprints);
@@ -362,20 +415,22 @@ export async function evaluateMessageSecurity(
     if (isSignedOnlyContentType(contentType.value)) {
         const parsed = await parseSignedOnlyMessage(rawContentType, body);
         if (!parsed.verified) {
-            return { state: "signature_failed", signatureFailureReason: "invalid_signature" };
+            return { result: { state: "signature_failed", signatureFailureReason: "invalid_signature" }, kind: "signed" };
         }
         const { failure, trusted, signer, acceptedSigner } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, true);
-        if (failure) {
-            return { state: "signature_failed", signatureFailureReason: failure, ...(failure === "signer_key_changed" ? acceptedSigner : signer) };
-        }
-        return {
-            state: trusted ? "signed_verified" : "signed_unverified_signer",
+        const content = {
             ...renderDisplayBody(parsed.displayBody),
             subject: parsed.protectedHeaders?.subject || undefined,
             ...exposedHeaders(parsed.protectedHeaders),
             attachments: parsed.attachments,
-            ...acceptedSigner,
-            ...addressing(parsed.protectedHeaders),
+        };
+        if (failure) {
+            const result: MessageSecurityResult = { state: "signature_failed", signatureFailureReason: failure, ...(failure === "signer_key_changed" ? acceptedSigner : signer) };
+            return { result, kind: "signed", ...(failure === "signer_key_changed" ? { signedContent: { ...content, ...addressing(parsed.protectedHeaders) } } : {}) };
+        }
+        return {
+            result: { state: trusted ? "signed_verified" : "signed_unverified_signer", ...content, ...acceptedSigner, ...addressing(parsed.protectedHeaders) },
+            kind: "signed",
         };
     }
 
@@ -387,11 +442,11 @@ export async function evaluateMessageSecurity(
             ...(unlocked?.retainedEncryptionKeys ?? []).map(({ certDer, privateKey }) => ({ certDer, privateKey })),
         ];
         if (keys.length === 0) {
-            return { state: "encrypted", decryptError: NO_KEY_ERROR };
+            return { result: { state: "encrypted", decryptError: NO_KEY_ERROR }, kind: "encrypted" };
         }
         const parsed = await parseEncryptedMessageWithKeys(body, keys, actualOuterHeaders);
         if (!parsed.decrypted) {
-            return { state: "encrypted", decryptError: parsed.unsupportedContentEncryption ? UNSUPPORTED_ENCRYPTION_ERROR : NO_KEY_ERROR };
+            return { result: { state: "encrypted", decryptError: parsed.unsupportedContentEncryption ? UNSUPPORTED_ENCRYPTION_ERROR : NO_KEY_ERROR }, kind: "encrypted" };
         }
         const content = {
             ...renderDisplayBody(parsed.displayBody),
@@ -402,17 +457,144 @@ export async function evaluateMessageSecurity(
             ...addressing(parsed.protectedHeaders),
         };
         if (parsed.signatureVerified === undefined) {
-            return { state: "encrypted", ...content };
+            return { result: { state: "encrypted", ...content }, kind: "encrypted" };
         }
         if (!parsed.signatureVerified) {
-            return { state: "signature_failed", signatureFailureReason: "invalid_signature", ...content };
+            return { result: { state: "signature_failed", signatureFailureReason: "invalid_signature", ...content }, kind: "encrypted" };
         }
         const { failure, trusted, signer, acceptedSigner } = await checkSigner(parsed.signerCertificateDer, parsed.protectedHeaders, parsed.protectedHeaderFields, false);
         if (failure) {
-            return { state: "signature_failed", signatureFailureReason: failure, ...content, ...(failure === "signer_key_changed" ? acceptedSigner : signer) };
+            return { result: { state: "signature_failed", signatureFailureReason: failure, ...content, ...(failure === "signer_key_changed" ? acceptedSigner : signer) }, kind: "encrypted" };
         }
-        return { state: trusted ? "encrypted_verified" : "encrypted_unverified_signer", ...content, ...acceptedSigner };
+        return { result: { state: trusted ? "encrypted_verified" : "encrypted_unverified_signer", ...content, ...acceptedSigner }, kind: "encrypted" };
     }
 
-    return { state: "unprotected" };
+    return { result: { state: "unprotected" }, kind: "other" };
+}
+
+/** Options for `evaluateMessageSecurityWithSeal()`. */
+export interface VerificationSealOptions {
+    mailboxUid: string;
+    messageUid: string;
+    /** The message's stored `Message.verificationSeal`, if any. */
+    seal?: string;
+    /** The vault's current `KeyVault.masterKeyGeneration` (`0` when it reports none): the generation a stored seal must
+     * carry to be honoured, and the one a new `sealToWrite` is written under. */
+    masterKeyGeneration: number;
+    /** The message's stored `Message.verificationSealGeneration`, if any. When it is older than `masterKeyGeneration`, a
+     * live verified message is re-sealed (after a `rekey()`). */
+    sealGeneration?: number;
+    /** The signer's key records the caller knows about, to tell whether the sealed signer key has since been revoked as
+     * compromised: e.g. `[...state.pinned, ...state.previous]` from `contactsApi.ts`'s `fetchSignerKeyState()` for the
+     * sender, plus the mailbox's own `keys` for mail from its own address. A record whose fingerprint equals the signer's
+     * and fails `isTrustedForVerification()` sets `laterCompromised`. Omitted, `laterCompromised` is never set. */
+    signerKeys?: readonly PublicKey[];
+    /** The `verifiedAt` recorded in a new `sealToWrite`. Defaults to `Date.now()`. */
+    now?: number;
+}
+
+const LIVE_VERIFIED_STATES: readonly MessageSecurityState[] = ["signed_verified", "encrypted_verified"];
+
+/** Whether a live result failed only because of the signer key's status - the cases a seal may override. Every other
+ * failure (an invalid signature, identity or header mismatch, `untrusted_signer`, HP-Outer tampering) never is. */
+function failedOnlyOnKeyStatus(result: MessageSecurityResult): boolean {
+    if (result.headerTamperDetected) {
+        return false;
+    }
+    return (
+        result.state === "signed_unverified_signer" ||
+        result.state === "encrypted_unverified_signer" ||
+        (result.state === "signature_failed" && result.signatureFailureReason === "signer_key_changed")
+    );
+}
+
+/**
+ * `evaluateMessageSecurity()` with verification seals (`verificationSeal.ts`). The live evaluation always runs first,
+ * with the same arguments; then:
+ *
+ * **Live verified** (`"signed_verified"`/`"encrypted_verified"`, no HP-Outer tampering), and either no seal opens for this
+ * mailbox, message, raw MIME and `options.masterKeyGeneration`, or `options.sealGeneration` is older than
+ * `options.masterKeyGeneration`: the result gains `sealToWrite` (`{ seal, masterKeyGeneration }`), sealing the live
+ * `signerFingerprint` and state at `options.now` under the current generation. The caller persists it best effort
+ * (`setMessageVerificationSeal()`). This is how messages are re-sealed, lazily, after a `rekey()`: seals are never
+ * carried across a master key rotation (see `verificationSeal.ts`).
+ *
+ * **Live failure caused only by key status** (`signer_key_changed`, `signed_unverified_signer`,
+ * `encrypted_unverified_signer` - which also covers a signer key since revoked, since `signingKeyFingerprints()` drops
+ * such pins): when the seal opens, its `signerFingerprint` equals the live one and its state matches the message kind
+ * (signed-only vs. encrypted), the result is `"verified_at_first_open"` with `verifiedAt`, `sealedState`,
+ * `signerFingerprint`, the recovered content (for a signed-only `signer_key_changed` message too), `liveState`,
+ * `liveSignatureFailureReason` and `laterCompromised` (see `VerificationSealOptions.signerKeys`).
+ * `signatureFailureReason` is dropped.
+ *
+ * **Everything else** returns the live result unchanged: an invalid signature, identity or header mismatch,
+ * `untrusted_signer`, HP-Outer tampering, a seal whose MAC fails or whose hash, uids, generation or signer fingerprint differ, and
+ * every unsigned state.
+ *
+ * With `unlocked` undefined (no master key) the seal is ignored and no seal is built. Throws `KeysLockedError` when
+ * `unlocked` was destroyed (`keySession.ts`), before evaluating anything, or if it is destroyed while sealing; otherwise
+ * never throws - a seal that can't be built (e.g. uids too long for the size limit) just leaves `sealToWrite` unset.
+ */
+export async function evaluateMessageSecurityWithSeal(
+    rawMime: string,
+    unlocked: (MessageSecurityKeys & SealKeyMaterial) | undefined,
+    pinnedSignerFingerprints: string | string[] | undefined,
+    readerAddress: string | undefined,
+    options: VerificationSealOptions,
+): Promise<MessageSecurityResult> {
+    if (unlocked?.destroyed) {
+        throw new KeysLockedError();
+    }
+    const live = await evaluateLive(rawMime, unlocked, pinnedSignerFingerprints, readerAddress);
+    const { result } = live;
+    const isLiveVerified = LIVE_VERIFIED_STATES.includes(result.state) && !result.headerTamperDetected;
+    // Every verified and key-status result carries the signer fingerprint (a certificate was always resolved).
+    if (!unlocked || !result.signerFingerprint || (!isLiveVerified && !failedOnlyOnKeyStatus(result))) {
+        return result;
+    }
+
+    const rawSha256 = await rawMimeSha256(rawMime);
+    const generation = options.masterKeyGeneration;
+    const opened = options.seal ? await openVerificationSeal(options.mailboxUid, unlocked, options.messageUid, options.seal, rawSha256, generation) : undefined;
+    const signerFingerprint = result.signerFingerprint.toLowerCase();
+
+    if (isLiveVerified) {
+        const storedSealIsOlder = options.sealGeneration !== undefined && options.sealGeneration < generation;
+        if (opened && !storedSealIsOlder) {
+            return result;
+        }
+        try {
+            const seal = await buildVerificationSeal(options.mailboxUid, unlocked, {
+                messageUid: options.messageUid,
+                rawSha256,
+                signerFingerprint,
+                state: result.state as SealedVerificationState,
+                verifiedAt: options.now ?? Date.now(),
+                masterKeyGeneration: generation,
+            });
+            return { ...result, sealToWrite: { seal, masterKeyGeneration: generation } };
+        } catch (err) {
+            if (err instanceof KeysLockedError) {
+                throw err;
+            }
+            return result;
+        }
+    }
+
+    const expectedSealedState: SealedVerificationState = live.kind === "signed" ? "signed_verified" : "encrypted_verified";
+    if (!opened || opened.signerFingerprint !== signerFingerprint || opened.state !== expectedSealedState) {
+        return result;
+    }
+    const laterCompromised = (options.signerKeys ?? []).some((key) => key.fingerprint.toLowerCase() === signerFingerprint && !isTrustedForVerification(key));
+    const { signatureFailureReason, ...rest } = result;
+    return {
+        ...live.signedContent,
+        ...rest,
+        state: "verified_at_first_open",
+        verifiedAt: opened.verifiedAt,
+        sealedState: opened.state,
+        liveState: result.state,
+        ...(signatureFailureReason ? { liveSignatureFailureReason: signatureFailureReason } : {}),
+        ...(laterCompromised ? { laterCompromised: true } : {}),
+    };
 }

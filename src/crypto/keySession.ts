@@ -260,8 +260,8 @@ async function openPrivateKey(
  * `mailboxKeys` other than the active one (`activeFingerprint`), whatever its revocation or expiry, that has a wrapped
  * private key in the vault - de-duplicated by fingerprint, newest `notBefore` first, at most
  * `MAX_RETAINED_ENCRYPTION_KEYS`. A key that won't open or import, or whose certificate won't decode, is skipped and
- * added to `unopenableKeys`. Retained keys are imported non-extractable: only the active keys are ever exported (by
- * `keyRotation.ts`). Each key is attached as it opens, so a failed unlock's `destroyObject()` drops those too.
+ * added to `unopenableKeys`. Retained keys are imported non-extractable. Each key is attached as it opens, so a failed
+ * unlock's `destroyObject()` drops those too.
  */
 async function openRetainedEncryptionKeys(
     mailboxUid: string,
@@ -415,14 +415,12 @@ async function openSession(
     const unlocked: UnlockedKeys = { masterKey };
     const unopenableKeys: string[] = [];
 
-    // The unwrapped private keys are imported *extractable* (unlike `importPrivateKeyPkcs8()`'s default)
-    // for exactly one consumer: `keyRotation.ts`'s `rewrapPrivateKeysUnderNewMasterKey()`, which re-seals
-    // these session keys' PKCS#8 bytes under a new master key via `crypto.subtle.exportKey()` (web-client's
-    // Settings > Encryption "rotate keys"). Nothing else exports them. Making them non-extractable would
-    // first require that function to re-open the vault's wraps with `masterKey` instead (round-4 review
-    // re-flagged this; deliberately left as-is - an XSS that can call `exportKey()` on these handles can
-    // equally call `openWithKey()` with the in-memory master key, so non-extractability would not remove
-    // that attacker's access, only complicate rotation). The transient
+    // The active private keys are imported *extractable* (unlike `importPrivateKeyPkcs8()`'s default). Their one
+    // consumer, `keyRotation.ts`'s `rewrapPrivateKeysUnderNewMasterKey()`, was removed (2026-09-15; it re-wrapped only
+    // the active keys, and web-client's rotation re-seals every vault wrap itself), so nothing in this package exports
+    // them any more; kept extractable for now so no consumer outside it breaks. Non-extractability would add little: an
+    // XSS that can call `exportKey()` on these handles can equally call `openWithKey()` with the in-memory master key
+    // (round-4 review). The transient
     // PKCS#8 plaintext buffers are zeroed as soon as WebCrypto has copied them into a `CryptoKey`.
     try {
         const signingPublicKey = findActivePublicKey(mailboxKeys, "sign");

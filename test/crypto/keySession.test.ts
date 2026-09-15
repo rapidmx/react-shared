@@ -259,7 +259,7 @@ describe("getUnlockedKeys / destroyUnlockedKeys", () => {
         expect(first.masterKey.some((x) => x !== 0)).toBe(true);
     });
 
-    it("keeps unlocked private keys extractable, since key rotation re-exports them", async () => {
+    it("keeps the active unlocked private keys extractable", async () => {
         const { vault, mailboxKeys } = await enrollForTest(["sign", "encrypt"]);
         getKeyVault.mockResolvedValue(vault);
         await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);

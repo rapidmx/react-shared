@@ -41,6 +41,11 @@ release.
   `sendMessage(uid, { scheduledSendTime })`.
 - **Plugins:** `addPlugin()` returns `{ plugin, dependencies }`.
 - **Calendar:** `saveEventSeries()` can report `detachedOccurrenceSyncFailed`. All-day recurrences expand in UTC.
+- **Key rotation:** `rewrapPrivateKeysUnderNewMasterKey()` and `crypto/keyRotation.js` are removed. The helper re-wrapped
+  only the active keys, so using it with `rekey()` would drop the retained key wraps; nothing called it. Re-seal every
+  vault wrap under the new master key instead.
+- **Security states:** `MessageSecurityState` gains `"verified_at_first_open"`. Only `evaluateMessageSecurityWithSeal()`
+  returns it, but an exhaustive map over the union (e.g. a label per state) needs an entry.
 
 ### Recovery codes and key vault
 
@@ -88,6 +93,30 @@ release.
   `parseEncryptedMessageWithKeys()`). Retained keys are never used to encrypt or sign.
 - **`fetchSignerKeyState(folderUids, address)`** and **`signerKeyStateFor(contacts, address)`** return the pinned and
   previous signing keys and any signing-key conflict, for a key-changed comparison, without triggering key discovery.
+
+### Verification seals
+
+- **Seals:** `buildVerificationSeal(mailboxUid, unlocked, input)` seals a verified result (message uid, raw MIME hash,
+  signer fingerprint, state, time and master key generation) with an HMAC keyed from the master key, so the server can't
+  forge one. `openVerificationSeal(mailboxUid, unlocked, messageUid, seal, rawSha256, expectedMasterKeyGeneration?)`
+  returns the sealed signer, state, time and generation only for a valid seal on the same mailbox, message, raw MIME
+  and generation. `rawMimeSha256(raw)` hashes raw MIME.
+- **`evaluateMessageSecurityWithSeal(raw, unlocked, pins, readerAddress, { mailboxUid, messageUid, masterKeyGeneration, seal?, sealGeneration?, signerKeys?, now? })`:**
+  - a live verified result without a seal valid for the current generation, or whose stored seal is from an older
+    generation, gains `sealToWrite: { seal, masterKeyGeneration }` for the caller to store;
+  - a result that fails only because of the signer key's status (`signer_key_changed`, or an unverified signer after
+    a pin was removed or revoked) becomes `"verified_at_first_open"` when a valid seal names the same signer, with
+    `verifiedAt`, `sealedState`, the content, and `laterCompromised` when `signerKeys` show that key is now compromised;
+  - an invalid signature, a header or identity mismatch, tampering, or a seal for a different message, raw MIME or
+    signer is never overridden.
+  - `evaluateMessageSecurity()` is unchanged.
+- **`setMessageVerificationSeal(messageUid, seal, masterKeyGeneration)`** stores a seal on a message
+  (`Message.verificationSeal`, `Message.verificationSealGeneration`). The server replaces a stored seal only with one
+  for the vault's current generation when the stored one is older; otherwise it throws `VerificationSealConflictError`.
+  Needs the next restapi release.
+- **Key rotation:** seals are not carried across a master key rotation, so a rotation after a suspected compromise
+  can't vouch for seals written with the old key. Those messages show their live result until they next verify live,
+  when they are re-sealed under the new generation.
 
 ### Plugins and mailboxes
 

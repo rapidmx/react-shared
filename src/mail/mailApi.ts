@@ -472,6 +472,13 @@ export interface Message {
      * (`setMessageLabels()`) or auto-applied server-side by a `MailFilterActionType.APPLY_LABEL` rule.
      * `undefined`/empty means no labels. */
     labelUids?: string[];
+    /** An opaque client-written verification seal (at most 2048 characters of `[A-Za-z0-9+/=_.:-]`) recording that this
+     * message's signature verified when first opened - see `crypto/verificationSeal.ts` and
+     * `setMessageVerificationSeal()`. The server stores it as given, never interprets it, and never copies it to another
+     * message. Absent until a client writes one. */
+    verificationSeal?: string;
+    /** The vault `masterKeyGeneration` `verificationSeal` was written under, as sent to `setMessageVerificationSeal()`. */
+    verificationSealGeneration?: number;
 }
 
 export interface MessageReceiptEntry {
@@ -569,6 +576,41 @@ export function setMessageRequestReceipt(message: Message, requestReceipt: boole
         method: "PUT",
         body: JSON.stringify({ uid: message.uid, version: message.version, requestReceipt }),
     });
+}
+
+/**
+ * Thrown by `setMessageVerificationSeal()` when restapi answers `409`: the message already carries a different seal the
+ * server won't replace (it replaces one only when the stored seal's generation is older than the vault's current
+ * `masterKeyGeneration` and the request's generation equals the current one). Still an `ApiRequestError` (`status` 409).
+ * A caller writing seals best effort should ignore it.
+ */
+export class VerificationSealConflictError extends ApiRequestError {
+    constructor(message: string, code?: string) {
+        super(message, 409, code);
+        this.name = "VerificationSealConflictError";
+    }
+}
+
+/**
+ * Stores a verification seal on a message (`PUT /mail/messages/:id/verification-seal` with
+ * `{ seal, masterKeyGeneration }`), normally `MessageSecurityResult.sealToWrite`'s two fields from
+ * `crypto/messageSecurity.ts`'s `evaluateMessageSecurityWithSeal()`. Resolves with the updated message; storing the
+ * identical seal again succeeds. Rejects with `VerificationSealConflictError` on `409` (a different seal is stored and
+ * isn't replaceable - see that class), and a plain `ApiRequestError` for `400` (an invalid seal or generation) and
+ * `403`/`404`.
+ */
+export async function setMessageVerificationSeal(messageUid: string, seal: string, masterKeyGeneration: number): Promise<Message> {
+    try {
+        return await apiFetch<Message>(`/mail/messages/${encodeURIComponent(messageUid)}/verification-seal`, {
+            method: "PUT",
+            body: JSON.stringify({ seal, masterKeyGeneration }),
+        });
+    } catch (err) {
+        if (err instanceof ApiRequestError && err.status === 409) {
+            throw new VerificationSealConflictError(err.message, err.code);
+        }
+        throw err;
+    }
 }
 
 export type ReceiptType = "delivery" | "read";
