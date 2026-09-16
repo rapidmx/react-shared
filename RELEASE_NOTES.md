@@ -4,6 +4,33 @@
 
 ### Features
 
+- **Server-side mail list sorting and filtering (`mail/mailApi.js`).** `listMessages(folderUid, params)` now takes
+  `sortBy` (`date` | `sentDate` | `from` | `subject` | `importance` | `flagged`), `sortOrder` (`asc` | `desc`) and
+  `filter` (`all` | `unread` | `read` | `flagged` | `hasAttachments` | `focused` | `other`) alongside `limit`/`page`,
+  and sends none of them unless set - the server already defaults to newest received first with a stable tiebreaker.
+  The sort and the filter are applied over the whole folder by the database, not over the page that comes back, so
+  paging stays correct under either. New `MessageListSort`, `MessageSortOrder`, `MessageListFilter` and
+  `MessageListParams` types (needs the next `@rapidmx/restapi` release).
+- **Bulk message actions (`mail/mailApi.js`).** `bulkUpdateMessages(updates)` sends a whole selection through
+  `PUT /mail/messages` in chunks of `MAX_BULK_MESSAGE_UPDATE` (100, the server's own cap), with
+  `setMessagesRead()`, `setMessagesFlagged()`, `moveMessages()` and `setMessagesLabels()` over it - the bulk forms of
+  the existing single-message calls, plus new single-message `setMessageFlagged()` and `moveMessage()`. Not atomic:
+  the server applies each element in order and stops at the first failure (a stale `version`, a refused move),
+  leaving earlier elements applied, so refetch the list on a rejection rather than assuming nothing happened.
+- **Nested conversation view (`mail/conversationsApi.js`).** `listConversations(mailboxUid, params)` now takes
+  `folderUid`, `filter`, `limit` and `page`, and `ConversationSummary` gains `flagged`, `latestMessageUid`,
+  `latestFrom`, `latestPreview` and `latestFolderUid` - what a collapsed parent row shows. New
+  `listConversationMessages(mailboxUid, conversationId, params)` returns that conversation's messages oldest first
+  across every folder (the expanded child rows), paged; it resolves a summary's `conversationId` whether the
+  conversation is a real thread or a single message that belongs to none. `CONVERSATION_SCAN_LIMIT` (500) documents
+  how many messages the server groups per call.
+- **`Message` gains the server-managed list mirrors** `read`, `flagged`, `fromAddress` and `importanceRank`. They
+  exist so the *server* can index and sort; read `flags`/`from`/`importance` as before. They are never accepted in a
+  request body, and a message stored before they existed carries none of them.
+- **`listFlaggedMessages()` now asks the server for flagged messages** (`filter: "flagged"`) instead of reading every
+  message in every folder and filtering in the browser. It still fans out one paged call per mail folder, because a
+  message list is folder-scoped and this smart list is not.
+
 - **Recipient suggestions:** new `mail/directoryApi.js` for compose autocomplete, over `@rapidmx/restapi`'s new
   `GET /mail/directory` and `GET /mail/directory/contacts` (needs the next restapi release).
   - `searchDirectory(query, { limit, signal })` searches the server's mailboxes (people, shared mailboxes, rooms and

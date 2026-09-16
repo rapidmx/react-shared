@@ -4,11 +4,14 @@
 ///////////////////////////////////////////////////////////////////////////////
 /**
  * Backs Tasks' "Flagged email" smart-list (an Outlook To-Do concept: flagged *Messages*, not Tasks,
- * surfaced into the Tasks app). `Message.flags.flagged` already exists — no new backend field needed —
- * but there's no way to ask the server for "every flagged message in this mailbox" in one call:
- * `MessageSQL.flags` is a `simple-json` column, so the generic query-operator DSL this framework's
- * `find()` relies on elsewhere can't filter on a nested field within it, on either Mongo or SQL
- * consistently. This fans out one `listMessages()` call per mail folder instead and filters client-side.
+ * surfaced into the Tasks app).
+ *
+ * The server now does the filtering: `listMessages({ filter: "flagged" })` is an indexed database predicate on
+ * the denormalized `Message.flagged` mirror (`flags` itself is one JSON column, which is why this used to read
+ * every message in the mailbox and filter in the browser). What is still client-side is the fan-out: a message
+ * list is folder-scoped, and "every flagged message in this mailbox" spans every mail folder, so this still
+ * makes one paged call per folder and merges the results. The client-side `flags.flagged` check below is kept
+ * as a cheap guard for a row written before the mirror existed, not as the filter.
  */
 import { Folder, Message, listFolders, listMessages } from "./mailApi.js";
 
@@ -35,7 +38,7 @@ async function listFlaggedInFolder(folderUid: string, seen: Set<string>): Promis
     const flagged: Message[] = [];
     const seenInFolder = new Set<string>();
     for (let page = 0; page < FLAGGED_MAX_PAGES_PER_FOLDER; page += 1) {
-        const batch = await listMessages(folderUid, { limit: PAGE_SIZE, page });
+        const batch = await listMessages(folderUid, { limit: PAGE_SIZE, page, filter: "flagged" });
         let fresh = 0;
         for (const message of batch) {
             if (seenInFolder.has(message.uid)) {

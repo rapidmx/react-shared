@@ -413,7 +413,17 @@ export interface Message {
     receivedDate: string;
     bodyPreview: string;
     flags: MessageFlags;
+    /** Server-managed mirror of `flags.read`, which exists only so the *server* can filter and sort on it
+     * (`flags` is one JSON column, so nothing can index into it). Read `flags.read`, not this: it is never
+     * accepted in a request body, and a message stored before these fields existed carries none of them. */
+    read?: boolean;
+    /** Server-managed mirror of `flags.flagged` — see `read`. */
+    flagged?: boolean;
+    /** Server-managed mirror of `from.address`, lowercased and trimmed — see `read`. */
+    fromAddress?: string;
     importance: MessageImportance;
+    /** Server-managed sortable rank of `importance` (low 0, normal 1, high 2) — see `read`. */
+    importanceRank?: number;
     hasAttachments: boolean;
     /** Set once `recallMessage()` has been called on this message — a recall is asynchronous and
      * best-effort (see that function's own doc comment), so this is the only signal a caller gets;
@@ -487,11 +497,62 @@ export interface MessageReceiptEntry {
     readAt?: string;
 }
 
-/** Lists messages in a folder, newest first. */
-export function listMessages(folderUid: string, params: ListParams = {}): Promise<Message[]> {
-    return apiFetch(
-        `/mail/messages?${buildQuery(params, { folderUid, sort: JSON.stringify({ receivedDate: "DESC" }) })}`,
-    );
+/**
+ * The sort keys `listMessages()` accepts, mirroring `@rapidmx/restapi`'s own `MESSAGE_LIST_SORTS` exactly —
+ * anything else is refused with a 400. This is the whole set this data model can support: Outlook's sort menu
+ * also offers Category, Flag status due date, Size and Type, and a RapidMX `Message` has no field behind any of
+ * those (labels are multi-valued, so there is no single category to order by; there is no follow-up due date,
+ * no stored message size and no message class). "Flag status" is `flagged`.
+ */
+export type MessageListSort = "date" | "sentDate" | "from" | "subject" | "importance" | "flagged";
+
+/**
+ * Outlook's "Newest on top" (`desc`) / "Oldest on top" (`asc`). Left off, the server picks the direction that
+ * reads naturally for the key — newest/highest/flagged first for `date`/`sentDate`/`importance`/`flagged`, A-Z
+ * for `from`/`subject`.
+ */
+export type MessageSortOrder = "asc" | "desc";
+
+/**
+ * The named filters `listMessages()` accepts, mirroring `@rapidmx/restapi`'s own `MESSAGE_LIST_FILTERS`
+ * exactly. `focused`/`other` are the Focused Inbox split (only meaningful in the Inbox; `focused` includes a
+ * message carrying no classification at all, which is what absent means).
+ *
+ * Outlook's filter menu additionally offers "To me", "Mentions me" and "Has calendar invites"; none of the
+ * three is a server-side filter here, because nothing on a `Message` records them.
+ */
+export type MessageListFilter = "all" | "unread" | "read" | "flagged" | "hasAttachments" | "focused" | "other";
+
+/** Paging plus the mail list's own sort/filter vocabulary. */
+export interface MessageListParams extends ListParams {
+    sortBy?: MessageListSort;
+    sortOrder?: MessageSortOrder;
+    filter?: MessageListFilter;
+}
+
+/** Only the sort/filter params actually set, so a default list sends the same URL it always did. */
+export function messageListQuery(params: MessageListParams): Record<string, string> {
+    const query: Record<string, string> = {};
+    if (params.sortBy) {
+        query.sortBy = params.sortBy;
+    }
+    if (params.sortOrder) {
+        query.sortOrder = params.sortOrder;
+    }
+    if (params.filter) {
+        query.filter = params.filter;
+    }
+    return query;
+}
+
+/**
+ * Lists messages in a folder — newest received first unless `sortBy`/`sortOrder` say otherwise, and unfiltered
+ * unless `filter` does. Both are applied by the *database*, over the whole folder rather than over the page
+ * this call happens to return, so `page`/`limit` stay correct under a filter and a sort. Ties are broken by
+ * `uid`, so a message never appears on two pages or on neither.
+ */
+export function listMessages(folderUid: string, params: MessageListParams = {}): Promise<Message[]> {
+    return apiFetch(`/mail/messages?${buildQuery(params, { folderUid, ...messageListQuery(params) })}`);
 }
 
 export function getMessage(uid: string): Promise<Message> {
@@ -541,6 +602,86 @@ export function setMessageRead(message: Message, read: boolean): Promise<Message
         method: "PUT",
         body: JSON.stringify({ uid: message.uid, version: message.version, flags: { ...message.flags, read } }),
     });
+}
+
+/** Flags/unflags a message in place — Outlook's flag-status toggle, and what `listMessages({ filter:
+ * "flagged" })` and `listFlaggedMessages()` select on. */
+export function setMessageFlagged(message: Message, flagged: boolean): Promise<Message> {
+    return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
+        method: "PUT",
+        body: JSON.stringify({ uid: message.uid, version: message.version, flags: { ...message.flags, flagged } }),
+    });
+}
+
+/** Moves a message into another folder of the same mailbox — how "Move to", "Archive" (to the Archive folder),
+ * "Report junk" (to Junk) and "Delete" (to Deleted Items) are all expressed. */
+export function moveMessage(message: Message, folderUid: string): Promise<Message> {
+    return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
+        method: "PUT",
+        body: JSON.stringify({ uid: message.uid, version: message.version, folderUid }),
+    });
+}
+
+/**
+ * The most updates `bulkUpdateMessages()` puts in one request, matching `@rapidmx/restapi`'s own
+ * `MAX_BULK_UPDATE` — a longer list is refused with a 400, so the helper below chunks rather than sending it.
+ */
+export const MAX_BULK_MESSAGE_UPDATE = 100;
+
+/** One element of a bulk update: `uid` and the caller's last-known `version` (the server rejects a stale one
+ * with a 409), plus whichever fields are changing. */
+export interface MessageUpdate {
+    uid: string;
+    version: number;
+    [field: string]: unknown;
+}
+
+/**
+ * Applies `updates` through `PUT /mail/messages`, the bulk form of the single-message update — one request per
+ * `MAX_BULK_MESSAGE_UPDATE` updates instead of one per message, with every permission, folder and legal-hold
+ * check the single-message path makes.
+ *
+ * Deliberately NOT atomic, on either side of the wire: the server applies each element in order and the first
+ * failure (a stale `version`, a refused move) aborts the rest of *that* request, leaving the elements before it
+ * applied; this helper then stops and rejects rather than sending the remaining chunks. So a caller should
+ * refetch the list after a rejection instead of assuming nothing happened, and should send fresh `version`s -
+ * a bulk action over a stale selection is the common way to hit a 409. For a per-element outcome, call the
+ * single-message functions instead.
+ *
+ * Resolves with every message actually updated, in request order.
+ */
+export async function bulkUpdateMessages(updates: MessageUpdate[]): Promise<Message[]> {
+    const updated: Message[] = [];
+    for (let i = 0; i < updates.length; i += MAX_BULK_MESSAGE_UPDATE) {
+        const chunk = updates.slice(i, i + MAX_BULK_MESSAGE_UPDATE);
+        updated.push(...(await apiFetch<Message[]>("/mail/messages", { method: "PUT", body: JSON.stringify(chunk) })));
+    }
+    return updated;
+}
+
+/** Marks a whole selection read/unread in one pass — see `bulkUpdateMessages()` for the failure semantics. */
+export function setMessagesRead(messages: Message[], read: boolean): Promise<Message[]> {
+    return bulkUpdateMessages(
+        messages.map((message) => ({ uid: message.uid, version: message.version, flags: { ...message.flags, read } })),
+    );
+}
+
+/** Flags/unflags a whole selection in one pass — see `bulkUpdateMessages()`. */
+export function setMessagesFlagged(messages: Message[], flagged: boolean): Promise<Message[]> {
+    return bulkUpdateMessages(
+        messages.map((message) => ({ uid: message.uid, version: message.version, flags: { ...message.flags, flagged } })),
+    );
+}
+
+/** Moves a whole selection into `folderUid` — bulk Move, Archive, Report junk and Delete (to Deleted Items)
+ * are all this call with a different target folder. See `bulkUpdateMessages()`. */
+export function moveMessages(messages: Message[], folderUid: string): Promise<Message[]> {
+    return bulkUpdateMessages(messages.map((message) => ({ uid: message.uid, version: message.version, folderUid })));
+}
+
+/** Sets the full `labelUids` list on a whole selection — see `setMessageLabels()` and `bulkUpdateMessages()`. */
+export function setMessagesLabels(messages: Message[], labelUids: string[]): Promise<Message[]> {
+    return bulkUpdateMessages(messages.map((message) => ({ uid: message.uid, version: message.version, labelUids })));
 }
 
 /** Sets a message's full `labelUids` list (not an add/remove delta - the caller computes the complete

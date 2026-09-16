@@ -918,3 +918,27 @@ web-client (see that repo's NOTES for the UI half).
 - Verification: 85 files / 1064 tests, 100% statements/functions/lines, 99.5% branches; `tsc`, `yarn lint`,
   `yarn build` clean. Lint gotcha: `jsdoc/check-indentation` rejects a wrapped `-` bullet list inside a doc comment
   (continuation lines are indented) - write the paragraphs flat instead.
+
+### 2026-09-15 — Mail list UX phase 1 (data/API): sort/filter params, bulk actions, conversation expansion
+
+Client half of restapi's mail-list overhaul (see that repo's NOTES entry of the same date for the server design and
+for which Outlook options the data model can't serve). Phase 2 builds the UI in `web-client`.
+
+- `listMessages()` takes `sortBy`/`sortOrder`/`filter` and sends only what's set. It no longer sends
+  `sort={"receivedDate":"DESC"}` at all: the server now defaults to exactly that *plus* `uid` as a tiebreaker, and
+  naming a sort here could only get it wrong. The existing test asserting that URL was updated, not deleted.
+- Bulk actions go through `PUT /mail/messages` (`BaseScopedChildRoute.updateBulk()`), which already existed and
+  loops `update()` server-side - no new endpoint was added. `bulkUpdateMessages()` chunks at
+  `MAX_BULK_MESSAGE_UPDATE` (100, mirroring the server's new `MAX_BULK_UPDATE` cap) and stops at the first rejected
+  chunk. It is deliberately *not* wrapped in per-element error recovery: the server is fail-fast and non-atomic, so
+  a caller that needs per-item outcomes should call the single-message functions.
+- `flaggedMessages.ts` keeps its per-folder fan-out (a message list is folder-scoped; this smart list isn't) but now
+  passes `filter: "flagged"`, so the server returns only flagged rows. The client-side `flags.flagged` check is kept
+  as a guard for a row written before the server's `flagged` mirror existed, not as the filter - which is also why
+  its existing tests still pass unchanged.
+- `conversationsApi.ts` builds its query with `URLSearchParams` now (several optional params), which encodes the
+  same way the old hand-rolled `encodeURIComponent` did - the two existing URL assertions were kept verbatim to
+  prove it.
+
+Verification: `yarn tsc --noEmit`, `yarn lint`, `yarn build` clean. Full `yarn test` (coverage): 85 files / 1076
+tests, 100 / 99.4 / 100 / 100.

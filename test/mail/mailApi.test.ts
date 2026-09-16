@@ -38,8 +38,16 @@ import {
     releaseQuarantineEntry,
     revokeMailboxAccess,
     sendMessage,
+    setMessageFlagged,
     setMessageLabels,
     setMessageRead,
+    setMessagesFlagged,
+    setMessagesLabels,
+    setMessagesRead,
+    moveMessage,
+    moveMessages,
+    bulkUpdateMessages,
+    MAX_BULK_MESSAGE_UPDATE,
     setMessageRequestReceipt,
     setMessageVerificationSeal,
     VerificationSealConflictError,
@@ -391,14 +399,22 @@ const message = {
 };
 
 describe("listMessages", () => {
-    it("fetches with the folderUid query param and a newest-first sort", async () => {
+    it("fetches with the folderUid query param and no sort/filter of its own", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, [message]));
         const result = await listMessages("f1");
+        // The server already defaults to newest received first with a stable tiebreaker, so an unsorted,
+        // unfiltered list sends neither - naming a sort here would only be able to get it wrong.
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages?limit=25&page=0&folderUid=f1", expect.anything());
+        expect(result).toEqual([message]);
+    });
+
+    it("passes sortBy, sortOrder and filter through when they are set", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await listMessages("f1", { limit: 50, page: 2, sortBy: "from", sortOrder: "desc", filter: "unread" });
         expect(fetchMock).toHaveBeenCalledWith(
-            `/api/mail/messages?limit=25&page=0&folderUid=f1&sort=${encodeURIComponent(JSON.stringify({ receivedDate: "DESC" }))}`,
+            "/api/mail/messages?limit=50&page=2&folderUid=f1&sortBy=from&sortOrder=desc&filter=unread",
             expect.anything(),
         );
-        expect(result).toEqual([message]);
     });
 });
 
@@ -474,6 +490,96 @@ describe("setMessageRead", () => {
                 }),
             }),
         );
+    });
+});
+
+describe("setMessageFlagged", () => {
+    it("PUTs the message's uid/version with only the flagged flag changed", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { ...message, flags: { ...message.flags, flagged: true } }));
+        await setMessageFlagged(message, true);
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/messages/m1",
+            expect.objectContaining({
+                method: "PUT",
+                body: JSON.stringify({
+                    uid: "m1",
+                    version: 0,
+                    flags: { read: false, flagged: true, answered: false, forwarded: false },
+                }),
+            }),
+        );
+    });
+});
+
+describe("moveMessage", () => {
+    it("PUTs the message's uid/version with the new folderUid", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { ...message, folderUid: "f2" }));
+        await moveMessage(message, "f2");
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/messages/m1",
+            expect.objectContaining({ method: "PUT", body: JSON.stringify({ uid: "m1", version: 0, folderUid: "f2" }) }),
+        );
+    });
+});
+
+describe("bulk message updates", () => {
+    const second = { ...message, uid: "m2" };
+
+    it("PUTs the whole selection to the collection route in one request", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, [message, second]));
+        const result = await setMessagesRead([message, second], true);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/messages",
+            expect.objectContaining({
+                method: "PUT",
+                body: JSON.stringify([
+                    { uid: "m1", version: 0, flags: { read: true, flagged: false, answered: false, forwarded: false } },
+                    { uid: "m2", version: 0, flags: { read: true, flagged: false, answered: false, forwarded: false } },
+                ]),
+            }),
+        );
+        expect(result).toEqual([message, second]);
+    });
+
+    it("flags, moves and relabels a selection through the same route", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await setMessagesFlagged([message], true);
+        await moveMessages([message], "f2");
+        await setMessagesLabels([message], ["l1"]);
+        const bodies = fetchMock.mock.calls.map((call: any) => JSON.parse(call[1].body));
+        expect(bodies[0][0].flags).toEqual({ read: false, flagged: true, answered: false, forwarded: false });
+        expect(bodies[1][0]).toEqual({ uid: "m1", version: 0, folderUid: "f2" });
+        expect(bodies[2][0]).toEqual({ uid: "m1", version: 0, labelUids: ["l1"] });
+    });
+
+    it("chunks a selection longer than MAX_BULK_MESSAGE_UPDATE rather than letting the server refuse it", async () => {
+        const updates = Array.from({ length: MAX_BULK_MESSAGE_UPDATE + 5 }, (_unused, index) => ({
+            uid: `m${index}`,
+            version: 0,
+        }));
+        const fetchMock = mockFetch((_url, init) => jsonResponse(200, JSON.parse(String(init.body))));
+        const result = await bulkUpdateMessages(updates);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(JSON.parse(String(fetchMock.mock.calls[0][1].body)).length).toBe(MAX_BULK_MESSAGE_UPDATE);
+        expect(JSON.parse(String(fetchMock.mock.calls[1][1].body)).length).toBe(5);
+        expect(result.length).toBe(MAX_BULK_MESSAGE_UPDATE + 5);
+    });
+
+    it("stops at the first rejected chunk instead of sending the rest", async () => {
+        const updates = Array.from({ length: MAX_BULK_MESSAGE_UPDATE + 1 }, (_unused, index) => ({
+            uid: `m${index}`,
+            version: 0,
+        }));
+        const fetchMock = mockFetch(() => jsonResponse(409, { message: "stale version" }));
+        await expect(bulkUpdateMessages(updates)).rejects.toBeInstanceOf(ApiRequestError);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("sends nothing at all for an empty selection", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        expect(await bulkUpdateMessages([])).toEqual([]);
+        expect(fetchMock).not.toHaveBeenCalled();
     });
 });
 

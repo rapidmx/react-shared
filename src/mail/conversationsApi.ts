@@ -3,15 +3,14 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 /**
- * Typed wrapper over `@rapidmx/restapi`'s `GET /messages/conversations` route
- * (`BaseMessageRoute.conversations()`) — groups a mailbox's messages by RFC 5322 References/In-Reply-To
- * threading (`Message.conversationId`), one summary row per conversation spanning every folder in the
- * mailbox, newest activity first. Read-only and computed fresh on every call — a `ConversationSummary`
- * is never itself persisted.
+ * Typed wrapper over `@rapidmx/restapi`'s conversation endpoints (`BaseMessageRoute.conversations()` and
+ * `conversationMessages()`) — the parent rows of a nested, Outlook-style conversation list, and the child rows
+ * one expands into. Conversations are RFC 5322 References/In-Reply-To threads (`Message.conversationId`),
+ * computed fresh on every call — a `ConversationSummary` is never itself persisted.
  */
 
 import { apiFetch } from "../util/api.js";
-import { Recipient } from "./mailApi.js";
+import { Message, MessageListFilter, Recipient } from "./mailApi.js";
 
 export interface ConversationSummary {
     conversationId: string;
@@ -29,9 +28,75 @@ export interface ConversationSummary {
     /** Every distinct participant (deduped by address) across every message in the conversation. */
     participants: Recipient[];
     hasAttachments: boolean;
+    /** `true` if any message in the conversation is flagged. */
+    flagged: boolean;
+    /** The most recent message's `uid` — what a collapsed conversation row stands for, so it can be opened
+     * without expanding the conversation first. */
+    latestMessageUid: string;
+    /** The most recent message's sender. */
+    latestFrom: Recipient;
+    /** The most recent message's `bodyPreview` — the snippet a collapsed row shows. */
+    latestPreview: string;
+    /** The most recent message's folder. */
+    latestFolderUid: string;
 }
 
-/** Conversations are computed mailbox-wide, not folder-scoped — there is no `folderUid` filter here. */
-export function listConversations(mailboxUid: string): Promise<ConversationSummary[]> {
-    return apiFetch(`/mail/messages/conversations?mailboxUid=${encodeURIComponent(mailboxUid)}`);
+/**
+ * How many of a mailbox's *messages* the server reads, newest first, to build these groups — restapi's
+ * `mail:conversations:scan_limit` default, and also the cap and default for `limit` below. A conversation whose
+ * older messages fall outside that window reports only the part inside it.
+ */
+export const CONVERSATION_SCAN_LIMIT = 500;
+
+export interface ConversationListParams {
+    /** Restricts both the scan and the grouping to one folder — a per-folder conversation view. Without it a
+     * conversation spans every folder in the mailbox. */
+    folderUid?: string;
+    /** The same named filters `listMessages()` takes, applied to the *messages* before they are grouped: so
+     * `unread` yields each conversation's unread messages, and only the conversations that have any. */
+    filter?: MessageListFilter;
+    /** Zero-based. */
+    page?: number;
+    /** Capped at `CONVERSATION_SCAN_LIMIT`, which is also the default. */
+    limit?: number;
+}
+
+/** `?mailboxUid=` plus whichever optional params were actually set, each URL-encoded. */
+function conversationQuery(mailboxUid: string, params: Record<string, string | number | undefined>): string {
+    const query = new URLSearchParams({ mailboxUid });
+    for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined && value !== "") {
+            query.set(key, String(value));
+        }
+    }
+    return query.toString();
+}
+
+/** Lists a mailbox's conversations, newest activity first. Computed mailbox-wide unless `folderUid` narrows
+ * them — folder scope is a filter here, not part of the endpoint. */
+export function listConversations(mailboxUid: string, params: ConversationListParams = {}): Promise<ConversationSummary[]> {
+    return apiFetch(`/mail/messages/conversations?${conversationQuery(mailboxUid, { ...params })}`);
+}
+
+/** Paging for `listConversationMessages()`. The server defaults `limit` to 100 and caps it at 500. */
+export interface ConversationMessagesParams {
+    page?: number;
+    limit?: number;
+}
+
+/**
+ * One conversation's messages, oldest first, across every folder in the mailbox — the expanded children of a
+ * conversation row, in one request rather than one per `messageUids` entry.
+ *
+ * `conversationId` is the summary's own `conversationId`, which for a message belonging to no thread is that
+ * message's `uid`; the server resolves either.
+ */
+export function listConversationMessages(
+    mailboxUid: string,
+    conversationId: string,
+    params: ConversationMessagesParams = {},
+): Promise<Message[]> {
+    return apiFetch(
+        `/mail/messages/conversations/${encodeURIComponent(conversationId)}?${conversationQuery(mailboxUid, { ...params })}`,
+    );
 }
