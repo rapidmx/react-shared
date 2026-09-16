@@ -55,6 +55,10 @@ export interface ConversationListParams {
     /** The same named filters `listMessages()` takes, applied to the *messages* before they are grouped: so
      * `unread` yields each conversation's unread messages, and only the conversations that have any. */
     filter?: MessageListFilter;
+    /** The label filter `listMessages()` takes (`Label.uid`s; a message matching ANY of them), applied at the
+     * same point as `filter` and ANDed with it — so a conversation appears if any of its messages carries any
+     * of these labels, and reports only those messages. At most `MAX_MESSAGE_LABEL_FILTER` of them. */
+    labelUids?: string[];
     /** Zero-based. */
     page?: number;
     /** Capped at `CONVERSATION_SCAN_LIMIT`, which is also the default. */
@@ -75,7 +79,11 @@ function conversationQuery(mailboxUid: string, params: Record<string, string | n
 /** Lists a mailbox's conversations, newest activity first. Computed mailbox-wide unless `folderUid` narrows
  * them — folder scope is a filter here, not part of the endpoint. */
 export function listConversations(mailboxUid: string, params: ConversationListParams = {}): Promise<ConversationSummary[]> {
-    return apiFetch(`/mail/messages/conversations?${conversationQuery(mailboxUid, { ...params })}`);
+    const { labelUids, ...rest } = params;
+    // One comma-separated value, as `messageListQuery()` sends it; an empty selection sends no parameter.
+    return apiFetch(
+        `/mail/messages/conversations?${conversationQuery(mailboxUid, { ...rest, labelUids: labelUids?.length ? labelUids.join(",") : undefined })}`,
+    );
 }
 
 /** Paging for `listConversationMessages()`. The server defaults `limit` to 100 and caps it at 500. */

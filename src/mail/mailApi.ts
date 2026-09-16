@@ -523,11 +523,26 @@ export type MessageSortOrder = "asc" | "desc";
  */
 export type MessageListFilter = "all" | "unread" | "read" | "flagged" | "hasAttachments" | "focused" | "other";
 
+/**
+ * The most labels one list request may filter by, matching `@rapidmx/restapi`'s own
+ * `MAX_MESSAGE_LABEL_FILTER_UIDS` — a longer set is refused with a 400, so a label menu offering multiple
+ * selection should stop the user here rather than send it.
+ */
+export const MAX_MESSAGE_LABEL_FILTER = 20;
+
 /** Paging plus the mail list's own sort/filter vocabulary. */
 export interface MessageListParams extends ListParams {
     sortBy?: MessageListSort;
     sortOrder?: MessageSortOrder;
     filter?: MessageListFilter;
+    /**
+     * `Label.uid`s to filter by (list the mailbox's labels with `listLabels()` in `labelsApi.ts`). A message is
+     * listed if it carries ANY of them, which is then ANDed with `filter` — so `{ filter: "unread", labelUids:
+     * [red, blue] }` is "unread, and labelled red or blue". Order is irrelevant and duplicates are ignored. An
+     * empty array is no filter at all, and a uid naming no label (or one belonging to another mailbox) matches
+     * nothing. At most `MAX_MESSAGE_LABEL_FILTER` of them, each a real uid — anything else is a 400.
+     */
+    labelUids?: string[];
 }
 
 /** Only the sort/filter params actually set, so a default list sends the same URL it always did. */
@@ -542,14 +557,19 @@ export function messageListQuery(params: MessageListParams): Record<string, stri
     if (params.filter) {
         query.filter = params.filter;
     }
+    // One comma-separated value, the only form the server parses. An empty selection sends no parameter at all
+    // rather than an empty one, so a filter menu with nothing ticked makes the request it always made.
+    if (params.labelUids?.length) {
+        query.labelUids = params.labelUids.join(",");
+    }
     return query;
 }
 
 /**
  * Lists messages in a folder — newest received first unless `sortBy`/`sortOrder` say otherwise, and unfiltered
- * unless `filter` does. Both are applied by the *database*, over the whole folder rather than over the page
- * this call happens to return, so `page`/`limit` stay correct under a filter and a sort. Ties are broken by
- * `uid`, so a message never appears on two pages or on neither.
+ * unless `filter`/`labelUids` say otherwise. All of them are applied by the *database*, over the whole folder
+ * rather than over the page this call happens to return, so `page`/`limit` stay correct under a filter and a
+ * sort. Ties are broken by `uid`, so a message never appears on two pages or on neither.
  */
 export function listMessages(folderUid: string, params: MessageListParams = {}): Promise<Message[]> {
     return apiFetch(`/mail/messages?${buildQuery(params, { folderUid, ...messageListQuery(params) })}`);

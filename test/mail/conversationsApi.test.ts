@@ -55,6 +55,18 @@ describe("listConversations", () => {
         await listConversations("mb1", { folderUid: "", filter: undefined, page: 0 });
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/conversations?mailboxUid=mb1&page=0", expect.anything());
     });
+
+    it("sends a label selection as one comma-separated labelUids value, and an empty one not at all", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await listConversations("mb1", { filter: "unread", labelUids: ["lbl-red", "lbl-blue"] });
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/messages/conversations?mailboxUid=mb1&filter=unread&labelUids=lbl-red%2Clbl-blue",
+            expect.anything(),
+        );
+
+        await listConversations("mb1", { labelUids: [] });
+        expect(fetchMock).toHaveBeenLastCalledWith("/api/mail/messages/conversations?mailboxUid=mb1", expect.anything());
+    });
 });
 
 describe("listConversationMessages", () => {

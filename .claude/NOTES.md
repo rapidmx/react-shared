@@ -942,3 +942,26 @@ for which Outlook options the data model can't serve). Phase 2 builds the UI in 
 
 Verification: `yarn tsc --noEmit`, `yarn lint`, `yarn build` clean. Full `yarn test` (coverage): 85 files / 1076
 tests, 100 / 99.4 / 100 / 100.
+
+### 2026-09-15 — Mail list label filter: `labelUids` on listMessages/listConversations
+
+Client half of restapi's `?labelUids=` work (see that repo's NOTES entry of the same date for why the predicate is
+built per backend and why it is deliberately *not* a mirror column). web-client's Filter menu gains "filter by label,
+itself a menu of all labels, with multiple selection".
+
+- `MessageListParams.labelUids?: string[]` and `ConversationListParams.labelUids?: string[]`, joined into one
+  comma-separated value. **OR** between the labels, ANDed with `filter`. An empty array sends no parameter at all —
+  the point being that a filter menu with nothing ticked issues the exact request it always did, so no existing URL
+  assertion moved.
+- `MAX_MESSAGE_LABEL_FILTER` (20) mirrors the server's `MAX_MESSAGE_LABEL_FILTER_UIDS`, same as
+  `MAX_BULK_MESSAGE_UPDATE` mirrors `MAX_BULK_UPDATE`. The UI should stop the user at that many rather than send a
+  request the server answers with a 400.
+- **The menu's own data already existed**: `listLabels(mailboxUid, params)` in `mail/labelsApi.ts`. Labels are
+  per-mailbox (`Label.mailboxUid`, `BaseScopedChildRoute` scoped by it), so the menu is rebuilt when the active
+  mailbox changes, and a label uid from another mailbox simply matches nothing.
+- `listConversations()` destructures `labelUids` out before `conversationQuery()`, which types its values as
+  `string | number | undefined` — passing the array through would have relied on `String(array)` happening to join on
+  commas.
+
+Verification: `yarn tsc --noEmit`, `yarn lint`, `yarn build` clean. Full `yarn test` (coverage): 85 files / 1079
+tests, 100 / 99.4 / 100 / 100.

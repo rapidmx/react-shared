@@ -416,6 +416,21 @@ describe("listMessages", () => {
             expect.anything(),
         );
     });
+
+    it("sends a label selection as one comma-separated labelUids value, alongside a filter", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await listMessages("f1", { filter: "unread", labelUids: ["lbl-red", "lbl-blue"] });
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/messages?limit=25&page=0&folderUid=f1&filter=unread&labelUids=lbl-red%2Clbl-blue",
+            expect.anything(),
+        );
+    });
+
+    it("sends no labelUids at all for an empty selection", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await listMessages("f1", { labelUids: [] });
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages?limit=25&page=0&folderUid=f1", expect.anything());
+    });
 });
 
 describe("getMessage", () => {

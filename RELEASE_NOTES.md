@@ -4,6 +4,16 @@
 
 ### Features
 
+- **Filter the mail list by label (`mail/mailApi.js`, `mail/conversationsApi.js`).** `listMessages(folderUid, params)`
+  and `listConversations(mailboxUid, params)` now take `labelUids: string[]` — the `Label.uid`s to filter by, sent as
+  one comma-separated `labelUids` parameter. A message is listed if it carries **any** of them (OR), which is then
+  ANDed with `filter`, so `{ filter: "unread", labelUids: [red, blue] }` means "unread, and labelled red or blue".
+  Order is irrelevant and duplicates are ignored; the server applies it over the whole folder before paging, and (for
+  conversations) to the messages before they are grouped. An empty array sends no parameter at all, so an untouched
+  filter menu makes exactly the request it always made. New `MAX_MESSAGE_LABEL_FILTER` (20, the server's own cap — a
+  longer set is refused with a 400, as is a uid that isn't one). A uid naming no label, or one belonging to another
+  mailbox, matches nothing rather than erroring. Populate the menu itself with `listLabels(mailboxUid)` from
+  `mail/labelsApi.js` — labels are per-mailbox (needs the next `@rapidmx/restapi` release).
 - **Server-side mail list sorting and filtering (`mail/mailApi.js`).** `listMessages(folderUid, params)` now takes
   `sortBy` (`date` | `sentDate` | `from` | `subject` | `importance` | `flagged`), `sortOrder` (`asc` | `desc`) and
   `filter` (`all` | `unread` | `read` | `flagged` | `hasAttachments` | `focused` | `other`) alongside `limit`/`page`,
