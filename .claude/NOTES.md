@@ -965,3 +965,34 @@ itself a menu of all labels, with multiple selection".
 
 Verification: `yarn tsc --noEmit`, `yarn lint`, `yarn build` clean. Full `yarn test` (coverage): 85 files / 1079
 tests, 100 / 99.4 / 100 / 100.
+
+### 2026-09-16 — A blank line above the quote, and the threading a reply has to record
+
+Two small changes to `mail/compose/composeQuoting.ts` plus one to `mail/mailApi.ts`, both driven by JP using the
+product: a reply opened with the quote pressed right up against the caret's line, and a reply chain showed up in the
+mail list as separate conversations.
+
+- **`buildComposeBodyHtml()` now emits an empty paragraph immediately above the quote**, on top of the one that
+  already separated it from a signature: `<p></p>` + signature + `<p></p>` + `<p></p>` + quote. A signature-only body
+  is deliberately unchanged (a test counts the empty paragraphs in both cases), since the extra line is about having
+  somewhere to press Enter into above the "On ... wrote:" block, which only a reply has.
+- **`buildReplyThreading(message)` + `createDraft(mailbox, folder, threading?)`** are the client half of restapi's
+  reply-threading fix (see that repo's NOTES entry of the same date for the whole diagnosis). The server composes a
+  reply's MIME from `assembleDraft()`'s recipients/subject/HTML, which say nothing about what is being replied to, so
+  unless the draft *row* records `inReplyTo`/`references` the relayed message carries no `In-Reply-To`/`References`
+  at all and every copy of it - the recipients' and the sender's own Sent Items one - starts a new conversation.
+  Neither field is server-managed, so they go in the ordinary `POST /mail/messages` body `createDraft()` already
+  sends.
+  - `references` = the replied-to message's own chain with its `messageId` appended (RFC 5322 section 3.6.4), never
+    repeating it wherever the chain already names it, trimmed from *after the root* to `MAX_REPLY_REFERENCES` (20) -
+    the root is what a conversation is keyed on, so it is the one entry that must survive. restapi trims again when
+    it writes the header; sending an unbounded chain is pointless.
+  - `Message` gained `inReplyTo`, `references` and `conversationId`, which it never exposed - `buildReplyThreading()`
+    needs `references`, and a client cannot build a chain from `messageId` alone.
+- **web-client still has to call it**: `ComposeWindow.tsx`'s `createDraft(mailboxUid, draftsFolderUid)` passes no
+  threading today, so Reply/Reply All/Forward on a real thread is still unthreaded until it does. Nothing in this
+  package can do it for the caller - only the compose UI knows which message the window is replying to.
+
+Verification: 85 files / 1088 tests, 100% statements/functions/lines, 99.34% branches (gates unchanged); `tsc
+--noEmit`, `yarn lint`, `yarn build` clean. Lint gotcha: `as any` on a `messageFixture()` argument that already
+satisfies the parameter type is `typescript/no-unnecessary-type-assertion`.

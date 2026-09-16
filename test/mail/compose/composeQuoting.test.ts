@@ -8,7 +8,9 @@ import {
     buildForwardQuote,
     buildReplyQuote,
     buildReplyRecipients,
+    buildReplyThreading,
     forwardSubject,
+    MAX_REPLY_REFERENCES,
     replySubject,
 } from "../../../src/mail/compose/composeQuoting.js";
 
@@ -205,18 +207,71 @@ describe("buildComposeBodyHtml", () => {
         expect(buildComposeBodyHtml("", "")).toBe("");
     });
 
-    it("puts an empty paragraph above the quote", () => {
-        expect(buildComposeBodyHtml(undefined, "<blockquote>Hi</blockquote>")).toBe("<p></p><blockquote>Hi</blockquote>");
+    it("puts the caret's paragraph and a blank line above the quote", () => {
+        expect(buildComposeBodyHtml(undefined, "<blockquote>Hi</blockquote>")).toBe("<p></p><p></p><blockquote>Hi</blockquote>");
     });
 
     it("puts an empty paragraph above the signature", () => {
         expect(buildComposeBodyHtml("<p>Best,<br>Jane</p>")).toBe("<p></p><p>Best,<br>Jane</p>");
     });
 
-    it("orders the empty paragraph, the signature, a blank line, then the quote", () => {
+    it("orders the empty paragraph, the signature, a blank line, another blank line, then the quote", () => {
         expect(buildComposeBodyHtml("<p>Best,<br>Jane</p>", "<blockquote>Hi</blockquote>")).toBe(
-            "<p></p><p>Best,<br>Jane</p><p></p><blockquote>Hi</blockquote>",
+            "<p></p><p>Best,<br>Jane</p><p></p><p></p><blockquote>Hi</blockquote>",
         );
+    });
+
+    it("leaves a signature-only body with exactly one empty paragraph, so nothing but a reply gains a blank line", () => {
+        expect(buildComposeBodyHtml("<p>Best,<br>Jane</p>").match(/<p><\/p>/g)).toHaveLength(1);
+        expect(buildComposeBodyHtml(undefined, "<blockquote>Hi</blockquote>").match(/<p><\/p>/g)).toHaveLength(2);
+    });
+});
+
+describe("buildReplyThreading", () => {
+    it("replies to a thread's first message with that message alone", () => {
+        expect(buildReplyThreading(messageFixture({ messageId: "root@example.com", references: [] }) as any)).toEqual({
+            inReplyTo: "root@example.com",
+            references: ["root@example.com"],
+        });
+    });
+
+    it("appends the replied-to message to its own chain", () => {
+        expect(
+            buildReplyThreading(messageFixture({ messageId: "second@example.com", references: ["root@example.com"] }) as any),
+        ).toEqual({ inReplyTo: "second@example.com", references: ["root@example.com", "second@example.com"] });
+    });
+
+    it("tolerates a message with no references at all", () => {
+        const { references } = buildReplyThreading(messageFixture({ messageId: "only@example.com", references: undefined }));
+        expect(references).toEqual(["only@example.com"]);
+    });
+
+    it("never repeats the replied-to message, wherever its own chain already names it", () => {
+        expect(
+            buildReplyThreading(messageFixture({ messageId: "b@example.com", references: ["a@example.com", "b@example.com"] }) as any)
+                .references,
+        ).toEqual(["a@example.com", "b@example.com"]);
+        expect(
+            buildReplyThreading(messageFixture({ messageId: "b@example.com", references: ["b@example.com", "a@example.com"] }) as any)
+                .references,
+        ).toEqual(["a@example.com", "b@example.com"]);
+    });
+
+    it("drops blank and duplicated entries and trims each one", () => {
+        expect(
+            buildReplyThreading(
+                messageFixture({ messageId: " c@example.com ", references: [" a@example.com ", "", "a@example.com", "   "] }) as any,
+            ),
+        ).toEqual({ inReplyTo: "c@example.com", references: ["a@example.com", "c@example.com"] });
+    });
+
+    it("keeps the thread's root and the newest ancestors when the chain is longer than the cap", () => {
+        const long: string[] = Array.from({ length: MAX_REPLY_REFERENCES + 10 }, (_, i) => `r${i}@example.com`);
+        const { references } = buildReplyThreading(messageFixture({ messageId: "latest@example.com", references: long }));
+        expect(references).toHaveLength(MAX_REPLY_REFERENCES);
+        expect(references[0]).toBe("r0@example.com");
+        expect(references[references.length - 1]).toBe("latest@example.com");
+        expect(references[references.length - 2]).toBe(`r${long.length - 1}@example.com`);
     });
 });
 

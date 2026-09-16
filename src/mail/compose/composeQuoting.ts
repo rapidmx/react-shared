@@ -144,15 +144,55 @@ export function buildForwardQuote(message: Message, body?: QuotedBody): string {
 
 /**
  * The HTML a compose body starts with, laid out the way Outlook and Gmail do: an empty paragraph first (where the
- * caret goes, so typing lands above everything else), then the signature, then the quoted original. `""` when there
- * is neither a signature nor a quote, which leaves the editor's own single empty paragraph.
+ * caret goes, so typing lands above everything else), then the signature, then a blank line, then the quoted
+ * original. `""` when there is neither a signature nor a quote, which leaves the editor's own single empty
+ * paragraph.
+ *
+ * A quote is always preceded by an empty paragraph of its own, on top of the one that separates it from a
+ * signature: what the reply opens with is the caret's line and then the quote right underneath it, and there has to
+ * be somewhere to press Enter into above the "On ... wrote:" line without first making room for it by hand.
  */
 export function buildComposeBodyHtml(signatureHtml?: string, quotedHtml?: string): string {
     if (!signatureHtml && !quotedHtml) {
         return "";
     }
     const separator = signatureHtml && quotedHtml ? "<p></p>" : "";
-    return `<p></p>${signatureHtml ?? ""}${separator}${quotedHtml ?? ""}`;
+    const aboveQuote = quotedHtml ? "<p></p>" : "";
+    return `<p></p>${signatureHtml ?? ""}${separator}${aboveQuote}${quotedHtml ?? ""}`;
+}
+
+/**
+ * The longest `References` chain `buildReplyThreading()` reports. A chain grows by one entry per reply forever
+ * and the server trims what it actually writes into the header anyway; sending an unbounded one is pointless.
+ * The root is always kept - it is what a conversation is keyed on - and the oldest entries after it are dropped.
+ */
+export const MAX_REPLY_REFERENCES = 20;
+
+/**
+ * What a reply or forward must record about the thread it continues, from the message it is a reply to: the
+ * RFC 5322 `In-Reply-To` (that message's own `messageId`) and the `References` chain (its own chain, with its
+ * `messageId` appended). Pass the result to `createDraft()`.
+ *
+ * Without it a reply is relayed with no threading headers at all - this server composes a reply's MIME from the
+ * structured compose input, which says nothing about what is being replied to - so every recipient's mail server,
+ * and the sender's own Sent Items copy, files it as a brand-new conversation instead of adding it to the thread.
+ */
+export function buildReplyThreading(message: Pick<Message, "messageId" | "references">): { inReplyTo: string; references: string[] } {
+    const parent: string = message.messageId.trim();
+    const chain: string[] = [];
+    for (const reference of message.references ?? []) {
+        const id: string = typeof reference === "string" ? reference.trim() : "";
+        if (id && id !== parent && !chain.includes(id)) {
+            chain.push(id);
+        }
+    }
+    chain.push(parent);
+    // Trimmed from after the root, so the thread's first message (what the conversation is keyed on) and the
+    // most recent ancestors both survive.
+    while (chain.length > MAX_REPLY_REFERENCES) {
+        chain.splice(1, 1);
+    }
+    return { inReplyTo: parent, references: chain };
 }
 
 /** The To and Cc a reply starts with. */

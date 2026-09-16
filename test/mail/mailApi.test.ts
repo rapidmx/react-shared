@@ -844,6 +844,24 @@ describe("createDraft", () => {
         expect(body.mailboxUid).toBe("mb1");
         expect(body.folderUid).toBe("f1");
         expect(body.messageId).toMatch(/@webmail$/);
+        expect(body.inReplyTo).toBeUndefined();
+        expect(body.references).toBeUndefined();
+    });
+
+    it("records what a reply replies to, so the server can thread it", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, message));
+        await createDraft("mb1", "f1", { inReplyTo: "parent@example.com", references: ["root@example.com", "parent@example.com"] });
+        const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.inReplyTo).toBe("parent@example.com");
+        expect(body.references).toEqual(["root@example.com", "parent@example.com"]);
+    });
+
+    it("sends neither field for an empty threading argument", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, message));
+        await createDraft("mb1", "f1", { inReplyTo: "", references: [] });
+        const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect("inReplyTo" in body).toBe(false);
+        expect("references" in body).toBe(false);
     });
 });
 

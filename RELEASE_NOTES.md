@@ -4,6 +4,22 @@
 
 ### Features
 
+- **A reply opens with a blank line above the quote (`mail/compose/composeQuoting.js`).** `buildComposeBodyHtml()`
+  now puts an empty paragraph immediately above the quoted original, on top of the one that already separates it from
+  a signature - so a reply opens as the caret's own line, the signature, a blank line, another blank line, then the
+  "On ... wrote:" block, and there is somewhere to press Enter into above the quote without making room by hand. A
+  body with a signature and no quote is unchanged.
+- **Reply threading (`mail/compose/composeQuoting.js`, `mail/mailApi.js`).** New `buildReplyThreading(message)`
+  returns the `inReplyTo` and `references` a reply must record - the replied-to message's own `messageId`, and its
+  `references` chain with that `messageId` appended, trimmed to `MAX_REPLY_REFERENCES` (20) from after the thread's
+  root - and `createDraft(mailboxUid, folderUid, threading?)` now sends them when a draft is created.
+  **A compose UI opening a reply or forward MUST pass them**: `@rapidmx/restapi` writes them into the `In-Reply-To`/
+  `References` headers of the MIME it relays and files the message into the replied-to message's conversation, and a
+  reply created without them is relayed carrying no threading headers at all - so every recipient, and the sender's
+  own Sent Items copy, start a brand-new conversation for it. Nothing recovers them later: the MIME is composed from
+  the recipients, subject and HTML passed to `assembleDraft()`, which say nothing about what is being replied to.
+  `Message` now also exposes the `inReplyTo`, `references` and (server-assigned) `conversationId` this needs
+  (needs the next `@rapidmx/restapi` release).
 - **Filter the mail list by label (`mail/mailApi.js`, `mail/conversationsApi.js`).** `listMessages(folderUid, params)`
   and `listConversations(mailboxUid, params)` now take `labelUids: string[]` — the `Label.uid`s to filter by, sent as
   one comma-separated `labelUids` parameter. A message is listed if it carries **any** of them (OR), which is then

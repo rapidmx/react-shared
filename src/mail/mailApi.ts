@@ -489,6 +489,17 @@ export interface Message {
     verificationSeal?: string;
     /** The vault `masterKeyGeneration` `verificationSeal` was written under, as sent to `setMessageVerificationSeal()`. */
     verificationSealGeneration?: number;
+    /** The `messageId` of the message this one replies to (RFC 5322 `In-Reply-To`, angle brackets stripped) -
+     * parsed from the MIME on a delivered message, and what a compose client passes to `createDraft()` when it
+     * opens a reply. Absent on a message that replies to nothing. */
+    inReplyTo?: string;
+    /** This message's thread, oldest first (RFC 5322 `References`, angle brackets stripped): the thread root's
+     * `messageId`, then each reply's down to the one this message replies to. Empty, or absent on a message
+     * stored before the field existed. See `buildReplyThreading()` in `compose/composeQuoting.ts`. */
+    references?: string[];
+    /** Server-assigned: the thread this message is grouped under in a conversation list (`conversationsApi.ts`).
+     * Derived at delivery/send time from `references`/`inReplyTo`, never accepted in a request body. */
+    conversationId?: string;
 }
 
 export interface MessageReceiptEntry {
@@ -853,11 +864,34 @@ export interface AssembleDraftInput {
     html: string;
 }
 
-/** Creates a blank draft `Message` in the given folder (normally the mailbox's Drafts folder) to compose into. */
-export function createDraft(mailboxUid: string, folderUid: string): Promise<Message> {
+/** What a draft records about the thread it belongs to - see `createDraft()`. */
+export interface DraftThreading {
+    /** The `messageId` of the message being replied to (`Message.inReplyTo`). */
+    inReplyTo?: string;
+    /** The thread's `References` chain, oldest first, ending with `inReplyTo` (`Message.references`). */
+    references?: string[];
+}
+
+/**
+ * Creates a blank draft `Message` in the given folder (normally the mailbox's Drafts folder) to compose into.
+ *
+ * A reply MUST pass `threading` (build it with `buildReplyThreading()` from the message being replied to).
+ * `@rapidmx/restapi` writes those values into the `In-Reply-To`/`References` headers of the MIME it relays and
+ * groups the message into the replied-to message's conversation; a reply created without them is relayed with no
+ * threading headers at all, and every recipient - and the sender's own Sent Items copy - files it as a brand-new
+ * conversation. Nothing else recovers them: this server composes the MIME from the recipients, subject and HTML
+ * passed to `assembleDraft()`, which say nothing about what is being replied to.
+ */
+export function createDraft(mailboxUid: string, folderUid: string, threading?: DraftThreading): Promise<Message> {
     return apiFetch("/mail/messages", {
         method: "POST",
-        body: JSON.stringify({ mailboxUid, folderUid, messageId: `${crypto.randomUUID()}@webmail` }),
+        body: JSON.stringify({
+            mailboxUid,
+            folderUid,
+            messageId: `${crypto.randomUUID()}@webmail`,
+            ...(threading?.inReplyTo ? { inReplyTo: threading.inReplyTo } : {}),
+            ...(threading?.references?.length ? { references: threading.references } : {}),
+        }),
     });
 }
 
