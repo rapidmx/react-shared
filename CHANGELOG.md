@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-17
+
+### Added
+- Added mail/directoryApi with searchDirectory and searchContactSuggestions over restapi's GET /mail/directory and GET /mail/directory/contacts, for compose recipient autocomplete
+- Added fetchRecipientSuggestions, which runs both searches, keeps one source's entries when the other fails and rethrows aborts, and mergeRecipientSuggestions, which lists contacts first without repeating an address
+- Added mail/messageBodySanitizer.ts, web-client's own client-side body sanitizer moved here so a quote is cleaned the same way a displayed body is: sanitizeMessageBodyHtml for display, sanitizeQuotedHtml for a quote (also no styles, forms, frames, media or image that isn't a data: URI), and stripRemoteCssUrls, all of which drop every remote resource reference
+- Added buildComposeBodyHtml, which lays out a compose body as Outlook and Gmail do: an empty paragraph for the caret, then the signature, then the quote
+- Added buildReplyRecipients, which resolves a reply's To and Cc without the replying mailbox's own addresses, without repeating an address and without carrying Bcc recipients over, keeping display names - Reply All adding the original To to To and the original Cc to Cc, and a reply to a message the mailbox sent itself going to its original recipients
+- Added recipientDisplayName, which drops the address a display name carries, since an ingested message's from holds its whole From header as the display name
+- Added sortBy, sortOrder and filter to listMessages, typed as exactly the sort keys and named filters @rapidmx/restapi accepts, and stop sending an explicit newest-first sort now that the server defaults to one with a stable tiebreaker
+- Added bulkUpdateMessages, with setMessagesRead, setMessagesFlagged, moveMessages and setMessagesLabels over it, chunked at MAX_BULK_MESSAGE_UPDATE and stopping at the first rejected chunk, plus single-message setMessageFlagged and moveMessage
+- Added listConversationMessages for the expanded children of a conversation row, resolving a real thread or a single message that belongs to none
+- Added the server-managed read, flagged, fromAddress and importanceRank mirrors to the Message type, documented as fields to read through flags, from and importance instead
+- Added labelUids to listMessages and listConversations, the Label.uids a mail list is filtered by, sent as one comma-separated parameter and typed as a string array
+- Added MAX_MESSAGE_LABEL_FILTER, mirroring the server's own cap, so a label menu offering multiple selection can stop the user rather than send a request the server refuses with a 400
+- Added buildReplyThreading, which returns the inReplyTo and references a reply must record - the replied-to message's own messageId, and its references chain with that messageId appended, never repeating it and trimmed from after the thread's root to MAX_REPLY_REFERENCES entries
+
+### Changed
+- Skip the request for a query shorter than 2 characters and cut one longer than 100
+- Test the suggestion clients and merging
+- Document the suggestion API in the release notes and NOTES
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Quote a replied-to or forwarded message's full body, passed to buildReplyQuote and buildForwardQuote as a QuotedBody (the sanitized HTML body, the decrypted or verified content, or the plain text), instead of the server's truncated bodyPreview, which is now only the fallback
+- Return an empty string, never the unsanitized input, where there is no DOM to sanitize with
+- Name the sender as Name <address> in the reply attribution line
+- Test the quote builders, the body layout, the reply recipients and the sanitizer
+- Document the reply and forward composition API in the release notes and NOTES
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Accept folderUid, filter, limit and page in listConversations, and report the flagged, latestMessageUid, latestFrom, latestPreview and latestFolderUid a collapsed conversation row shows
+- Ask the server for flagged messages in listFlaggedMessages instead of reading every message in every folder and filtering in the browser
+- Test the new parameters, the bulk helpers and their chunking, and both conversation endpoints
+- Document the additions in the release notes and NOTES
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Document the semantics @rapidmx/restapi implements: a message is listed when it carries any of the named labels, ANDed with filter, order-insensitive and ignoring duplicates, applied by the database over the whole folder before paging and, for conversations, to the messages before they are grouped
+- Send no parameter at all for an empty selection, so a filter menu with nothing ticked issues exactly the request it always did
+- Point a caller building that menu at listLabels in mail/labelsApi, which already exists - labels are per-mailbox, so a uid from another mailbox matches nothing
+- Test both endpoints' new parameter and its empty case
+- Document the addition in the release notes and NOTES
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- Open a reply with an empty paragraph immediately above the quoted original, on top of the one that already separates the quote from a signature, so there is a blank line to press Enter into above the "On ... wrote:" block instead of having to make room for it by hand
+- Leave a compose body that has a signature and no quote exactly as it was, since the extra line is about the quote
+- Accept that threading in createDraft and send it in the draft it creates, so @rapidmx/restapi can write the In-Reply-To and References headers of the message it relays and file the reply into the conversation it continues
+- Document that a compose UI opening a reply or forward must pass it, because the MIME is composed from the recipients, subject and HTML alone and nothing recovers the thread afterwards - a reply created without it is relayed carrying no threading headers, so every recipient and the sender's own Sent Items copy start a new conversation for it
+- Expose inReplyTo, references and the server-assigned conversationId on Message, which a client needs to build a reply's chain and had no way to read
+- Test the new body layout, the threading builder's chain, deduplication, trimming and blank entries, and both createDraft forms
+- Document all of it in the release notes and NOTES
+- Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
 ## [0.6.0] - 2026-09-15
 
 ### Changed
@@ -359,7 +407,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/rapidmx/react-shared/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/rapidmx/react-shared/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/rapidmx/react-shared/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/rapidmx/react-shared/compare/v0.3.0...v0.4.0
