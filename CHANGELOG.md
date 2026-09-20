@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-20
+
+### Added
+- Added an optional defaults to MailboxPolicy, the server's config value of each field, for a reset to server default control on the mailbox policy form
+
+### Changed
+- Keep it optional so a UI offers no reset against an @rapidmx/restapi that predates it, and leave it out of what updateMailboxPolicy accepts
+- Document the change in the release notes and NOTES, including that it needs the next @rapidmx/restapi release
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
 ## [0.7.0] - 2026-09-17
 
 ### Added
@@ -407,7 +417,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/rapidmx/react-shared/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/rapidmx/react-shared/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/rapidmx/react-shared/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/rapidmx/react-shared/compare/v0.4.0...v0.5.0
