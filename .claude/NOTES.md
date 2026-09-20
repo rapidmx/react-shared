@@ -996,3 +996,10 @@ mail list as separate conversations.
 Verification: 85 files / 1088 tests, 100% statements/functions/lines, 99.34% branches (gates unchanged); `tsc
 --noEmit`, `yarn lint`, `yarn build` clean. Lint gotcha: `as any` on a `messageFixture()` argument that already
 satisfies the parameter type is `typescript/no-unnecessary-type-assertion`.
+
+### 2026-09-19 — `MailboxPolicy.defaults` (optional)
+
+- `getMailboxPolicy()` now types the server's config values as optional `defaults`, for web-client's "Reset to server
+  default" on the mailbox policy form. Optional on purpose: an older `@rapidmx/restapi` doesn't send it, and the form shows
+  no reset button then. `updateMailboxPolicy()` takes `Partial<Omit<MailboxPolicy, "defaults">>` - it is read-only.
+  Type-only change, so no test; `tsc --noEmit` clean.

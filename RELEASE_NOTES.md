@@ -1,5 +1,14 @@
 # Release Notes
 
+## Unreleased
+
+### Features
+
+- **`getMailboxPolicy()`/`updateMailboxPolicy()` expose the server's config values (`admin/mailboxPolicyApi.js`):**
+  `MailboxPolicy` gains an optional `defaults`, the config value of each field, for a "reset to server default" control.
+  It is absent from a server that predates it, so a UI must offer no reset then rather than assume it. `updateMailboxPolicy()`'s
+  patch does not accept it. Needs the next `@rapidmx/restapi` release.
+
 ## v0.7.0
 
 ### Features

@@ -5,7 +5,8 @@
 /**
  * Typed wrappers over `@rapidmx/restapi`'s deployment-wide `MailboxPolicy` singleton (`BaseMailboxPolicyRoute`,
  * mounted at `system/mailbox-policy`). `GET` is readable by any authenticated user and always returns the values in
- * effect (server config fills anything never saved); `PUT` is trusted-admin-only.
+ * effect (server config fills anything never saved), along with the server's current config values for the same
+ * fields as `defaults`; `PUT` is trusted-admin-only.
  */
 import { apiFetch } from "../util/api.js";
 
@@ -17,6 +18,11 @@ export interface MailboxPolicy {
     autoProvisionEnabled: boolean;
     /** The quota of a mailbox a user creates for themselves, in bytes. */
     autoProvisionQuotaBytes: number;
+    /**
+     * What the server's config says for each field right now - what a "reset" puts it back to. Absent from a server
+     * that predates it, in which case there is nothing to reset to.
+     */
+    defaults?: Omit<MailboxPolicy, "defaults">;
 }
 
 export function getMailboxPolicy(): Promise<MailboxPolicy> {
@@ -24,6 +30,6 @@ export function getMailboxPolicy(): Promise<MailboxPolicy> {
 }
 
 /** Partial patch - only supplied fields change. */
-export function updateMailboxPolicy(patch: Partial<MailboxPolicy>): Promise<MailboxPolicy> {
+export function updateMailboxPolicy(patch: Partial<Omit<MailboxPolicy, "defaults">>): Promise<MailboxPolicy> {
     return apiFetch("/system/mailbox-policy", { method: "PUT", body: JSON.stringify(patch) });
 }
