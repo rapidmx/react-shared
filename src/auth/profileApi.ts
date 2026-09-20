@@ -23,14 +23,47 @@ export function getMyProfile(authServerUrl: string): Promise<Profile> {
     return authApiFetch(authServerUrl, "/profiles/me");
 }
 
+/**
+ * One of the caller's own aliases as auth-server's `GET /api/aliases` returns it - only the fields read here.
+ * `type: "name"` is a username (the local part of a mailbox address); `verified` is false until it's confirmed.
+ */
+export interface Alias {
+    alias: string;
+    type: string;
+    verified?: boolean;
+}
+
+/**
+ * The caller's username - their first verified auth-server alias of type `name` (`GET /api/aliases?type=name`,
+ * which lists only the caller's own). The display-name fallback for an account with no profile name: some
+ * accounts have no profile document at all (`/profiles/me` is a 404 for them), yet every account has a
+ * username. Never rejects - a failed call, an unexpected body or no verified name alias all resolve
+ * `undefined`, since a missing nicety must not surface as an error.
+ */
+export async function getMyUsername(authServerUrl: string): Promise<string | undefined> {
+    try {
+        const aliases = await authApiFetch<Alias[]>(authServerUrl, "/aliases?type=name");
+        return Array.isArray(aliases) ? aliases.find((a) => a?.type === "name" && a.verified === true && !!a.alias)?.alias : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 /** `"Jane Doe"`, `"Jane"`, `"Doe"`, or `undefined` if neither name field is set. */
 export function formatProfileName(profile: Pick<Profile, "givenName" | "familyName"> | undefined): string | undefined {
     const name = [profile?.givenName, profile?.familyName].filter(Boolean).join(" ").trim();
     return name || undefined;
 }
 
-/** A 1-2 letter initials badge fallback, derived from the profile's name, or the given uid if it has none. */
-export function profileInitials(profile: Pick<Profile, "givenName" | "familyName"> | undefined, uid: string): string {
+/**
+ * A 1-2 letter initials badge, derived from the profile's name, else the first letter of `username` (see
+ * `getMyUsername()`), else the first letter of the given uid.
+ */
+export function profileInitials(
+    profile: Pick<Profile, "givenName" | "familyName"> | undefined,
+    uid: string,
+    username?: string,
+): string {
     const initials = [profile?.givenName?.[0], profile?.familyName?.[0]].filter(Boolean).join("");
-    return (initials || uid[0] || "?").toUpperCase();
+    return (initials || username?.[0] || uid[0] || "?").toUpperCase();
 }

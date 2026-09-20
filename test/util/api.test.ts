@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { ApiRequestError, apiFetch, apiUrl, authApiFetch, configureApiBaseUrl } from "../../src/util/api.js";
+import { ApiRequestError, apiFetch, apiOrigin, apiUrl, authApiFetch, configureApiBaseUrl } from "../../src/util/api.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -23,9 +23,15 @@ describe("ApiRequestError", () => {
         expect(err).toBeInstanceOf(Error);
     });
 
-    it("code is optional", () => {
+    it("code and details are optional", () => {
         const err = new ApiRequestError("nope", 500);
         expect(err.code).toBeUndefined();
+        expect(err.details).toBeUndefined();
+    });
+
+    it("keeps the details it is given", () => {
+        const details = { message: "nope", details: { recipients: [] } };
+        expect(new ApiRequestError("nope", 502, "api-1", details).details).toBe(details);
     });
 });
 
@@ -73,6 +79,24 @@ describe("apiFetch", () => {
             status: 400,
             code: "api-101",
         });
+    });
+
+    it("keeps the whole parsed error body as details, for endpoints that say more than a message", async () => {
+        const body = {
+            message: "The message could not be delivered.",
+            code: "api-500",
+            details: { recipients: [{ address: "x@example.com", smtpCode: 550, response: "5.1.1 No such user" }] },
+        };
+        mockFetch(() => jsonResponse(502, body));
+        const err = await apiFetch("/whatever").catch((e) => e);
+        expect(err).toBeInstanceOf(ApiRequestError);
+        expect(err.details).toEqual(body);
+    });
+
+    it("has no details when the error response has no JSON body", async () => {
+        mockFetch(() => new Response(null, { status: 500, statusText: "Server Error" }));
+        const err = await apiFetch("/whatever").catch((e) => e);
+        expect(err.details).toBeUndefined();
     });
 
     it("falls back to the body's error field when message is absent", async () => {
@@ -124,6 +148,14 @@ describe("apiFetch", () => {
         const init = fetchMock.mock.calls[0][1] as RequestInit;
         expect(fetchMock.mock.calls[0][0]).toBe("/api/status");
         expect(init.credentials).toBeUndefined();
+    });
+});
+
+describe("apiOrigin", () => {
+    it("is empty (same origin) by default, and the configured base URL without its trailing slash once set", () => {
+        expect(apiOrigin()).toBe("");
+        configureApiBaseUrl("https://mail.example.com/");
+        expect(apiOrigin()).toBe("https://mail.example.com");
     });
 });
 

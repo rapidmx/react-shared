@@ -16,13 +16,16 @@ This package is deliberately framework-free beyond React itself — no router, n
 management library. `src/` is organized by feature/system, mirroring `@rapidmx/restapi`'s own
 `src/<feature>/` convention: `mail/`, `calendar/`, `contacts/`, `tasks/`, `admin/`, `branding/`,
 `search/`, `auth/`, and `util/` for the small set of things every feature depends on (`api.ts`'s
-`apiFetch()`, `apiQuery.ts`'s pagination helper, `dateInput.ts`, `useIsMobile.ts`). Each `*Api.ts` module is
+`apiFetch()`, `apiQuery.ts`'s pagination helper, `dateInput.ts`, `useIsMobile.ts`, `clipboard.ts`'s `copyTextToClipboard()` and its `useCopyToClipboard.ts` hook). Each `*Api.ts` module is
 a thin `fetch` wrapper around one [`@rapidmx/restapi`](https://github.com/RapidMX/restapi) resource, and a
 handful of `use*` hooks and pure utilities (recurrence expansion, vCard/ICS helpers, emoji data, calendar
-color assignment) back the UI components each consumer builds independently.
+color assignment, `mail/mailAddress.ts`'s `Name <address>` formatting) back the UI components each consumer builds
+independently. `mail/pushClient.ts` is the one real-time connection a tab keeps to the server's `/push` WebSocket
+(subscribe to folder/mailbox uids, reconnect with backoff, close on sign-out) - a consumer must still poll, since events
+published while it was disconnected are never replayed.
 
 `src/components/` holds genuinely generic UI primitives — ones with no RapidMX/webmail-domain knowledge
-baked in — usable by any consumer: `buttons/Button`, `feedback/Alert`+`Skeleton`, `forms/FormField`,
+baked in — usable by any consumer: `buttons/Button`+`CopyButton`, `feedback/Alert`+`Skeleton`, `forms/FormField`,
 `overlays/Modal`+`Drawer`+`PopoverPortal`, `avatar/ContactAvatar`, `pickers/MiniDatePicker`, and
 `navigation/BottomTabBar`. Domain-specific components (calendar views, mail compose, contact/task/admin
 UI, etc.) stay in `@rapidmx/web-client`, which depends on this package rather than the other way around.

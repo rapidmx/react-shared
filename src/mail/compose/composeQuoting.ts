@@ -62,10 +62,6 @@ function cleaned(recipient: Recipient): Recipient {
     return name === recipient.displayName ? recipient : { ...recipient, ...(name ? { displayName: name } : { displayName: undefined }) };
 }
 
-function displayName(recipient: Recipient): string {
-    return recipientDisplayName(recipient) || recipient.address;
-}
-
 /** `Name <address>`, or the bare address when there's no usable display name. */
 function nameAndAddress(recipient: Recipient): string {
     const name = recipientDisplayName(recipient);
@@ -130,7 +126,7 @@ export function buildForwardQuote(message: Message, body?: QuotedBody): string {
     const when = new Date(message.receivedDate).toLocaleString();
     const to = message.recipients
         .filter((r) => r.type === "to")
-        .map(displayName)
+        .map(nameAndAddress)
         .join(", ");
     return (
         `<p>---------- Forwarded message ----------<br>` +

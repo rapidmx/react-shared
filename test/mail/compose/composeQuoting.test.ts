@@ -172,7 +172,7 @@ describe("buildForwardQuote", () => {
         expect(html).toContain("---------- Forwarded message ----------");
         expect(html).toContain("From: Sender One &lt;sender@example.com&gt;");
         expect(html).toContain("Subject: Hello there");
-        expect(html).toContain("To: Me");
+        expect(html).toContain("To: Me &lt;u1@example.com&gt;");
     });
 
     it("omits cc/bcc recipients from the To: header line", () => {
@@ -180,14 +180,14 @@ describe("buildForwardQuote", () => {
         expect(html).not.toContain("other@example.com");
     });
 
-    it("shows each To recipient's name without the address it may carry", () => {
+    it("shows each To recipient's name and address, without repeating an address the name already carries", () => {
         const message = messageFixture({
             recipients: [
                 { address: "dave@partner.test", displayName: "Dave Diaz <dave@partner.test>", type: "to" as const },
                 { address: "eve@partner.test", displayName: "someone-else@corp.test", type: "to" as const },
             ],
         });
-        expect(buildForwardQuote(message)).toContain("To: Dave Diaz, eve@partner.test");
+        expect(buildForwardQuote(message)).toContain("To: Dave Diaz &lt;dave@partner.test&gt;, eve@partner.test");
     });
 
     it("falls back to '(no subject)' when the subject is blank", () => {

@@ -1003,3 +1003,29 @@ satisfies the parameter type is `typescript/no-unnecessary-type-assertion`.
   default" on the mailbox policy form. Optional on purpose: an older `@rapidmx/restapi` doesn't send it, and the form shows
   no reset button then. `updateMailboxPolicy()` takes `Partial<Omit<MailboxPolicy, "defaults">>` - it is read-only.
   Type-only change, so no test; `tsc --noEmit` clean.
+
+### 2026-09-20 — Clipboard, push client, address formatting, send-failure details, username fallback
+
+Not committed. Consumed by `web-client` through a copy of the built `dist` over its `node_modules` copy (see that repo's NOTES) - no patch.
+
+- **`util/clipboard.ts`, `util/useCopyToClipboard.ts`, `components/buttons/CopyButton.tsx`.** `copyTextToClipboard()` tries the async Clipboard API, then a
+  hidden readonly textarea + `execCommand("copy")` (focus restored), and never rejects; `false` with no DOM. The hook keeps `copied`/`failed`
+  for 2 s and is unmount-safe. `CopyButton` always renders its `role="status"` live region so the change is announced; the accessible name is
+  the `label`. Existing copy code in `KeyEnrollmentGate` and the encryption settings page was not touched (no behavior change requested).
+- **`mail/pushClient.ts`** (protocol notes in its doc comment - the WebSocket is `/push`, events are raw `{type,action,data}` with no channel,
+  50 channels/user across tabs). Reconnect delay is "equal jitter" (half fixed, half random) from 1 s doubling to 60 s and is reset on the
+  server's `id: 0` greeting, not on `open` (a socket closed at once for the 10-socket cap never gets one). Only channels this client itself
+  had granted are unsubscribed. `getPushClient()` is the per-tab singleton, `resetPushClient()` for tests. Node now ships a global `WebSocket`,
+  so "no window" (no origin) - not "no WebSocket" - is what makes it inert during SSR.
+- **`mail/mailAddress.ts`** - the shared formatter. Coexists with `compose/recipients.ts`' `formatRecipient` (web-client, for compose fields) and
+  `composeQuoting.recipientDisplayName()` (drops a name that is a different address); `formatMailAddress()` keeps such a name (quoted) so it can be
+  seen, and reduces a name that is the whole From header to the name. Web-client's `checkSenderName()` remains the spoofing warning.
+- **`mail/sendFailure.ts`** + `ApiRequestError.details` + `apiOrigin()` - see the release notes. `getMessageRawContent()` builds its own
+  `ApiRequestError` and does not carry `details`.
+- **`auth/profileApi.ts`**: `getMyUsername()`, `profileInitials(profile, uid, username?)`.
+- **`util/api.ts` doc** now describes the `api-104` -> `/auth/elevate` flow.
+- `buildForwardQuote()`'s To line now includes addresses (test updated). The mailbox auto-provision typing was extended and **reverted** (coordinator
+  narrowed the task); `MailboxAutoProvisionResult`/`autoProvisionMailbox()` are as before.
+- `tsconfig.test.json` has 3 pre-existing errors (`useBranding.test`, `escrowKeys.test`, `retainedEncryptionKeys.test`).
+- Verified: `yarn tsc --noEmit` clean, `yarn lint` clean, `yarn vitest run --coverage` 92 files / 1174 tests passing, coverage 100 / 99.4 / 100 / 100 (branch
+  threshold 98, its documented exceptions unchanged); every new file is at 100%.

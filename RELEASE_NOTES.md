@@ -1,5 +1,53 @@
 # Release Notes
 
+## Unreleased
+
+### Features
+
+- **A copy-to-clipboard button (`components/buttons/CopyButton.js`, `util/clipboard.js`, `util/useCopyToClipboard.js`).**
+  `<CopyButton value label>` is a small "Copy" button for a value someone has to paste elsewhere; `label` is its
+  accessible name ("Copy value for the SPF record"). It reports the result in an always-present polite live region beside
+  the button - "Copied", or "Couldn't copy" when neither route works - and the message clears itself after two seconds.
+  `copyTextToClipboard(text)` tries `navigator.clipboard.writeText()` and, when that is missing (an `http:` origin) or
+  rejects (permission denied, the document not focused), a hidden-textarea `document.execCommand("copy")`, restoring focus
+  afterwards; it resolves whether it worked and never rejects, and resolves `false` where there is no DOM.
+  `useCopyToClipboard(resetMs?)` is the hook underneath (`{ status, copy }`) for a caller that draws its own button; it is
+  safe to unmount mid-copy.
+- **`getMyUsername(authServerUrl)` (`auth/profileApi.js`)** returns the caller's first verified auth-server `name` alias
+  (`GET /api/aliases?type=name`), the display-name fallback for an account whose profile has no name or no profile document
+  at all (`/profiles/me` is a 404 for those). It never rejects: a failed call, an unexpected body or no verified name alias
+  all resolve `undefined`. `profileInitials()` takes it as an optional third argument, used after the profile's name and
+  before the uid.
+
+- **A push client for real-time mail (`mail/pushClient.js`).** `getPushClient()` is the tab's one connection to the server's
+  `/push` WebSocket: `setChannels(uids)` subscribes to folder and mailbox uids (kept to `PUSH_MAX_CHANNELS`, 40 - the server
+  allows a user 50 in total across every tab), `onEvent()` delivers each event normalised to `{ type, action, data, channel? }`
+  (the server's own `{ type, action, data }` frames and the `{ type: "MESSAGE", channel, data }` wrapper alike; a message
+  event's `data` is the whole `Message`, with its `folderUid`), `onStatus()` reports `connecting`/`open`/`reconnecting`/`closed`,
+  and `close()` ends it for good (sign-out). It reconnects by itself with exponential backoff and jitter (1 s doubling to 60 s,
+  forgotten only once a socket is greeted, not merely opened), re-subscribes each time, and does nothing where there is no
+  `WebSocket` or origin. `pushUrl()` is `<api origin>/push` on `ws:`/`wss:`. Events are never replayed, so a consumer must also
+  poll and refetch after a reconnect. `PushClient` is exported for a consumer that wants its own.
+- **`formatMailAddress()` / `splitMailAddress()` (`mail/mailAddress.js`).** `formatMailAddress({ displayName | name, address })`
+  is `Name <address>`, or the bare address with no distinct name; a name with a comma, quote, angle bracket, backslash or `@`
+  (or a look-alike of one) is quoted, invisible and bidirectional-override characters are dropped, a name that is the whole
+  From header (name plus the sender's own address in angle brackets, which an ingested message can carry) is reduced to the
+  name, and the real address is always present and last, even when the name is a different address. `splitMailAddress()` gives
+  the `{ name?, address }` parts for a UI that lays them out itself.
+- **`describeSendFailure(err, fallback)` (`mail/sendFailure.js`)** turns a failed send into `{ message, lines }`: the
+  server's message and one `key: value` line per fact in the error body's `details` (per-recipient results, a transport error),
+  read defensively since the shape isn't fixed, capped at 50 lines of 500 characters, and no lines when there are none.
+- **`ApiRequestError.details`** keeps the whole parsed JSON body of an error response (`undefined` when there was none), so a
+  caller can read what an endpoint says beyond its `message`/`code`. The extra constructor argument is optional. `apiOrigin()`
+  returns the origin `configureApiBaseUrl()` set.
+- **A forward's quoted header (`buildForwardQuote()`) lists each To recipient as `Name <address>`**, not the name alone.
+
+### Documentation
+
+- `util/api.js` no longer says there is no way to elevate: a `@RequiresElevation()` endpoint answers a non-elevated token
+  with a 403 whose `ApiRequestError.code` is `"api-104"` (`"api-103"` is the different "not permitted" 403), and the caller
+  sends the browser to auth-server's `/auth/elevate?return_to=`, as `@rapidmx/web-client`'s `AdminShell` now does.
+
 ## v0.8.0
 
 ### Features

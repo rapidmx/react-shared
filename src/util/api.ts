@@ -12,19 +12,30 @@
  * sign-in — the browser attaches it automatically to every same-origin `fetch()` call (the default
  * `credentials: "same-origin"` mode), and this server's `JWTStrategy` accepts it as a credential for every
  * authenticated request, not just SSR page loads. There is no local elevation/step-up flow here (unlike
- * auth-server's own `api.ts`, which this is a trimmed sibling of) — that would need a cross-origin call to
- * auth-server's own elevation endpoint, not wired up yet (see `session.ts`).
+ * auth-server's own `api.ts`, which this is a trimmed sibling of): a request to an elevation-gated endpoint
+ * (`@RequiresElevation()` on the server) made with a non-elevated token fails with an `ApiRequestError` of
+ * status 403 and code `"api-104"`, and it is up to the caller to send the browser to auth-server's
+ * `/auth/elevate?return_to=...` page, which returns it to `return_to` once the user has confirmed their identity
+ * (the admin console does exactly that - see `AdminShell` in `@rapidmx/web-client`). Code `"api-103"` is a
+ * different 403 - the caller lacks a required role, and elevating won't help.
  */
 
 export class ApiRequestError extends Error {
     status: number;
     code?: string;
+    /**
+     * The response's whole parsed JSON body, for an endpoint that says more than `message` - e.g. a failed send's
+     * per-recipient SMTP results under `details`. `undefined` when the response had no JSON body (or the error
+     * was raised on the client), so a caller must treat it as untyped, untrusted data and read it defensively.
+     */
+    details?: unknown;
 
-    constructor(message: string, status: number, code?: string) {
+    constructor(message: string, status: number, code?: string, details?: unknown) {
         super(message);
         this.name = "ApiRequestError";
         this.status = status;
         this.code = code;
+        this.details = details;
     }
 }
 
@@ -50,6 +61,14 @@ let apiBaseUrl = "";
  */
 export function configureApiBaseUrl(baseUrl: string): void {
     apiBaseUrl = baseUrl.replace(/\/$/, "");
+}
+
+/**
+ * The origin `configureApiBaseUrl()` set - `""` (same origin) when it never was. For a caller that talks to the
+ * RapidMX server some way `apiFetch()` can't, such as the push WebSocket, which must go to the same origin.
+ */
+export function apiOrigin(): string {
+    return apiBaseUrl;
 }
 
 /**
@@ -108,7 +127,7 @@ async function decodeApiResponse<T>(res: Response): Promise<T> {
 
     if (!res.ok) {
         const message = (body && (body.message || body.error)) || res.statusText || "Request failed.";
-        throw new ApiRequestError(message, res.status, body?.code);
+        throw new ApiRequestError(message, res.status, body?.code, body);
     }
 
     return body as T;
