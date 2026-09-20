@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-20
+
+### Added
+- Added CopyButton, copyTextToClipboard and useCopyToClipboard, with a hidden textarea fallback for when the async clipboard is unavailable
+- Added a push client with one connection per tab, reconnects with backoff, re-subscription to the folders it is given and a close on sign-out, for live mail updates
+- Added formatMailAddress and splitMailAddress, which always show the real address and quote a display name that is itself a different address
+- Added describeSendFailure and keep the parsed response body as ApiRequestError.details, so a compose window can show a failed send's technical details
+- Added getMyUsername, the first verified name alias, so the account menu can show it when a profile has no name
+
+### Changed
+- Show recipient addresses in a forward's quoted header
+- Test the new modules and the changed ones
+- Document the changes in the README, the release notes and NOTES, including that web-client needs this release before its own
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
 ## [0.8.0] - 2026-09-20
 
 ### Added
@@ -417,7 +432,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/rapidmx/react-shared/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/rapidmx/react-shared/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/rapidmx/react-shared/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/rapidmx/react-shared/compare/v0.5.0...v0.6.0
