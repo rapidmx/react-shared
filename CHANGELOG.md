@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-21
+
+### Changed
+- Load x509, hash-wasm and the S/MIME code on first use instead of at import, awaiting reflect-metadata first, so the bundles that only read mail don't ship the PKI libraries
+- Document the change in the release notes and NOTES, including that web-client's inbox route is 467 KB rather than 1.05 MB only with this release
+- Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+
 ## [0.9.0] - 2026-09-20
 
 ### Added
@@ -432,7 +440,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/rapidmx/react-shared/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/rapidmx/react-shared/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/rapidmx/react-shared/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/rapidmx/react-shared/compare/v0.6.0...v0.7.0

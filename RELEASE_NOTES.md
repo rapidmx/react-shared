@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased
+## v0.10.0
 
 ### Fixes
 
