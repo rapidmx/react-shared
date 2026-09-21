@@ -15,7 +15,6 @@
  * yet, so today only `wrappingKey` is actually consumed; `authProof` is produced now so the wire format
  * (`kdf` string on `MasterKeyWrap`) doesn't need to change when that endpoint is added.
  */
-import { argon2id } from "hash-wasm";
 import { toBase64 } from "./encoding.js";
 import { hkdfDerive } from "./masterKey.js";
 
@@ -80,6 +79,8 @@ export async function deriveFromPassword(
     salt: Uint8Array,
     params: Argon2idParams = DEFAULT_ARGON2ID_PARAMS,
 ): Promise<PasswordDerivation> {
+    // Loaded on first use: `hash-wasm` carries the Argon2 WebAssembly and is only needed once a password is derived.
+    const { argon2id } = await import("hash-wasm");
     const argonOutput: Uint8Array = await argon2id({
         password,
         salt,

@@ -1,5 +1,17 @@
 # Release Notes
 
+## Unreleased
+
+### Fixes
+
+- **The PKI, ASN.1 and Argon2 libraries are no longer in every page's initial JavaScript.** `crypto/keys.js` (`@peculiar/x509`, with
+  `tsyringe`/`reflect-metadata`), `crypto/passwordUnlock.js` (`hash-wasm`'s Argon2 WebAssembly) and `crypto/masterKeyWraps.js`
+  (`crypto/smime.js`, which carries PKI.js and the X.509/ASN.1 libraries, over half a megabyte) load them on first use - when a CSR is
+  built, a password is derived, or an escrow wrap is made - instead of when the module is imported, and every shell that can unlock
+  keys imports these modules. `reflect-metadata` is awaited first on its own, because `tsyringe` throws "tsyringe requires a reflect
+  polyfill" when it evaluates before the polyfill does. Public signatures are unchanged. Without this release, the web client's inbox
+  route loads about 1.05 MB of JavaScript instead of 467 KB.
+
 ## v0.9.0
 
 ### Features

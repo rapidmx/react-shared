@@ -24,13 +24,25 @@
  * ECC P-256, not RSA, per the spec: "roughly halves the size of the Autocrypt-style header carried on
  * every outgoing message" versus RSA-2048.
  */
-import "reflect-metadata";
-import * as x509 from "@peculiar/x509";
 
-// The global `crypto` (WebCrypto) is what a browser tab or Electron renderer already provides natively —
-// no polyfill needed, unlike Node's own global `crypto`, which @peculiar/x509's server-side usage in
-// @rapidmx/restapi has to opt into explicitly (see that repo's `LocalX509CertificateAuthority.ts`).
-x509.cryptoProvider.set(crypto);
+/**
+ * `@peculiar/x509` (with its `tsyringe`/`reflect-metadata` and ASN.1 dependencies) is only needed to build a CSR - once per
+ * mailbox, at first-time key setup or a rotation - but this module is imported by `keySession.ts`, which every page's shell
+ * reaches. It is therefore loaded on first use, so it stays out of every page's initial JavaScript.
+ *
+ * `reflect-metadata` is awaited first on its own: `tsyringe` (a dependency of `@peculiar/x509`) throws "tsyringe requires a
+ * reflect polyfill" when it evaluates before the polyfill has.
+ *
+ * The global `crypto` (WebCrypto) is what a browser tab or Electron renderer already provides natively - no polyfill needed,
+ * unlike Node's own global `crypto`, which @peculiar/x509's server-side usage in @rapidmx/restapi has to opt into explicitly
+ * (see that repo's `LocalX509CertificateAuthority.ts`).
+ */
+async function loadX509(): Promise<typeof import("@peculiar/x509")> {
+    await import("reflect-metadata");
+    const x509 = await import("@peculiar/x509");
+    x509.cryptoProvider.set(crypto);
+    return x509;
+}
 
 const KEY_ALGORITHM: EcKeyGenParams = { name: "ECDSA", namedCurve: "P-256" };
 const CSR_SIGNING_ALGORITHM: EcdsaParams & Algorithm = { name: "ECDSA", hash: "SHA-256" };
@@ -48,6 +60,7 @@ export interface GeneratedKeyPair {
  * server-side at issuance, not here; this function only proves possession of the generated key.
  */
 export async function generateKeyPairWithCsr(mailboxAddress: string, useType: "sign" | "encrypt"): Promise<GeneratedKeyPair> {
+    const x509 = await loadX509();
     const keyPair = await crypto.subtle.generateKey(KEY_ALGORITHM, true, ["sign", "verify"]);
     const csr = await x509.Pkcs10CertificateRequestGenerator.create({
         // Structural (array-of-object) subject name, matching @rapidmx/restapi's own CA-side convention -

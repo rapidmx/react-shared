@@ -1029,3 +1029,19 @@ Not committed. Consumed by `web-client` through a copy of the built `dist` over 
 - `tsconfig.test.json` has 3 pre-existing errors (`useBranding.test`, `escrowKeys.test`, `retainedEncryptionKeys.test`).
 - Verified: `yarn tsc --noEmit` clean, `yarn lint` clean, `yarn vitest run --coverage` 92 files / 1174 tests passing, coverage 100 / 99.4 / 100 / 100 (branch
   threshold 98, its documented exceptions unchanged); every new file is at 100%.
+
+### 2026-09-20 (later) - PKI, ASN.1 and Argon2 libraries load on first use (`crypto/keys.ts`, `passwordUnlock.ts`, `masterKeyWraps.ts`)
+
+Found while cutting the inbox route's initial JavaScript in web-client: `keySession.ts` is reached by every page's shell, and through
+`keys.ts` (`@peculiar/x509`), `passwordUnlock.ts` (`hash-wasm`) and `masterKeyWraps.ts` (`smime.ts`: PKI.js, X.509, ASN.1) it pulled about 1 MB of
+libraries into every page although they are only used for key setup, a password unlock or an escrow wrap.
+- `keys.ts`: `loadX509()` awaits `reflect-metadata` on its own, then imports `@peculiar/x509` and sets its crypto provider; `generateKeyPairWithCsr()`
+  calls it first. `tsyringe` (an x509 dependency) throws "tsyringe requires a reflect polyfill" if it evaluates before the polyfill, and with
+  `strictExecutionOrder` (server `serverViteConfig.ts`) a static import order isn't enough once the module is lazy - so the polyfill is its own `await`.
+- `passwordUnlock.ts`: `deriveFromPassword()` imports `hash-wasm` itself. `masterKeyWraps.ts`: `buildEscrowWrap()` imports `./smime.js`.
+- Public signatures are unchanged (both were already async). Unit tests are unchanged; the lazy order is covered by the existing suites with real modules.
+- **Re-created after the react-shared folder was wiped (2026-09-20).** The original commit `5fc261b` was local and never pushed. The source was rebuilt from
+  the compiled `dist` that web-client's `node_modules` still held: after re-applying the edits, `tsc` output of all 172 files (`.js` and `.d.ts`) was
+  byte-identical to that copy. One detail that matters for the `.d.ts`: keep a blank line between the file's header comment and the `loadX509` comment in
+  `keys.ts`, or the header is emitted into `keys.d.ts`.
+- **Not verified:** a browser-level encrypted send/receive round trip after this change; the load order is exercised by unit tests only.

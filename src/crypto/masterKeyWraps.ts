@@ -19,7 +19,6 @@ import { MASTER_KEY_AAD_PURPOSE, type UnlockedKeys } from "./keySession.js";
 import { type KeyVault, type MasterKeyWrap, addMasterKeyWrap, getKeyVault, removeMasterKeyWrap } from "./keyvaultApi.js";
 import { Argon2idParams, DEFAULT_ARGON2ID_PARAMS, argon2idKdfLabel, deriveFromPassword, generateSalt } from "./passwordUnlock.js";
 import { RECOVERY_KDF_LABEL, deriveFromRecoveryCode, generateRecoveryCode } from "./recoveryCode.js";
-import { encryptForRecipients } from "./smime.js";
 
 export { RECOVERY_KDF_LABEL };
 export const WRAP_SCHEME_VERSION = 1;
@@ -119,6 +118,9 @@ const ESCROW_SALT_PLACEHOLDER = "n/a";
  */
 export async function buildEscrowWrap(mk: Uint8Array, escrowScopeId: string, scopePublicKeyCertDer: Uint8Array): Promise<MasterKeyWrap> {
     assertKeyMaterialUsable(mk);
+    // Loaded here, the one place it is used: `smime.ts` carries PKI.js and the ASN.1/X.509 libraries (over half a megabyte),
+    // and this module is imported by every shell that can unlock keys.
+    const { encryptForRecipients } = await import("./smime.js");
     const envelopedDer = await encryptForRecipients(mk, [scopePublicKeyCertDer]);
     return {
         method: "escrow",
