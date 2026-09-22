@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-22
+
+### Added
+- Added an appearance preferences client for a user's colour scheme, theme colours and background image, normalizing anything read from outside and diffing against the server's merge-based PUT so only what changed is ever sent
+- Added queueMessageSend for background sending, sendEvents to read the send-succeeded, send-retrying and send-failed push events a background send publishes, and setApiUnauthorizedObserver so one place hears every session-ending 401
+- Added an admin-console scope to listMailboxes, listQuarantine, listIngestQueue and getMailbox, so only the admin console reads another user's mail as metadata, and add resolveMailboxPrincipal so sharing can name a person by address, username or uid instead of a raw id
+- Added signing certificate progress to EnrollmentResult, its provider, and getCurrentSignEnrollment, checkSignEnrollmentNow and checkNowRetryAfterSeconds for polling a request against a CA
+- Added a signing certificate provider client for the deployment's issuance backend and health, and for an administrator's list, CSR download, certificate upload and rejection of a pending request
+- Added purgeData to removePlugin, retryPluginPurge, and the plugin purge status fields a client needs to show progress
+
+### Changed
+- Test every addition above and document the changes in the release notes and NOTES
+
 ## [0.10.0] - 2026-09-21
 
 ### Changed
@@ -440,7 +453,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/rapidmx/react-shared/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/rapidmx/react-shared/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/rapidmx/react-shared/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/rapidmx/react-shared/compare/v0.7.0...v0.8.0
