@@ -17,9 +17,11 @@ import { ApiRequestError, apiFetch, apiUrl, authApiFetch } from "../util/api.js"
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
 import { bytesToBinaryString } from "../crypto/mime.js";
+import type { ResolvedPrincipal } from "./mailboxAccessApi.js";
 
 export type { ListParams };
 export type { EncryptionPreference, PublicKey };
+export type { ResolvedPrincipal };
 
 /** Whether `mailbox` is one shared with the caller rather than their own: a delegate grant on somebody's mailbox, or a mailbox with no
  * owner at all (a shared/org mailbox they were granted). */
@@ -158,6 +160,17 @@ export function createMailbox(input: CreateMailboxInput): Promise<Mailbox> {
         method: "POST",
         body: JSON.stringify({ aliasAddresses: [], usedBytes: 0, ...input }),
     });
+}
+
+/**
+ * Who a typed principal - a mailbox address, an auth-server username or e-mail alias, or a user uid - is, for an
+ * administrator naming a mailbox's owner (a new mailbox here, or a future reassignment) to confirm before saving.
+ * Rejects with a 404 `ApiRequestError` ("No user found for ...") for nobody. Trusted-role-only
+ * (`BaseMailboxRoute.resolveOwner()` in `@rapidmx/restapi`) - the same exact-match resolution
+ * `resolveMailboxPrincipal()` (`mailboxAccessApi.ts`) uses for sharing.
+ */
+export function resolveMailboxOwner(principal: string): Promise<ResolvedPrincipal> {
+    return apiFetch(`/mail/mailboxes/resolve-owner?principal=${encodeURIComponent(principal)}`);
 }
 
 /** This server's configured domain list (`mail:domains`) — empty when unconfigured, meaning no

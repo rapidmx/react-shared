@@ -9,6 +9,7 @@ import {
     deleteEscrowScope,
     getEscrowScope,
     listEscrowScopes,
+    resolveEscrowScopeHolder,
     updateEscrowScope,
 } from "../../src/admin/escrowScopesApi.js";
 
@@ -122,5 +123,19 @@ describe("deleteEscrowScope", () => {
             "/api/escrow/scopes/es1?version=3",
             expect.objectContaining({ method: "DELETE" }),
         );
+    });
+});
+
+describe("resolveEscrowScopeHolder", () => {
+    it("asks the server who a typed address, username or uid is, encoding it", async () => {
+        const person = { userUid: "u1", displayName: "Jean-Philippe", address: "jp@example.com" };
+        const fetchMock = mockFetch(() => jsonResponse(200, person));
+        expect(await resolveEscrowScopeHolder("jp@example.com")).toEqual(person);
+        expect(fetchMock).toHaveBeenCalledWith("/api/escrow/scopes/resolve-holder?principal=jp%40example.com", expect.anything());
+    });
+
+    it("rejects with the server's own message when nobody is found", async () => {
+        mockFetch(() => jsonResponse(404, { message: 'No user found for "nobody".' }));
+        await expect(resolveEscrowScopeHolder("nobody")).rejects.toMatchObject({ status: 404, message: 'No user found for "nobody".' });
     });
 });

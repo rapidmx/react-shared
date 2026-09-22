@@ -12,6 +12,9 @@
 
 ### Fixes
 
+- **Resolving a mailbox's owner or an escrow scope's key holder before saving it (`mail/mailApi.js`, `admin/escrowScopesApi.js`).** `resolveMailboxOwner()` and `resolveEscrowScopeHolder()` preview who a
+  typed address, username, alias or uid names (the same exact-match resolution `resolveMailboxPrincipal()` already used, never a fuzzy search) before either field is actually set, both typed against the
+  same `ResolvedPrincipal` shape.
 - **DNS record types gain `autodiscover_cname`/`autodiscover_srv` (`admin/domainsApi.js`).** Type-only change matching restapi's widened `DnsRecordCheck` shape, for the DNS setup checklist's two new
   Autodiscover recommendations.
 - **Sharing resolves who it grants to (`mail/mailboxAccessApi.js`).** `setMailboxAccess()` names the person by address, username or user id (the server resolves it and stores only the uid; 400 "No user found for ..." otherwise); new `resolveMailboxPrincipal()` previews who it is; `MailboxAccessMember.noEffect` marks an entry that is not a user uid. `Mailbox.accessRole` (`"owner" | "delegate"`) and `isSharedWithMe()` label a shared mailbox.

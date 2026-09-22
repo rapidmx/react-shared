@@ -1117,3 +1117,9 @@ Tests: `test/crypto/signingProviderApi.test.ts` (every call's URL/method/body, t
 
 `DnsRecordType`/`DnsRecordCheck.recordKind` widened to match restapi's new `autodiscover_cname`/`autodiscover_srv` checklist entries - type-only,
 no runtime change, existing passthrough test already covers it.
+
+### 2026-09-22 - `resolveMailboxOwner()`/`resolveEscrowScopeHolder()`
+
+`mail/mailApi.ts` gets `resolveMailboxOwner()` and `admin/escrowScopesApi.ts` gets `resolveEscrowScopeHolder()`, both next to `resolveMailboxPrincipal()`'s
+existing pattern and typed against the same re-exported `ResolvedPrincipal` - restapi's new `GET .../resolve-owner`/`GET .../resolve-holder` (exact-match
+only, same as every other principal resolution in this app). Full suite: 95/95 files, 1254/1254 tests, 100/99.48/100/100.

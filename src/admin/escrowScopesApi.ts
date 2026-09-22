@@ -13,8 +13,10 @@
 
 import { apiFetch } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
+import type { ResolvedPrincipal } from "../mail/mailboxAccessApi.js";
 
 export type { ListParams };
+export type { ResolvedPrincipal };
 
 /** A scope's own public key — mirrors `@rapidmx/restapi`'s `EscrowScopePublicKey` exactly. An admin
  * pastes in the fields of an already-issued certificate here; nothing in this app generates a keypair. */
@@ -49,6 +51,16 @@ export interface EscrowScope {
 
 export function listEscrowScopes(params: ListParams = {}): Promise<EscrowScope[]> {
     return apiFetch(`/escrow/scopes?${buildQuery(params)}`);
+}
+
+/**
+ * Who a typed principal - a mailbox address, an auth-server username or e-mail alias, or a user uid - is, for the
+ * escrow-scope admin screen to confirm before adding them to `holderUserUids`. Rejects with a 404 `ApiRequestError`
+ * ("No user found for ...") for nobody. Trusted-role-only (`BaseEscrowScopeRoute.resolveHolder()` in
+ * `@rapidmx/restapi`) - never weaker than `createEscrowScope()`/`updateEscrowScope()`'s own gate on this same field.
+ */
+export function resolveEscrowScopeHolder(principal: string): Promise<ResolvedPrincipal> {
+    return apiFetch(`/escrow/scopes/resolve-holder?principal=${encodeURIComponent(principal)}`);
 }
 
 export function getEscrowScope(uid: string): Promise<EscrowScope> {

@@ -37,6 +37,7 @@ import {
     listQuarantine,
     recallMessage,
     releaseQuarantineEntry,
+    resolveMailboxOwner,
     revokeMailboxAccess,
     queueMessageSend,
     sendMessage,
@@ -176,6 +177,20 @@ describe("createMailbox", () => {
         });
         const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
         expect(body.ownerUserUid).toBeUndefined();
+    });
+});
+
+describe("resolveMailboxOwner", () => {
+    it("asks the server who a typed address, username or uid is, encoding it", async () => {
+        const person = { userUid: "u1", displayName: "Jean-Philippe", address: "jp@example.com" };
+        const fetchMock = mockFetch(() => jsonResponse(200, person));
+        expect(await resolveMailboxOwner("jp@example.com")).toEqual(person);
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/resolve-owner?principal=jp%40example.com", expect.anything());
+    });
+
+    it("rejects with the server's own message when nobody is found", async () => {
+        mockFetch(() => jsonResponse(404, { message: 'No user found for "nobody".' }));
+        await expect(resolveMailboxOwner("nobody")).rejects.toMatchObject({ status: 404, message: 'No user found for "nobody".' });
     });
 });
 
