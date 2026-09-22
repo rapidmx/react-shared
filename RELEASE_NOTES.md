@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.13.0
+
 ### Features
 
 - **`Domain.aliasOf` (`admin/domainsApi.js`).** `Domain`, `CreateDomainInput` and `UpdateDomainInput` all gain an optional `aliasOf`, naming another domain this one is a pure alias of (`@rapidmx/restapi`'s

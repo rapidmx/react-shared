@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-22
+
+### Added
+- Added a typed client for the video conferencing plugin's /mail/video-meetings routes, in a new videoconf module since no plugin has needed one here before
+- Added videoMeetingUid to CalendarEvent and CalendarEventInput, so a compose form can attach, read and clear an event's linked meeting
+- Added listVideoMeetings and dateCreated, so a settings page can list a mailbox's own meetings with the same join link every other read already gives
+- Added aliasOf to Domain, CreateDomainInput and UpdateDomainInput, matching restapi's new pure-domain-alias feature
+
+### Changed
+- Test every new client call
+- Test the new call
+- Document the change in the release notes and NOTES
+
 ## [0.12.0] - 2026-09-22
 
 ### Added
@@ -464,7 +477,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/rapidmx/react-shared/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/rapidmx/react-shared/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/rapidmx/react-shared/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/rapidmx/react-shared/compare/v0.9.0...v0.10.0
