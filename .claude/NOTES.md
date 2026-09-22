@@ -1151,3 +1151,14 @@ parallel by another agent, everything else already matches the route as it stand
   a 403 on update, and a 404 read as "no plugin"). Full suite: 96/96 files, 1261/1261 tests, 100/99.48/100/100 (gates unchanged); `tsc
   --noEmit`, `yarn lint` clean. `yarn build` run and `dist` copied into web-client's `node_modules/@rapidmx/react-shared/dist` (copy, not a
   link), as every entry above does.
+
+### 2026-09-22 (later still) - `Domain.aliasOf` on `admin/domainsApi.ts`
+
+Not committed, unpublished. The client half of restapi's new pure-domain-alias feature (see that repo's NOTES entry of the same date) - a
+domain can name another it aliases, receiving/sending mail for the same addresses with no mailboxes of its own. Pure type addition: `aliasOf?:
+string` on `Domain`, `CreateDomainInput` and `UpdateDomainInput`, no new function and no logic change to `listDomains`/`createDomain`/
+`updateDomain` (they already forward whatever fields the caller/server send). Existing `test/admin/domainsApi.test.ts` already exercises every
+call's passthrough shape, so no new test was needed - confirmed by running it unchanged (still 9/9). Full suite: 96/96 files, 1264/1264 tests
+(3 more than the entry above - unrelated work landed on this repo between the two sessions); `tsc --noEmit` clean. `web-client`'s own admin
+domains pages (that repo's NOTES entry, same date) consume this - not yet visible to `web-client`'s own `tsc --noEmit` until this package is
+actually published and that repo's dependency is bumped, same as every other cross-repo addition in this log.

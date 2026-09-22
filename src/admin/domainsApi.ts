@@ -28,6 +28,9 @@ export interface Domain {
     dkimPublicKey?: string;
     dmarcPolicy?: "none" | "quarantine" | "reject";
     dmarcReportEmail?: string;
+    /** When set, this domain is a pure alias of the domain named here - it has no mailboxes of its own; mail
+     * addressed to it is delivered to the matching mailbox on the domain it aliases instead. */
+    aliasOf?: string;
 }
 
 export function listDomains(params: ListParams = {}): Promise<Domain[]> {
@@ -45,6 +48,7 @@ export interface CreateDomainInput {
     dkimPublicKey?: string;
     dmarcPolicy?: "none" | "quarantine" | "reject";
     dmarcReportEmail?: string;
+    aliasOf?: string;
 }
 
 export function createDomain(input: CreateDomainInput): Promise<Domain> {
@@ -62,6 +66,7 @@ export interface UpdateDomainInput {
     dkimPublicKey?: string;
     dmarcPolicy?: "none" | "quarantine" | "reject";
     dmarcReportEmail?: string;
+    aliasOf?: string;
 }
 
 export function updateDomain(input: UpdateDomainInput): Promise<Domain> {
