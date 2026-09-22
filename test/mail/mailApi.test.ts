@@ -32,11 +32,13 @@ import {
     listMailboxDomains,
     listMailboxes,
     listMessages,
+    isSharedWithMe,
     listResourceMailboxes,
     listQuarantine,
     recallMessage,
     releaseQuarantineEntry,
     revokeMailboxAccess,
+    queueMessageSend,
     sendMessage,
     setMessageFlagged,
     setMessageLabels,
@@ -89,6 +91,24 @@ describe("listMailboxes", () => {
         await listMailboxes({ page: 2, limit: 10 });
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes?limit=10&page=2", expect.anything());
     });
+
+    it("sends ?scope=admin only when the administration scope is asked for", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await listMailboxes({ scope: "admin", limit: 50 });
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes?limit=50&page=0&scope=admin", expect.anything());
+        await listMailboxes({ limit: 50 });
+        expect(fetchMock).toHaveBeenLastCalledWith("/api/mail/mailboxes?limit=50&page=0", expect.anything());
+    });
+});
+
+describe("isSharedWithMe", () => {
+    it("is a delegate's mailbox - an owned one is not - and, from an older server, one with no owner", () => {
+        expect(isSharedWithMe({ accessRole: "delegate", ownerUserUid: "u1" })).toBe(true);
+        expect(isSharedWithMe({ accessRole: "delegate" })).toBe(true);
+        expect(isSharedWithMe({ accessRole: "owner", ownerUserUid: "u1" })).toBe(false);
+        expect(isSharedWithMe({ ownerUserUid: undefined })).toBe(true);
+        expect(isSharedWithMe({ ownerUserUid: "u1" })).toBe(false);
+    });
 });
 
 describe("listResourceMailboxes", () => {
@@ -112,6 +132,12 @@ describe("getMailbox", () => {
         const result = await getMailbox("mb/1");
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb%2F1", expect.anything());
         expect(result).toEqual(mailbox);
+    });
+
+    it("asks for the administration scope only when told to", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, mailbox));
+        await getMailbox("mb/1", { scope: "admin" });
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb%2F1?scope=admin", expect.anything());
     });
 });
 
@@ -222,6 +248,12 @@ describe("listQuarantine", () => {
         await listQuarantine("mb1");
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/quarantine?limit=25&page=0&mailboxUid=mb1", expect.anything());
     });
+
+    it("adds the administration scope when asked", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await listQuarantine("mb1", { scope: "admin" });
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/quarantine?limit=25&page=0&mailboxUid=mb1&scope=admin", expect.anything());
+    });
 });
 
 describe("releaseQuarantineEntry", () => {
@@ -250,6 +282,12 @@ describe("listIngestQueue", () => {
         const fetchMock = mockFetch(() => jsonResponse(200, []));
         await listIngestQueue("mb1");
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/ingest-queue?limit=25&page=0&mailboxUid=mb1", expect.anything());
+    });
+
+    it("adds the administration scope when asked", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await listIngestQueue("mb1", { scope: "admin" });
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/ingest-queue?limit=25&page=0&mailboxUid=mb1&scope=admin", expect.anything());
     });
 });
 
@@ -970,6 +1008,37 @@ describe("sendMessage", () => {
             "/api/mail/messages/m1/send",
             expect.objectContaining({ method: "POST", body: JSON.stringify({ scheduledSendTime: "2026-06-01T09:00:00.000Z" }) }),
         );
+    });
+});
+
+describe("queueMessageSend", () => {
+    it("posts { background: true } and resolves the 202 answer as queued", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(202, { status: "queued", message }));
+        const result = await queueMessageSend("m/1");
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/messages/m%2F1/send",
+            expect.objectContaining({ method: "POST", body: JSON.stringify({ background: true }) }),
+        );
+        expect(result).toEqual({ queued: true, message });
+    });
+
+    it("treats a plain message answer (a server without a send queue, which relayed first) as already sent", async () => {
+        mockFetch(() => jsonResponse(200, message));
+        expect(await queueMessageSend("m1")).toEqual({ queued: false, message });
+    });
+
+    it("sends the ordinary synchronous way when the message class has no send job (501)", async () => {
+        const fetchMock = mockFetch((url, init) =>
+            (init).body ? jsonResponse(501, { message: "Background sends are not supported." }) : jsonResponse(200, message),
+        );
+        expect(await queueMessageSend("m1")).toEqual({ queued: false, message });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(fetchMock.mock.calls[1][1]).not.toHaveProperty("body");
+    });
+
+    it("rejects with the server's own error when it refused to queue the message", async () => {
+        mockFetch(() => jsonResponse(400, { message: "At least one recipient is required.", code: "api-1" }));
+        await expect(queueMessageSend("m1")).rejects.toMatchObject({ status: 400, message: "At least one recipient is required." });
     });
 });
 

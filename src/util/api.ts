@@ -98,7 +98,7 @@ export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}
     const credentials = apiBaseUrl ? "include" : init.credentials;
 
     const res = await fetch(apiUrl(path), { ...init, headers, credentials });
-    return decodeApiResponse<T>(res);
+    return decodeApiResponse<T>(res, true);
 }
 
 /**
@@ -121,13 +121,33 @@ export async function authApiFetch<T = unknown>(authServerUrl: string, path: str
     return decodeApiResponse<T>(res);
 }
 
-async function decodeApiResponse<T>(res: Response): Promise<T> {
+let unauthorizedObserver: ((error: ApiRequestError) => void) | undefined;
+
+/**
+ * Registers the one function that hears about every `401` this server's API (`apiFetch()`, not auth-server's) answers - the
+ * signed-in session has ended or expired. It only observes: the request still rejects with the same `ApiRequestError`, so
+ * a caller's own handling is unchanged. The app frame uses it to say "Your session expired" once, whichever request noticed
+ * first (a background refresh included). Pass `undefined` to remove it. A throwing observer never affects the request.
+ */
+export function setApiUnauthorizedObserver(observer: ((error: ApiRequestError) => void) | undefined): void {
+    unauthorizedObserver = observer;
+}
+
+async function decodeApiResponse<T>(res: Response, observeUnauthorized = false): Promise<T> {
     const contentType = res.headers.get("content-type") ?? "";
     const body = contentType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
 
     if (!res.ok) {
         const message = (body && (body.message || body.error)) || res.statusText || "Request failed.";
-        throw new ApiRequestError(message, res.status, body?.code, body);
+        const error = new ApiRequestError(message, res.status, body?.code, body);
+        if (observeUnauthorized && res.status === 401) {
+            try {
+                unauthorizedObserver?.(error);
+            } catch {
+                // An observer's failure must not change what the caller sees.
+            }
+        }
+        throw error;
     }
 
     return body as T;

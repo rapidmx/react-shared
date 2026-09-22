@@ -5,9 +5,12 @@
 /**
  * Typed wrappers over `@rapidmx/restapi`'s REST surface. Shared by `apps/admin` and (from Phase 3 on)
  * `apps/www` — there is no separate admin-only endpoint set to isolate: every route here is gated entirely
- * by the ACL system, so the exact same call returns a caller's own data or (for a trusted/admin caller)
- * everyone's, depending on who's asking. See `BaseMailboxRoute`'s doc comment in `@rapidmx/restapi` and this
- * repo's `.claude/NOTES.md`.
+ * by the ACL system, so the exact same call returns the caller's own data and what is shared with them - an
+ * administrator's included: no role reads another user's mail. The one exception is the administration scope
+ * (`scope: "admin"` -> `?scope=admin`), which ONLY the admin console passes: mailboxes then come back as
+ * administrative metadata (no keys, settings or content) and every call is audited; an administrator who needs
+ * to see somebody's mail impersonates them (`impersonateUser()`). See `BaseMailboxRoute`'s doc comment in
+ * `@rapidmx/restapi` and this repo's `.claude/NOTES.md`.
  */
 
 import { ApiRequestError, apiFetch, apiUrl, authApiFetch } from "../util/api.js";
@@ -17,6 +20,23 @@ import { bytesToBinaryString } from "../crypto/mime.js";
 
 export type { ListParams };
 export type { EncryptionPreference, PublicKey };
+
+/** Whether `mailbox` is one shared with the caller rather than their own: a delegate grant on somebody's mailbox, or a mailbox with no
+ * owner at all (a shared/org mailbox they were granted). */
+export function isSharedWithMe(mailbox: Pick<Mailbox, "accessRole" | "ownerUserUid">): boolean {
+    return mailbox.accessRole ? mailbox.accessRole === "delegate" : !mailbox.ownerUserUid;
+}
+
+/** `?scope=admin`: the administration scope, for the admin console only (trusted + elevated callers; audited). A mailbox
+ * then carries administrative metadata only - see `Mailbox.shared`. */
+export interface AdminScopeParams {
+    scope?: "admin";
+}
+
+/** The `scope` query parameter of `params`, when set. */
+function scopeQuery(params: AdminScopeParams): Record<string, string> {
+    return params.scope ? { scope: params.scope } : {};
+}
 
 export interface Mailbox {
     uid: string;
@@ -84,6 +104,12 @@ export interface Mailbox {
      * per the spec's own `PublicKey` doc comment. Absent/empty means no keys enrolled yet
      * (`KeyEnrollmentGate` handles that state). */
     keys?: PublicKey[];
+    /** How the caller reaches this mailbox: `"owner"` (theirs) or `"delegate"` (shared with them). Set by the plain list and read of
+     * mailboxes - not in an administration-scope answer - so a client can label the shared ones; see `isSharedWithMe()`. */
+    accessRole?: "owner" | "delegate";
+    /** Only in an administration-scope answer (`scope: "admin"`): the mailbox has no single owner. Such an answer
+     * carries administrative metadata only, so the fields it leaves out (`oofMessage`, `keys`, ...) are `undefined`. */
+    shared?: boolean;
     /** The `EscrowScope` this mailbox is currently assigned to, if any — an admin-only assignment
      * (`specs/end-to-end_encryption.md`'s Escrow Scoping). Assigning this alone does **not** create any
      * `MasterKeyWrap` — the mailbox owner must separately wrap MK against the scope's public key (see
@@ -92,13 +118,15 @@ export interface Mailbox {
     escrowScopeId?: string;
 }
 
-/** Lists mailboxes the caller can access (owned, shared with them, or — for a trusted caller — every one). */
-export function listMailboxes(params: ListParams = {}): Promise<Mailbox[]> {
-    return apiFetch(`/mail/mailboxes?${buildQuery(params)}`);
+/** Lists the mailboxes the caller owns or has been granted - the same for everyone, an administrator included. With
+ * `scope: "admin"` (admin console only) it lists every mailbox as administrative metadata instead. */
+export function listMailboxes(params: ListParams & AdminScopeParams = {}): Promise<Mailbox[]> {
+    return apiFetch(`/mail/mailboxes?${buildQuery(params, scopeQuery(params))}`);
 }
 
-export function getMailbox(uid: string): Promise<Mailbox> {
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(uid)}`);
+/** One mailbox the caller owns or has been granted; with `scope: "admin"` (admin console only), its administrative metadata. */
+export function getMailbox(uid: string, options: AdminScopeParams = {}): Promise<Mailbox> {
+    return apiFetch(`/mail/mailboxes/${encodeURIComponent(uid)}${options.scope ? `?scope=${options.scope}` : ""}`);
 }
 
 /** Lists bookable resource mailboxes (rooms/equipment) visible to the caller — same ACL scoping as
@@ -224,9 +252,9 @@ export interface QuarantineEntry {
     releasedByUserUid?: string;
 }
 
-/** Lists quarantined mail for a mailbox the caller can access — their own, or (trusted) any mailbox. */
-export function listQuarantine(mailboxUid: string, params: ListParams = {}): Promise<QuarantineEntry[]> {
-    return apiFetch(`/mail/quarantine?${buildQuery(params, { mailboxUid })}`);
+/** Lists quarantined mail for a mailbox the caller owns or has been granted; with `scope: "admin"` (admin console only), for any mailbox. */
+export function listQuarantine(mailboxUid: string, params: ListParams & AdminScopeParams = {}): Promise<QuarantineEntry[]> {
+    return apiFetch(`/mail/quarantine?${buildQuery(params, { mailboxUid, ...scopeQuery(params) })}`);
 }
 
 /**
@@ -262,9 +290,10 @@ export interface IngestQueueEntry {
     scanLeaseExpiresAt?: string;
 }
 
-/** Lists ingest-queue entries for a mailbox the caller can access — useful for diagnosing stuck delivery. */
-export function listIngestQueue(mailboxUid: string, params: ListParams = {}): Promise<IngestQueueEntry[]> {
-    return apiFetch(`/mail/ingest-queue?${buildQuery(params, { mailboxUid })}`);
+/** Lists ingest-queue entries for a mailbox the caller owns or has been granted - useful for diagnosing stuck delivery; with
+ * `scope: "admin"` (admin console only), for any mailbox. */
+export function listIngestQueue(mailboxUid: string, params: ListParams & AdminScopeParams = {}): Promise<IngestQueueEntry[]> {
+    return apiFetch(`/mail/ingest-queue?${buildQuery(params, { mailboxUid, ...scopeQuery(params) })}`);
 }
 
 export interface AclRecord {
@@ -279,7 +308,10 @@ export interface AccessControlList {
     records: AclRecord[];
 }
 
-/** Fetches a mailbox's own ACL — its `records` are its owner's/delegates' grants (see BaseACLRoute). */
+/** Fetches a mailbox's own ACL — its `records` are its owner's/delegates' grants (see BaseACLRoute). The server only answers a
+ * caller who holds full access to that mailbox as themselves (never through a trusted role): to list, grant or revoke a mailbox's
+ * members use `listMailboxAccess()`/`setMailboxAccess()`/`removeMailboxAccess()` (`mailboxAccessApi.ts`), which is also the
+ * audited way an administrator shares an ownerless mailbox. */
 export function getMailboxAcl(mailboxUid: string): Promise<AccessControlList> {
     return apiFetch(`/acls/${encodeURIComponent(mailboxUid)}`);
 }
@@ -958,6 +990,44 @@ export function sendMessage(messageUid: string, options?: SendMessageOptions): P
         method: "POST",
         ...(options?.scheduledSendTime ? { body: JSON.stringify({ scheduledSendTime: options.scheduledSendTime }) } : {}),
     });
+}
+
+/** What `queueMessageSend()` resolves with. */
+export interface QueuedSend {
+    /** `true`: the server accepted the message and will relay it in the background (`202 { status: "queued", message }`) - the
+     * outcome arrives as a `send-succeeded`/`send-failed`/`send-retrying` push event (see `sendEvents.ts`). `false`: a server that
+     * doesn't queue relayed it before answering, so the message has already been sent (`message` is its Sent Items copy). */
+    queued: boolean;
+    /** The message as the server holds it now - in Outbox, with its send in flight, when `queued`. */
+    message: Message;
+}
+
+/**
+ * Sends an already-assembled draft *in the background*: `POST /mail/messages/:id/send` with `{ background: true }`. The server
+ * checks the message, moves it into Outbox with a lease and answers `202 { status: "queued", message }` at once - relaying happens
+ * afterwards, and its outcome is published as push events on the mailbox's, Outbox's and Sent Items' channels rather than answered
+ * here. Rejects with the server's own error (validation, permissions: the message was not queued). A server that has no queue
+ * relays first and answers with the message, which resolves as `{ queued: false }` - as does a message class with no send job, which
+ * answers a background send `501`: it is then sent the ordinary, synchronous way.
+ */
+export async function queueMessageSend(messageUid: string): Promise<QueuedSend> {
+    let result: Message | { status?: string; message?: Message };
+    try {
+        result = await apiFetch<Message | { status?: string; message?: Message }>(`/mail/messages/${encodeURIComponent(messageUid)}/send`, {
+            method: "POST",
+            body: JSON.stringify({ background: true }),
+        });
+    } catch (err) {
+        if (err instanceof ApiRequestError && err.status === 501) {
+            return { queued: false, message: await sendMessage(messageUid) };
+        }
+        throw err;
+    }
+    const queued = result as { status?: string; message?: Message };
+    if (queued.status === "queued" && queued.message) {
+        return { queued: true, message: queued.message };
+    }
+    return { queued: false, message: result as Message };
 }
 
 /**

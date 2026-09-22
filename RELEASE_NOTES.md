@@ -1,5 +1,38 @@
 # Release Notes
 
+## Unreleased
+
+### Security
+
+- **`?scope=admin` for the admin console (`mail/mailApi.js`).** `listMailboxes()`, `listQuarantine()` and `listIngestQueue()` take an optional `scope: "admin"` and `getMailbox(uid, { scope: "admin" })`
+  sends `?scope=admin`: with a trusted, elevated token the server answers every mailbox as administrative metadata only (`Mailbox.shared` is new; the fields it leaves out - keys, out-of-office text, settings - are
+  `undefined`) and any mailbox's quarantine / ingest-queue entries, each call audited. Only the admin console passes it: the plain calls return the caller's own and shared mailboxes, an administrator's included,
+  because the server no longer lets a trusted role read another user's mail. `getMailboxAcl()` / `grantMailboxAccess()` / `revokeMailboxAccess()` (`/acls`) are refused for a mailbox's ACL unless the caller
+  holds full access to it as themselves - use `listMailboxAccess()` / `setMailboxAccess()` / `removeMailboxAccess()` (`mail/mailboxAccessApi.js`), the audited Sharing endpoints.
+
+### Fixes
+
+- **Sharing resolves who it grants to (`mail/mailboxAccessApi.js`).** `setMailboxAccess()` names the person by address, username or user id (the server resolves it and stores only the uid; 400 "No user found for ..." otherwise); new `resolveMailboxPrincipal()` previews who it is; `MailboxAccessMember.noEffect` marks an entry that is not a user uid. `Mailbox.accessRole` (`"owner" | "delegate"`) and `isSharedWithMe()` label a shared mailbox.
+
+### Features
+
+- **Signing-certificate progress (`crypto/keyvaultApi.js`).** `EnrollmentResult` gains optional `provider` (`manual` or `rfc8823`), `stage` (`submitted`, `awaiting-challenge`, `challenge-answered`, `validating`, `issuing`, `issued`, `failed`), `stages` (`{ id, label, state: done|active|pending|failed, at? }[]`), `progress` (0-100), `requestedAt`, `updatedAt`, `lastCheckedAt`, `nextCheckAt`, `note`, `errorCode`, `retryable` and, once issued, `issuedAt`, `installedAt` (a job installs the certificate in the mailbox a few minutes after it is issued), `notAfter`, `serialNumber`, `issuer` and `subject` - all optional, so an older server that sends only `status`, `certificate` and `error` still works. New: `getCurrentSignEnrollment(mailboxUid)` (`GET .../keyvault/keys/sign-enrollment`: the mailbox's current or most recent enrollment with its `enrollmentId`, or `null` on 404), `checkSignEnrollmentNow(mailboxUid, enrollmentId)` (`POST .../sign-enrollment/:id/check`: re-checks with the CA now; the server answers 429 with `Retry-After` within about ten seconds of the last) and `checkNowRetryAfterSeconds(err)` (seconds to wait after that 429: the body's `retryAfter`, else 10). `normalizeEnrollmentResult()` reads every answer defensively - an unknown status is `pending`, a field of the wrong type is dropped, `progress` is clamped to 0-100, a step needs an id, a label and a known state - and `checkSignEnrollmentStatus()` now goes through it.
+
+- **Sending in the background (`mail/mailApi.js`).** `queueMessageSend(uid)` calls `POST /mail/messages/:id/send` with `{ "background": true }`: the server checks the message,
+  moves it into Outbox and answers `202 { status: "queued", message }` at once, relaying afterwards; it resolves `{ queued: true, message }`. A server that has no queue relays
+  first and answers with the message (`{ queued: false }`), and one whose message class has no send job (501) is sent the ordinary way. `sendMessage()` is unchanged.
+- **Send outcomes (`mail/sendEvents.js`).** `parseSendEvent(event)` reads the `send-succeeded` / `send-retrying` / `send-failed` push events the server publishes for a message it
+  relayed (`{ uid, mailboxUid, subject, recipients, attempt, nextAttemptAt?, error?: { message, details? } }`) defensively (`undefined` for anything else), and
+  `describeSendEventError(error, fallback)` turns an event's `error` into the plain message and technical lines `describeSendFailure()` gives a synchronous failure.
+- **One place hears "your session ended" (`util/api.js`).** `setApiUnauthorizedObserver(fn)` is called for every `401` answered to `apiFetch()` (not `authApiFetch()`, whose 401
+  is a wrong password); it only observes - the request still rejects with the same `ApiRequestError` - and a throwing observer changes nothing.
+- **Appearance preferences client (`appearance/preferencesApi.js`).** Typed client for a user's colour scheme, theme colours and background: `getAppearance()`, `saveAppearance(update)` (the
+  server merges a partial), `uploadAppearanceBackground(file)` (the raw bytes with the file's own `Content-Type`), `deleteAppearanceBackground()`, `appearanceBackgroundUrl(version)`
+  and `parseAppearanceEvent(event)` for the live `AppearancePreferences...` push events. `diffAppearance(server, next)` builds the `PUT` (only what differs, `null` to clear a colour,
+  `kind: "none"` rather than `background: null`, never the image), `normalizeAppearance(value)` keeps only well-formed values (colours `#rrggbb`, numbers clamped, an image version made
+  of safe characters) from any outside source, and `validateBackgroundFile(file)` says why a picture is refused (PNG, JPEG, WebP or AVIF, up to 8 MB) before anything is uploaded.
+- **Uninstalling a plugin with its data (`admin/pluginsApi.js`).** `removePlugin(uid, { purgeData: true })` sends `{ "purgeData": true }` (nothing is sent by default, so an older server is called exactly as before) and now returns `{ purgeScheduled, purge? }` (`{ purgeScheduled: false }` when the server answers with nothing); a server only accepts the flag from an elevated administrator (403 `api-104` otherwise). New `retryPluginPurge(purgeUid)`, `PluginStatus.purges` (`PluginPurgeInfo`: `pending|running|done|failed`, `steps`, `error`, `serversRunning/serversTotal`), and `AddPluginResult.purgeCancelled/warnings` for the deletion an add cancels.
+
 ## v0.10.0
 
 ### Fixes

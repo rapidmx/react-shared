@@ -9,6 +9,7 @@ import {
     listMailboxAccess,
     lookupMailboxOwnerByEmail,
     removeMailboxAccess,
+    resolveMailboxPrincipal,
     setMailboxAccess,
 } from "../../src/mail/mailboxAccessApi.js";
 
@@ -56,6 +57,20 @@ describe("setMailboxAccess", () => {
         const fetchMock = mockFetch(() => jsonResponse(200, { userOrRoleId: "u/1", role: "viewer" }));
         await setMailboxAccess("mb1", "u/1", "viewer");
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb1/access/u%2F1", expect.anything());
+    });
+});
+
+describe("resolveMailboxPrincipal", () => {
+    it("asks the server who a typed address, username or uid is, encoding both", async () => {
+        const person = { userUid: "u1", displayName: "Jean-Philippe", address: "jp@example.com" };
+        const fetchMock = mockFetch(() => jsonResponse(200, person));
+        expect(await resolveMailboxPrincipal("mb/1", "jp@example.com")).toEqual(person);
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb%2F1/access/resolve?principal=jp%40example.com", expect.anything());
+    });
+
+    it("rejects with the server's own message when nobody is found", async () => {
+        mockFetch(() => jsonResponse(404, { message: 'No user found for "nobody".' }));
+        await expect(resolveMailboxPrincipal("mb1", "nobody")).rejects.toMatchObject({ status: 404, message: 'No user found for "nobody".' });
     });
 });
 

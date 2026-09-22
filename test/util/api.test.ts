@@ -4,13 +4,45 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { ApiRequestError, apiFetch, apiOrigin, apiUrl, authApiFetch, configureApiBaseUrl } from "../../src/util/api.js";
+import { ApiRequestError, apiFetch, apiOrigin, apiUrl, authApiFetch, configureApiBaseUrl, setApiUnauthorizedObserver } from "../../src/util/api.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
     // apiBaseUrl is module-level state - reset to the default so a test that calls configureApiBaseUrl()
     // never leaks into a later test in this file (or another file sharing this module instance).
     configureApiBaseUrl("");
+    setApiUnauthorizedObserver(undefined);
+});
+
+describe("setApiUnauthorizedObserver", () => {
+    it("hears a 401 from apiFetch, which still rejects with the same error", async () => {
+        const observer = vi.fn();
+        setApiUnauthorizedObserver(observer);
+        mockFetch(() => jsonResponse(401, { message: "Sign in." }));
+        await expect(apiFetch("/mail/mailboxes")).rejects.toMatchObject({ status: 401, message: "Sign in." });
+        expect(observer).toHaveBeenCalledTimes(1);
+        expect(observer.mock.calls[0][0]).toBeInstanceOf(ApiRequestError);
+    });
+
+    it("is not told about other failures or about auth-server's own 401s", async () => {
+        const observer = vi.fn();
+        setApiUnauthorizedObserver(observer);
+        mockFetch(() => jsonResponse(403, { message: "No." }));
+        await expect(apiFetch("/mail/mailboxes")).rejects.toMatchObject({ status: 403 });
+        mockFetch(() => jsonResponse(401, { message: "Bad password." }));
+        await expect(authApiFetch("https://auth.example.com", "/auth/login")).rejects.toMatchObject({ status: 401 });
+        expect(observer).not.toHaveBeenCalled();
+    });
+
+    it("never lets a throwing observer change what the caller sees, and works with none registered", async () => {
+        setApiUnauthorizedObserver(() => {
+            throw new Error("observer bug");
+        });
+        mockFetch(() => jsonResponse(401, { message: "Sign in." }));
+        await expect(apiFetch("/x")).rejects.toMatchObject({ status: 401, message: "Sign in." });
+        setApiUnauthorizedObserver(undefined);
+        await expect(apiFetch("/x")).rejects.toMatchObject({ status: 401 });
+    });
 });
 
 describe("ApiRequestError", () => {

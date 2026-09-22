@@ -8,12 +8,16 @@ import { ApiRequestError } from "../../src/util/api.js";
 import {
     addMasterKeyWrap,
     cancelSignEnrollment,
+    checkNowRetryAfterSeconds,
+    checkSignEnrollmentNow,
     checkSignEnrollmentStatus,
     enrollKey,
     getEncryptionPolicy,
+    getCurrentSignEnrollment,
     getEscrowInfo,
     getKeyVault,
     lookupKeys,
+    normalizeEnrollmentResult,
     rekey,
     removeMasterKeyWrap,
     SignerKeyConflictError,
@@ -186,6 +190,114 @@ describe("cancelSignEnrollment", () => {
             expect.objectContaining({ method: "DELETE" }),
         );
         expect(result).toEqual({ status: "failed", error: "Cancelled by the mailbox owner." });
+    });
+});
+
+describe("normalizeEnrollmentResult", () => {
+    it("keeps an older server's answer exactly as it was", () => {
+        expect(normalizeEnrollmentResult({ status: "issued", certificate: "pem" })).toEqual({ status: "issued", certificate: "pem" });
+        expect(normalizeEnrollmentResult({ status: "failed", error: "No." })).toEqual({ status: "failed", error: "No." });
+    });
+
+    it("reads every extended field", () => {
+        const raw = {
+            status: "issued",
+            stage: "issued",
+            stages: [{ id: "a", label: "Requested", state: "done", at: "2026-09-21T10:00:00Z" }, { id: "b", label: "Issued", state: "done" }],
+            progress: 100,
+            requestedAt: "2026-09-21T10:00:00Z",
+            updatedAt: "2026-09-21T10:05:00Z",
+            lastCheckedAt: "2026-09-21T10:05:00Z",
+            nextCheckAt: "2026-09-21T10:06:00Z",
+            provider: "rfc8823",
+            errorCode: "none",
+            note: "Installing the certificate.",
+            retryable: false,
+            issuedAt: "2026-09-21T10:05:00Z",
+            installedAt: "2026-09-21T10:09:00Z",
+            notAfter: "2027-09-21T10:05:00Z",
+            serialNumber: "0A1B",
+            issuer: "CN=CA",
+            subject: "E=a@b.c",
+        };
+        expect(normalizeEnrollmentResult(raw)).toEqual(raw);
+    });
+
+    it("keeps a known provider and drops an unknown one", () => {
+        expect(normalizeEnrollmentResult({ status: "pending", provider: "manual" })).toEqual({ status: "pending", provider: "manual" });
+        expect(normalizeEnrollmentResult({ status: "pending", provider: "carrier-pigeon" })).toEqual({ status: "pending" });
+    });
+
+    it("treats a missing or unknown status as still pending and anything that is not an object as empty", () => {
+        expect(normalizeEnrollmentResult({ status: "weird" })).toEqual({ status: "pending" });
+        expect(normalizeEnrollmentResult(null)).toEqual({ status: "pending" });
+        expect(normalizeEnrollmentResult([1])).toEqual({ status: "pending" });
+        expect(normalizeEnrollmentResult("x")).toEqual({ status: "pending" });
+    });
+
+    it("drops fields of the wrong type and steps that are malformed, and clamps progress", () => {
+        expect(
+            normalizeEnrollmentResult({
+                status: "pending",
+                stage: "nonsense",
+                stages: [null, { id: "a", label: "A", state: "bogus" }, { id: 1, label: "A", state: "done" }, { id: "ok", label: "OK", state: "active", at: 5 }],
+                progress: 250,
+                requestedAt: 5,
+                retryable: "yes",
+                subject: {},
+            }),
+        ).toEqual({ status: "pending", stages: [{ id: "ok", label: "OK", state: "active" }], progress: 100 });
+        expect(normalizeEnrollmentResult({ status: "pending", progress: -3, stages: "no" })).toEqual({ status: "pending", progress: 0 });
+        expect(normalizeEnrollmentResult({ status: "pending", progress: Number.NaN })).toEqual({ status: "pending" });
+    });
+});
+
+describe("getCurrentSignEnrollment", () => {
+    it("returns the mailbox's current enrollment with its id", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { enrollmentId: "enr-9", status: "pending", stage: "awaiting-challenge", progress: 30 }));
+        const result = await getCurrentSignEnrollment("mb/1");
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb%2F1/keyvault/keys/sign-enrollment", expect.anything());
+        expect(result).toEqual({ enrollmentId: "enr-9", status: "pending", stage: "awaiting-challenge", progress: 30 });
+    });
+
+    it("returns null when there is none (404), or the answer names no enrollment", async () => {
+        mockFetch(() => jsonResponse(404, { message: "None." }));
+        expect(await getCurrentSignEnrollment("mb1")).toBeNull();
+        mockFetch(() => jsonResponse(200, { status: "pending" }));
+        expect(await getCurrentSignEnrollment("mb1")).toBeNull();
+    });
+
+    it("rejects with any other failure", async () => {
+        mockFetch(() => jsonResponse(500, { message: "Boom." }));
+        await expect(getCurrentSignEnrollment("mb1")).rejects.toThrow("Boom.");
+    });
+});
+
+describe("checkSignEnrollmentNow", () => {
+    it("posts to the check endpoint and returns the normalized status", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { status: "pending", progress: 55, lastCheckedAt: "2026-09-21T10:00:00Z" }));
+        const result = await checkSignEnrollmentNow("mb1", "enr/1");
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/mailboxes/mb1/keyvault/keys/sign-enrollment/enr%2F1/check",
+            expect.objectContaining({ method: "POST" }),
+        );
+        expect(result).toEqual({ status: "pending", progress: 55, lastCheckedAt: "2026-09-21T10:00:00Z" });
+    });
+
+    it("rejects with the 429 that says to wait", async () => {
+        mockFetch(() => jsonResponse(429, { message: "Too soon." }));
+        await expect(checkSignEnrollmentNow("mb1", "e")).rejects.toMatchObject({ status: 429 });
+    });
+});
+
+describe("checkNowRetryAfterSeconds", () => {
+    it("uses the body's retryAfter, rounded up, else a default, for a 429 only", () => {
+        expect(checkNowRetryAfterSeconds(new ApiRequestError("Too soon.", 429, undefined, { retryAfter: 7.2 }))).toBe(8);
+        expect(checkNowRetryAfterSeconds(new ApiRequestError("Too soon.", 429, undefined, { retryAfter: "soon" }))).toBe(10);
+        expect(checkNowRetryAfterSeconds(new ApiRequestError("Too soon.", 429, undefined, { retryAfter: 0 }))).toBe(10);
+        expect(checkNowRetryAfterSeconds(new ApiRequestError("Too soon.", 429))).toBe(10);
+        expect(checkNowRetryAfterSeconds(new ApiRequestError("Nope.", 500))).toBeUndefined();
+        expect(checkNowRetryAfterSeconds(new Error("x"))).toBeUndefined();
     });
 });
 

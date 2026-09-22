@@ -1045,3 +1045,70 @@ libraries into every page although they are only used for key setup, a password 
   byte-identical to that copy. One detail that matters for the `.d.ts`: keep a blank line between the file's header comment and the `loadX509` comment in
   `keys.ts`, or the header is emitted into `keys.d.ts`.
 - **Not verified:** a browser-level encrypted send/receive round trip after this change; the load order is exercised by unit tests only.
+
+### 2026-09-21 - Background send client, send events, the 401 observer (W-C)
+
+Not committed, unpublished. `web-client` consumes it through the same `dist` overlay as before (`yarn build` here, `cp -r dist/. ../web-client/node_modules/@rapidmx/react-shared/dist/`).
+
+- `mailApi.ts`: `queueMessageSend(uid)` -> `POST .../send` `{ background: true }` -> `{ queued, message }` (`202 { status: "queued", message }` = queued; a plain `Message` = a server that relayed before answering; **501 falls back to `sendMessage()`** - a route class without a send job answers a background send 501 per R1). Errors (400 non-boolean `background`, 403, 404, 409 already sent) reject as `ApiRequestError`. Idempotent server-side: a repeat call for a queued/in-flight message returns the same 202.
+- `sendEvents.ts`: `parseSendEvent()` matches `/^Message/` types and the three actions; the payload is network data, so every field is checked (`attempt` floors to >= 1, `recipients` keeps strings only, a missing subject is `""`). `describeSendEventError()` wraps `describeSendFailure()` so a background failure's details render exactly like a synchronous one's.
+- `api.ts`: `setApiUnauthorizedObserver()`; `decodeApiResponse(res, observeUnauthorized)` - only `apiFetch()` passes `true`.
+- The events fire for **every** message the job relays (scheduled sends too); the web client only confirms ones it queued itself.
+- Verified: `yarn tsc --noEmit`, `yarn lint`, `yarn vitest run --coverage` (see the web-client entry for the counts).
+
+### 2026-09-21 - Appearance preferences client (`appearance/preferencesApi.ts`) (W-A)
+
+Not committed, unpublished. Consumed by web-client's `shared/appearance/` through the same `dist` overlay as the entry above.
+
+- Client for R1's `/mail/preferences/appearance` routes, written to the **final** contract: `GET` never 404s (a user with none gets `{ version: 1, mode: "system", updatedAt: "1970-01-01..." }`; a 404 from an older server is still read as "none"); **`PUT` merges a partial** - each colour and each background field on its own, `null` clears a colour, `colors: null` clears all four, `background: null` is a 400 (use `kind: "none"` or `DELETE .../background`), `kind: "color"` needs a colour, `kind: "image"` needs an uploaded image, and `imageVersion` cannot be chosen (400 unless it equals the current one). So the client never sends the whole object: `diffAppearance(server, next)` is the difference in that merge form (it sends `kind: "image"` only for the image the server holds - an upload in flight has a version the server doesn't know - and never names an image).
+- `normalizeAppearance()` is the one gate for everything from outside (response, push event, page prop, `localStorage`): version 1 only, unknown keys dropped (a retired `invertDarkMessages` too), colours `#rrggbb` lower-cased, `dim` 0-0.8 and `blur` 0-20 clamped, enums defaulted, an `imageVersion` only if it is a number or `[A-Za-z0-9._-]{1,64}` (it becomes part of a URL and of CSS), a kind with nothing to show (an image with no version, a colour with no colour) downgraded to `none`. `updatedAt` is kept as an opaque string or number.
+- `uploadAppearanceBackground(file)` bypasses `apiFetch()` (it always sends JSON), like `brandingApi.ts`. `validateBackgroundFile()` mirrors the server's limits (PNG/JPEG/WebP/AVIF, 8 MiB, non-empty) so the message comes before the upload; the server sniffs the bytes and answers 415/413 for the rest. `parseAppearanceEvent()` reads the push event (`/^AppearancePreferences/`; `create`/`update` -> the prefs, `delete` -> `null`).
+- Verified: `yarn tsc --noEmit`, `yarn lint`, `yarn vitest run --coverage` - see the counts in the web-client entry for the same date.
+
+### 2026-09-21 - `scope: "admin"` for the admin console (restapi's "no role reads another user's mail")
+
+`mail/mailApi.ts`: `AdminScopeParams { scope?: "admin" }` on `listMailboxes()`, `listQuarantine()`, `listIngestQueue()` and `getMailbox(uid, { scope })` (query `scope=admin`, only when set); `Mailbox.shared?` for the metadata answer.
+Only `web-client/apps/admin` (and the setup wizard) pass it; every webmail caller (`useMailConnection`, the Settings/Calendar/Contacts/Tasks shells, ResourcePicker, ComposeWindow, MessageDetailPane, sendJob, the
+encryption page) keeps the plain call and needs no admin scope - grep of every `listMailboxes`/`listResourceMailboxes`/`getMailbox` caller. The header comment no longer says a trusted caller gets everyone's
+mailboxes. `getMailboxAcl` & co. (`/acls`) now 403 for a mailbox's ACL unless the caller holds FULL as themselves (server `BaseGuardedACLRoute`); nothing uses them any more (`ShareAccessCard` moved to
+`mailboxAccessApi`), kept with a doc note. Tests: `test/mail/mailApi.test.ts` (scope sent / not sent for the four calls). dist copied into `web-client/node_modules/@rapidmx/react-shared/dist` (copy, not a link).
+
+### 2026-09-21 (later) - sharing resolves who it grants to (`mail/mailboxAccessApi.js`, `mail/mailApi.js`)
+
+`resolveMailboxPrincipal(mailboxUid, principal)` (`GET .../access/resolve?principal=`) -> `ResolvedPrincipal { userUid, displayName?, address? }`; `MailboxAccessMember.noEffect?` (an entry that is not a user uid); `setMailboxAccess()` takes a principal (address, username, uid - resolved server-side, only the uid stored, 400 "No user found for ..."). `Mailbox.accessRole?: "owner" | "delegate"` (plain list/read) and
+`isSharedWithMe(mailbox)` for labelling shared mailboxes - the existing "(shared)" labels test `!ownerUserUid`, which misses a personal mailbox shared with the caller; adopting the helper in `MailShell`/`SettingsShell`/the calendar, contacts and tasks shells and `ComposeWindow` is left to the agents editing them. Tests: `test/mail/mailboxAccessApi.test.ts`, `mailApi.test.ts`.
+
+### 2026-09-21 (P1) - plugins client: `purgeData`, `retryPluginPurge`, `PluginStatus.purges`
+
+`removePlugin(uid, { purgeData })` sends `{"purgeData": true}` only when asked (an older server is called exactly as before) and returns `{ purgeScheduled, purge? }` (`{ purgeScheduled: false }` when the answer is empty, i.e. an older server or a plain uninstall on a 204). `retryPluginPurge(purgeUid)` -> `POST /system/plugins/purges/:uid/retry`. New types `PluginPurgeState/Step/Info`, `PluginStatus.purges?`, `AddPluginResult.purgeCancelled/warnings`. Semantics live in the server's NOTES (same date). Tests in `test/admin/pluginsApi.test.ts`; `util/api.ts` was not touched (another agent's in-flight change). `yarn build` was run and `dist` copied into web-client's `node_modules/@rapidmx/react-shared/dist`.
+
+### 2026-09-21 - Signing-certificate progress: the extended `EnrollmentResult`, `getCurrentSignEnrollment`, `checkSignEnrollmentNow` (W-D)
+
+Not committed, unpublished. `web-client` consumes it through the same `dist` overlay as the entries above. Written to R3's contract, **not integrated against a real server**.
+
+- `crypto/keyvaultApi.ts`: `EnrollmentResult` keeps `status`/`certificate`/`error` and gains, all optional, `stage`, `stages`, `progress`, `requestedAt`, `updatedAt`, `lastCheckedAt`, `nextCheckAt`, `note`, `errorCode`,
+  `retryable`, `issuedAt`, `installedAt` (a job installs the certificate a few minutes after it is issued), `notAfter`, `serialNumber`, `issuer`, `subject` (dates are ISO strings). `normalizeEnrollmentResult()` is the one gate for what comes off the network: unknown `status` -> `pending` (the
+  safe reading), text fields only when strings, `stage` only when one of the seven, `progress` clamped 0-100 (NaN dropped), `retryable` only a boolean, steps only with a string `id`/`label` and a known `state`
+  (`at` only a string). `checkSignEnrollmentStatus()` now returns its normalized result (an older server's answer comes through unchanged - the existing tests still `toEqual` it).
+- `getCurrentSignEnrollment(mailboxUid)` -> `CurrentSignEnrollment | null` (`enrollmentId` + the result; **404 and an answer with no `enrollmentId` are both `null`**; any other error rejects).
+- `checkSignEnrollmentNow(mailboxUid, enrollmentId)` -> `POST .../:id/check`, normalized. `apiFetch()` does not surface response headers, so `Retry-After` cannot be read: `checkNowRetryAfterSeconds(err)`
+  (`undefined` unless `err` is a 429 `ApiRequestError`) returns the body's `retryAfter` (seconds, rounded up) when the server put one there, else `CHECK_NOW_DEFAULT_RETRY_SECONDS` (10). If R3 wants the exact
+  number honoured it must repeat `Retry-After` as `retryAfter` in the 429 body (or `apiFetch` learns to keep headers).
+- Tests: `test/crypto/keyvaultApi.test.ts` (normalizer cases, the current endpoint incl. 404 / no id / other errors, the check call and its URL encoding, the retry-after rules).
+
+### 2026-09-21 (later) - `EnrollmentResult.provider` (W-D)
+
+Not committed, unpublished. `provider?: "manual" | "rfc8823"` on `EnrollmentResult` (how this deployment issues the certificate; kept by `normalizeEnrollmentResult` only when it is one of the two). The deployment's own description
+(`GET /system/signing-enrollment`) is R6's `crypto/signingProviderApi.ts` (`getSigningEnrollmentInfo()`) - **not written here**; web-client has a thin stand-in (`apps/shared/signing/signingInfo.ts`) until it exists.
+
+### 2026-09-21 (later) - New `crypto/signingProviderApi.ts` (R6)
+
+Not committed. `@rapidmx/restapi`'s new signing-certificate backend endpoints, in the one new file the R6 brief scoped for react-shared - nothing else touched here (W-D's `signingInfo.ts`/`EnrollmentResult.provider` above are
+theirs). `getSigningEnrollmentInfo()` -> `GET /system/signing-enrollment` (`SigningEnrollmentInfo`: `backend`, `automatic`, `ca?: { host }`, `contactEmail?`, `typicalDurationMinutes?`, `adminUpload`, `health?: { ok, checkedAt?,
+lastSuccessAt?, lastError? }`) - types mirror restapi's `SigningBackendInfo` field for field, no runtime validation (trusted like every other typed `apiFetch<T>()` call in this library, matching `keyvaultApi.ts`'s convention
+for its own typed calls; `normalizeEnrollmentResult()`'s runtime validation is that function's own, not repeated here). `SIGNING_ENROLLMENT_UNKNOWN = "signing-enrollment-unknown"` - the code an enrollment id the active backend
+doesn't recognize answers with, re-exported as a constant so a caller doesn't hardcode the string (`enrollmentTracker.ts`'s `UNKNOWN_ENROLLMENT_CODE` re-exports this same value - see W-D's note above).
+Admin functions (`admin/signing-enrollments`, trusted role + elevated token server-side, not enforced here): `listSigningEnrollments()`, `signingEnrollmentCsrUrl(id)` (a plain URL - like `dataExportApi.ts`'s
+`exportRequestDownloadUrl()` - since the server streams the CSR back as an attachment, not JSON: `apiFetch()`'s `decodeApiResponse()` only parses `application/json` bodies), `uploadSigningEnrollmentCertificate(id, certificate)`,
+`rejectSigningEnrollment(id, reason)`. `looksLikePemCertificate(text)` is a client-side sanity check only (one PEM certificate block found) - the server does the real validation (key match, e-mail usage, address, expiry).
+Tests: `test/crypto/signingProviderApi.test.ts` (every call's URL/method/body, the CSR URL's id-encoding, a 400 the server refuses an upload with surfacing as `ApiRequestError`, the sanity-check cases).

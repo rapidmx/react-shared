@@ -15,6 +15,7 @@ import {
     lookupPluginPackage,
     planPluginChange,
     removePlugin,
+    retryPluginPurge,
     updatePlugin,
 } from "../../src/admin/pluginsApi.js";
 
@@ -53,6 +54,26 @@ describe("pluginsApi", () => {
             expect.objectContaining({ method: "PUT", body: JSON.stringify({ version: 2, enabled: false, settings: { "mail:x": null } }) }),
         );
         expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/p1", expect.objectContaining({ method: "DELETE" }));
+    });
+
+    it("removes a plugin without a body unless its data is to be deleted, and reports what happened", async () => {
+        const fetchMock = mockFetch((_url, init) => (init?.body ? jsonResponse(200, { purgeScheduled: true, purge: { uid: "u1", name: "@rapidmx/mapi", state: "pending", steps: [] } }) : emptyResponse(204)));
+        // An older server answers with nothing at all: no data deletion was scheduled.
+        expect(await removePlugin("p1")).toEqual({ purgeScheduled: false });
+        expect(await removePlugin("p1", { purgeData: false })).toEqual({ purgeScheduled: false });
+        expect(fetchMock.mock.calls.every(([, init]) => (init as RequestInit).body === undefined)).toBe(true);
+
+        expect(await removePlugin("p1", { purgeData: true })).toEqual({ purgeScheduled: true, purge: expect.objectContaining({ state: "pending" }) });
+        expect(fetchMock).toHaveBeenLastCalledWith(
+            "/api/system/plugins/p1",
+            expect.objectContaining({ method: "DELETE", body: JSON.stringify({ purgeData: true }) }),
+        );
+    });
+
+    it("retries a failed data deletion by its uid", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { uid: "u/1", name: "@rapidmx/mapi", state: "pending", steps: [] }));
+        expect(await retryPluginPurge("u/1")).toEqual(expect.objectContaining({ state: "pending" }));
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/purges/u%2F1/retry", expect.objectContaining({ method: "POST" }));
     });
 
     it("sends the confirmed plan with an add or update", async () => {

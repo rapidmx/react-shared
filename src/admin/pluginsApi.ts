@@ -77,10 +77,47 @@ export interface PluginInstanceStatus {
     updatedAt: string;
 }
 
+/** Where an uninstalled plugin's data deletion stands: `pending` until no server runs the plugin, `running` while one
+ * server deletes, then `done` or `failed` (retryable). */
+export type PluginPurgeState = "pending" | "running" | "done" | "failed";
+
+/** One step of a data deletion. A retry runs only the steps that failed. */
+export interface PluginPurgeStep {
+    /** `hook`, `data:<datastore>:<collection or table>`, `blobs`, `settings` or `files`. */
+    step: string;
+    ok: boolean;
+    /** How many documents or rows the step deleted. */
+    count?: number;
+    error?: string;
+    note?: string;
+}
+
+/** The deletion of an uninstalled plugin's data (`GET /status`'s `purges`). */
+export interface PluginPurgeInfo {
+    uid: string;
+    name: string;
+    displayName?: string;
+    state: PluginPurgeState;
+    /** The uid of the administrator who asked for it. */
+    requestedBy?: string;
+    /** ISO time. */
+    requestedAt?: string;
+    /** ISO time; set once it is `done` or `failed`. */
+    completedAt?: string;
+    steps: PluginPurgeStep[];
+    /** Why it failed. */
+    error?: string;
+    /** While `pending`: how many servers still run the plugin (or haven't applied its removal), of how many report. */
+    serversRunning?: number;
+    serversTotal?: number;
+}
+
 export interface PluginStatus {
     /** The fingerprint of the saved plugin set every copy should reach. */
     hash: string;
     instances: PluginInstanceStatus[];
+    /** Each uninstalled plugin whose data was asked to be deleted. Absent from an older server. */
+    purges?: PluginPurgeInfo[];
 }
 
 /** A plugin package found by `searchPlugins()`. `version` is its latest published version. */
@@ -130,6 +167,17 @@ export interface PluginChangePlan {
 export interface AddPluginResult {
     plugin: Plugin;
     dependencies: Plugin[];
+    /** The plugins whose pending data deletion adding this cancelled (the plugin itself, and any it requires). */
+    purgeCancelled?: string[];
+    /** Things worth telling the administrator, such as a cancelled data deletion. */
+    warnings?: string[];
+}
+
+/** What uninstalling a plugin did. */
+export interface RemovePluginResult {
+    /** Whether the plugin's data will be deleted once no server runs the plugin any more. */
+    purgeScheduled: boolean;
+    purge?: PluginPurgeInfo;
 }
 
 /** The other plugins a previewed change was confirmed to install and enable (from its `PluginChangePlan`). The server
@@ -215,8 +263,24 @@ export function updatePlugin(uid: string, input: UpdatePluginInput): Promise<Plu
     return apiFetch(`${BASE}/${encodeURIComponent(uid)}`, { method: "PUT", body: JSON.stringify(input) });
 }
 
-/** Removes a plugin. Data it stored stays in the database. Refused (409) while an enabled plugin requires it, as is
- * disabling it with `updatePlugin()`. */
-export function removePlugin(uid: string): Promise<void> {
-    return apiFetch(`${BASE}/${encodeURIComponent(uid)}`, { method: "DELETE" });
+/**
+ * Removes a plugin. Refused (409) while an enabled plugin requires it, as is disabling it with `updatePlugin()`.
+ *
+ * By default the data it stored stays in the database. With `purgeData` it is also deleted - its collections and tables,
+ * saved settings and files - once no server runs the plugin any more (see `PluginStatus.purges`); that can't be undone,
+ * and the server only accepts it from an elevated administrator (403 `api-104` otherwise). Adding the plugin again before
+ * the deletion starts cancels it.
+ */
+export async function removePlugin(uid: string, options: { purgeData?: boolean } = {}): Promise<RemovePluginResult> {
+    const result = await apiFetch<RemovePluginResult | undefined>(`${BASE}/${encodeURIComponent(uid)}`, {
+        method: "DELETE",
+        // Nothing is sent unless asked for, so a server that doesn't know the flag is called exactly as before.
+        ...(options.purgeData ? { body: JSON.stringify({ purgeData: true }) } : {}),
+    });
+    return result ?? { purgeScheduled: false };
+}
+
+/** Runs the steps of a failed data deletion that failed again. Needs an elevated administrator. */
+export function retryPluginPurge(purgeUid: string): Promise<PluginPurgeInfo> {
+    return apiFetch(`${BASE}/purges/${encodeURIComponent(purgeUid)}/retry`, { method: "POST" });
 }

@@ -228,8 +228,39 @@ export interface SignEnrollmentRequest extends ExpectedMasterKeyGeneration {
     wrappedKey: Omit<WrappedPrivateKey, "fingerprint" | "useType">;
 }
 
+/** Where an automated enrollment is, in the order it normally goes. */
+export type SignEnrollmentStage =
+    | "submitted"
+    | "awaiting-challenge"
+    | "challenge-answered"
+    | "validating"
+    | "issuing"
+    | "issued"
+    | "failed";
+
+const SIGN_ENROLLMENT_STAGES: readonly string[] = [
+    "submitted",
+    "awaiting-challenge",
+    "challenge-answered",
+    "validating",
+    "issuing",
+    "issued",
+    "failed",
+];
+
+/** One step of the enrollment's progress, for a stepper: the server names the steps and says which one is under way. */
+export interface SignEnrollmentStep {
+    id: string;
+    label: string;
+    state: "done" | "active" | "pending" | "failed";
+    /** When the step finished (or started), an ISO date. */
+    at?: string;
+}
+
 /** The status of a started automated (RFC 8823 ACME) signing-certificate enrollment. Mirrors
- * `@rapidmx/restapi`'s `EnrollmentResult` exactly. */
+ * `@rapidmx/restapi`'s `EnrollmentResult`; every field after `error` is optional because an older server sends only
+ * `status`, `certificate` and `error` - callers must degrade to those. Everything the server sends is checked by
+ * `normalizeEnrollmentResult()` before it gets here. */
 export interface EnrollmentResult {
     status: "pending" | "issued" | "failed";
     /** The issued certificate, PEM-encoded — present only once `status` is `"issued"`. Not needed
@@ -239,6 +270,100 @@ export interface EnrollmentResult {
     certificate?: string;
     /** A human-readable reason — present only once `status` is `"failed"`. */
     error?: string;
+    /** How this deployment issues the certificate: `rfc8823` is automatic (a public CA and an e-mail round trip), `manual` means an administrator uploads it. */
+    provider?: "manual" | "rfc8823";
+    /** The step the enrollment is at. */
+    stage?: SignEnrollmentStage;
+    /** All the steps, in order, each with its own state and time. */
+    stages?: SignEnrollmentStep[];
+    /** 0-100. */
+    progress?: number;
+    /** ISO dates: when the request was made, when the server last changed it, when the CA was last asked, and when it will next be. */
+    requestedAt?: string;
+    updatedAt?: string;
+    lastCheckedAt?: string;
+    nextCheckAt?: string;
+    /** A short note from the server about what it is doing or waiting for. */
+    note?: string;
+    /** A machine-readable reason for a failure, and whether asking for a new certificate is worth trying (a CA that could not be reached is `ca-unreachable`, `retryable`, and still `pending`). */
+    errorCode?: string;
+    retryable?: boolean;
+    /** Once issued. `installedAt` comes later: a job puts the certificate into the mailbox's key vault a few minutes after it is issued, so an
+     * enrollment can be `issued` and not yet installed (no `installedAt`, and the mailbox does not list the new key). */
+    issuedAt?: string;
+    installedAt?: string;
+    notAfter?: string;
+    serialNumber?: string;
+    issuer?: string;
+    subject?: string;
+}
+
+/** The mailbox's current (most recent) enrollment: an `EnrollmentResult` that also says which one it is. */
+export interface CurrentSignEnrollment extends EnrollmentResult {
+    enrollmentId: string;
+}
+
+const ENROLLMENT_STATUSES = new Set(["pending", "issued", "failed"]);
+const STEP_STATES = new Set(["done", "active", "pending", "failed"]);
+const ENROLLMENT_TEXT_FIELDS = [
+    "certificate",
+    "error",
+    "requestedAt",
+    "updatedAt",
+    "lastCheckedAt",
+    "nextCheckAt",
+    "errorCode",
+    "note",
+    "issuedAt",
+    "installedAt",
+    "notAfter",
+    "serialNumber",
+    "issuer",
+    "subject",
+] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Reads an enrollment status from the network: keeps `status` (an unknown value counts as still `pending`, the safe reading) and
+ * whichever optional fields have the right type, drops the rest - an older server's answer comes through as it always did, and a
+ * newer one's malformed field cannot break the page. `progress` is clamped to 0-100; a step needs an id, a label and a known state.
+ */
+export function normalizeEnrollmentResult(raw: unknown): EnrollmentResult {
+    const source = isRecord(raw) ? raw : {};
+    const result: EnrollmentResult = {
+        status: ENROLLMENT_STATUSES.has(source.status as string) ? (source.status as EnrollmentResult["status"]) : "pending",
+    };
+    for (const field of ENROLLMENT_TEXT_FIELDS) {
+        if (typeof source[field] === "string") {
+            result[field] = source[field];
+        }
+    }
+    if (source.provider === "manual" || source.provider === "rfc8823") {
+        result.provider = source.provider;
+    }
+    if (typeof source.stage === "string" && SIGN_ENROLLMENT_STAGES.includes(source.stage)) {
+        result.stage = source.stage as SignEnrollmentStage;
+    }
+    if (Array.isArray(source.stages)) {
+        result.stages = source.stages
+            .filter((step) => isRecord(step) && typeof step.id === "string" && typeof step.label === "string" && STEP_STATES.has(step.state as string))
+            .map((step: Record<string, unknown>) => ({
+                id: step.id as string,
+                label: step.label as string,
+                state: step.state as SignEnrollmentStep["state"],
+                ...(typeof step.at === "string" ? { at: step.at } : {}),
+            }));
+    }
+    if (typeof source.progress === "number" && Number.isFinite(source.progress)) {
+        result.progress = Math.min(100, Math.max(0, source.progress));
+    }
+    if (typeof source.retryable === "boolean") {
+        result.retryable = source.retryable;
+    }
+    return result;
 }
 
 /** Starts an automated (RFC 8823 email-reply-00 ACME) public-CA signing-certificate enrollment —
@@ -256,10 +381,54 @@ export function startSignEnrollment(mailboxUid: string, input: SignEnrollmentReq
 }
 
 /** Reports the current status of a previously started automated enrollment — see
- * `startSignEnrollment()`. */
-export function checkSignEnrollmentStatus(mailboxUid: string, enrollmentId: string): Promise<EnrollmentResult> {
-    return apiFetch(
-        `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment/${encodeURIComponent(enrollmentId)}`,
+ * `startSignEnrollment()`. Answers from what the server already knows; `checkSignEnrollmentNow()` asks the CA. */
+export async function checkSignEnrollmentStatus(mailboxUid: string, enrollmentId: string): Promise<EnrollmentResult> {
+    return normalizeEnrollmentResult(
+        await apiFetch<unknown>(
+            `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment/${encodeURIComponent(enrollmentId)}`,
+        ),
+    );
+}
+
+/** The mailbox's current (most recent) signing-certificate enrollment, or `null` when it has never had one - so a second device or
+ * a fresh page learns of one started elsewhere. Needs no stored enrollment id. */
+export async function getCurrentSignEnrollment(mailboxUid: string): Promise<CurrentSignEnrollment | null> {
+    let raw: unknown;
+    try {
+        raw = await apiFetch<unknown>(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment`);
+    } catch (err) {
+        if (err instanceof ApiRequestError && err.status === 404) {
+            return null;
+        }
+        throw err;
+    }
+    const enrollmentId = isRecord(raw) && typeof raw.enrollmentId === "string" ? raw.enrollmentId : undefined;
+    return enrollmentId ? { ...normalizeEnrollmentResult(raw), enrollmentId } : null;
+}
+
+/** How long a "check now" is refused for after a `429`, when the server doesn't say (it answers `Retry-After`, which `apiFetch()` does not surface). */
+export const CHECK_NOW_DEFAULT_RETRY_SECONDS = 10;
+
+/** How many seconds to wait before asking again after `checkSignEnrollmentNow()` was refused with `429`: the body's `retryAfter` (seconds)
+ * when the server put one there, else `CHECK_NOW_DEFAULT_RETRY_SECONDS`. `undefined` for any other error. */
+export function checkNowRetryAfterSeconds(err: unknown): number | undefined {
+    if (!(err instanceof ApiRequestError) || err.status !== 429) {
+        return undefined;
+    }
+    const retryAfter = isRecord(err.details) ? err.details.retryAfter : undefined;
+    return typeof retryAfter === "number" && Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.ceil(retryAfter)
+        : CHECK_NOW_DEFAULT_RETRY_SECONDS;
+}
+
+/** Forces an immediate re-check of an enrollment with the CA (instead of waiting for the server's own schedule) and returns its
+ * status. The server refuses with `429` when asked again within about ten seconds - see `checkNowRetryAfterSeconds()`. */
+export async function checkSignEnrollmentNow(mailboxUid: string, enrollmentId: string): Promise<EnrollmentResult> {
+    return normalizeEnrollmentResult(
+        await apiFetch<unknown>(
+            `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment/${encodeURIComponent(enrollmentId)}/check`,
+            { method: "POST" },
+        ),
     );
 }
 

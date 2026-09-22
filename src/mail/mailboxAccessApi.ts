@@ -26,6 +26,23 @@ export interface MailboxAccessMember {
     role: MailboxAccessMemberRole;
     /** The ACL actions the member holds. */
     actions?: string[];
+    /** `userOrRoleId` is not a user uid (a username or address typed in free text, say): a person's token carries a uid, never
+     * that string, so the entry almost certainly grants nothing to anyone. Replace it with the user it was meant for. */
+    noEffect?: boolean;
+}
+
+/** The person a typed principal - a mailbox address, an auth-server username or e-mail alias, or a user uid - resolved to. */
+export interface ResolvedPrincipal {
+    /** The user uid every grant is stored against. */
+    userUid: string;
+    /** Known when the person owns a mailbox on this server. */
+    displayName?: string;
+    address?: string;
+}
+
+/** Who a typed principal is, without granting anything - rejects with a 404 `ApiRequestError` ("No user found for ...") for nobody. */
+export function resolveMailboxPrincipal(mailboxUid: string, principal: string): Promise<ResolvedPrincipal> {
+    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/resolve?principal=${encodeURIComponent(principal)}`);
 }
 
 export interface MailboxOwnerLookup {
@@ -34,12 +51,15 @@ export interface MailboxOwnerLookup {
 }
 
 /** Lists a mailbox's delegate members (excludes the owner's own implicit grant) - rejects with a 403
- * `ApiRequestError` if the caller doesn't hold at least `"update"` on the mailbox. */
+ * `ApiRequestError` if the caller doesn't hold at least `"update"` on the mailbox (an administrator, trusted + elevated, may
+ * list any mailbox's members through the audited administration path). */
 export function listMailboxAccess(mailboxUid: string): Promise<MailboxAccessMember[]> {
     return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access`);
 }
 
-/** Grants (or, if already a member, updates the role of) a delegate's access to a mailbox. */
+/** Grants (or, if already a member, updates the role of) a delegate's access to a mailbox. `userOrRoleId` names the PERSON - a user
+ * uid, or anything the server resolves to one (a mailbox address, an auth-server username or e-mail alias): only the resolved uid is
+ * stored, and a name that resolves to nobody rejects with a 400 `ApiRequestError` ("No user found for ..."). */
 export function setMailboxAccess(mailboxUid: string, userOrRoleId: string, role: MailboxAccessRole): Promise<MailboxAccessMember> {
     return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/${encodeURIComponent(userOrRoleId)}`, {
         method: "PUT",
@@ -47,8 +67,8 @@ export function setMailboxAccess(mailboxUid: string, userOrRoleId: string, role:
     });
 }
 
-/** What the signed-in caller may do in a mailbox, as the server's ACLs evaluate it (owners and trusted callers
- * included). */
+/** What the signed-in caller may do in a mailbox, as the server's ACLs evaluate it: their own and delegate access - a
+ * trusted role adds nothing, so an administrator with no grant on a mailbox gets `false` throughout. */
 export interface MyMailboxAccess {
     canRead: boolean;
     /** Create items in the mailbox: drafts, events, contacts, to-dos. */
