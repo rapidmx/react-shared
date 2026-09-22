@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-22
+
+### Added
+- Added resolveMailboxOwner and resolveEscrowScopeHolder, previewing who a typed address, username, alias or uid names before either field is actually set
+
+### Changed
+- Widen DnsRecordType and DnsRecordCheck.recordKind to match restapi's new autodiscover_cname and autodiscover_srv checklist entries
+- Document the change in the release notes and NOTES
+- Test both new calls
+- Document the fix in the release notes and NOTES
+
 ## [0.11.0] - 2026-09-22
 
 ### Added
@@ -453,7 +464,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/rapidmx/react-shared/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/rapidmx/react-shared/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/rapidmx/react-shared/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/rapidmx/react-shared/compare/v0.8.0...v0.9.0
