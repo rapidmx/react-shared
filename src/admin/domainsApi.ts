@@ -82,13 +82,14 @@ export function verifyDomain(uid: string): Promise<Domain> {
     return apiFetch(`/mail/domains/${encodeURIComponent(uid)}/verify`, { method: "POST" });
 }
 
-export type DnsRecordType = "ownership" | "mx" | "spf" | "dkim" | "dmarc";
+export type DnsRecordType = "ownership" | "mx" | "spf" | "dkim" | "dmarc" | "autodiscover_cname" | "autodiscover_srv";
 
 /** One mail-related DNS record this server recommends for a domain, live-checked against real DNS —
- * purely diagnostic, never mutates anything (unlike `verifyDomain`). */
+ * purely diagnostic, never mutates anything (unlike `verifyDomain`). The two `autodiscover_*` types are only
+ * ever present while `@rapidmx/autodiscover-plugin` is active for this deployment. */
 export interface DnsRecordCheck {
     type: DnsRecordType;
-    recordKind: "TXT" | "MX";
+    recordKind: "TXT" | "MX" | "CNAME" | "SRV";
     recordName: string;
     /** `false` when there isn't enough information yet to know what to recommend (no DKIM
      * selector/key configured, for example) — `recommendedValue`/`found`/`matches` are meaningless then. */

@@ -12,6 +12,8 @@
 
 ### Fixes
 
+- **DNS record types gain `autodiscover_cname`/`autodiscover_srv` (`admin/domainsApi.js`).** Type-only change matching restapi's widened `DnsRecordCheck` shape, for the DNS setup checklist's two new
+  Autodiscover recommendations.
 - **Sharing resolves who it grants to (`mail/mailboxAccessApi.js`).** `setMailboxAccess()` names the person by address, username or user id (the server resolves it and stores only the uid; 400 "No user found for ..." otherwise); new `resolveMailboxPrincipal()` previews who it is; `MailboxAccessMember.noEffect` marks an entry that is not a user uid. `Mailbox.accessRole` (`"owner" | "delegate"`) and `isSharedWithMe()` label a shared mailbox.
 
 ### Features

@@ -1112,3 +1112,8 @@ Admin functions (`admin/signing-enrollments`, trusted role + elevated token serv
 `exportRequestDownloadUrl()` - since the server streams the CSR back as an attachment, not JSON: `apiFetch()`'s `decodeApiResponse()` only parses `application/json` bodies), `uploadSigningEnrollmentCertificate(id, certificate)`,
 `rejectSigningEnrollment(id, reason)`. `looksLikePemCertificate(text)` is a client-side sanity check only (one PEM certificate block found) - the server does the real validation (key match, e-mail usage, address, expiry).
 Tests: `test/crypto/signingProviderApi.test.ts` (every call's URL/method/body, the CSR URL's id-encoding, a 400 the server refuses an upload with surfacing as `ApiRequestError`, the sanity-check cases).
+
+### 2026-09-22 - Two new Autodiscover DNS record types on `admin/domainsApi.ts`
+
+`DnsRecordType`/`DnsRecordCheck.recordKind` widened to match restapi's new `autodiscover_cname`/`autodiscover_srv` checklist entries - type-only,
+no runtime change, existing passthrough test already covers it.
