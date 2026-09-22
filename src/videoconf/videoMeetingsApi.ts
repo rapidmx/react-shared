@@ -22,6 +22,9 @@
  */
 
 import { apiFetch } from "../util/api.js";
+import { ListParams, buildQuery } from "../util/apiQuery.js";
+
+export type { ListParams };
 
 /** Whether a meeting is joinable only by its explicitly invited participants, or by anyone holding its link. */
 export type VideoMeetingVisibility = "private" | "public";
@@ -39,13 +42,26 @@ export interface VideoMeeting {
     calendarEventUid?: string;
     startTime?: string;
     endTime?: string;
+    /** ISO 8601 instant the meeting was created - every `BaseEntity` carries one; typed here because
+     * `apps/settings-video-conferencing` (Phase 4) both shows it and uses it to pick a mailbox's "personal room"
+     * (its oldest non-cancelled public meeting - see that app's own doc comment) out of `listVideoMeetings()`'s
+     * results. */
+    dateCreated: string;
 }
 
-/** A meeting as fetched by `getVideoMeeting()` — the entity plus the organizer's own join link. */
+/**
+ * A meeting as fetched by `getVideoMeeting()` or listed by `listVideoMeetings()` — the entity plus whichever join
+ * link(s) `BaseVideoMeetingRoute.withJoinUrls()` recomputes for it from its persisted slug(s). A meeting carries at
+ * most one of the two: `organizerJoinUrl` only for a private meeting that has an `organizerSlug`, `publicJoinUrl`
+ * only for a public one (see `VideoMeeting.visibility`) - never both, and neither at all when the deployment has no
+ * public URL configured for the plugin.
+ */
 export interface VideoMeetingDetail extends VideoMeeting {
-    /** The owner's own working join link. Absent for a meeting that has none (a public meeting, or one minted
-     * without an organizer link at all) and when the deployment has no public URL configured for the plugin. */
+    /** The owner's own working join link for a private meeting. */
     organizerJoinUrl?: string;
+    /** The single shareable join link for a public meeting - what a host copies out to share their "personal
+     * room" or any other public meeting. */
+    publicJoinUrl?: string;
 }
 
 /** One person to invite to a private meeting. */
@@ -110,4 +126,15 @@ export function updateVideoMeeting(uid: string, input: UpdateVideoMeetingInput):
 /** Fetches one meeting, with the organizer's own join link when it has one. Requires READ on its owning mailbox. */
 export function getVideoMeeting(uid: string): Promise<VideoMeetingDetail> {
     return apiFetch(`/mail/video-meetings/${encodeURIComponent(uid)}`);
+}
+
+/**
+ * Lists every meeting owned by `mailboxUid`, each carrying whichever join link `VideoMeetingDetail` describes for
+ * it. Requires LIST on that mailbox. Added for `apps/settings-video-conferencing` (Phase 4), which needs a
+ * mailbox's whole meeting history to both render its list and find the mailbox's "personal room" (its oldest
+ * non-cancelled public meeting) - `BaseVideoMeetingRoute.find()` already supported this exact query (no
+ * `calendarEventUid` filter), it just had no typed wrapper here yet.
+ */
+export function listVideoMeetings(mailboxUid: string, params: ListParams = {}): Promise<VideoMeetingDetail[]> {
+    return apiFetch(`/mail/video-meetings?${buildQuery(params, { mailboxUid })}`);
 }

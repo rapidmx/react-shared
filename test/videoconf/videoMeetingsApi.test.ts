@@ -3,7 +3,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { createVideoMeeting, getVideoMeeting, updateVideoMeeting } from "../../src/videoconf/videoMeetingsApi.js";
+import { createVideoMeeting, getVideoMeeting, listVideoMeetings, updateVideoMeeting } from "../../src/videoconf/videoMeetingsApi.js";
 
 const meeting = {
     uid: "vm1",
@@ -12,6 +12,7 @@ const meeting = {
     visibility: "private" as const,
     status: "scheduled" as const,
     calendarEventUid: "e1",
+    dateCreated: "2026-01-01T00:00:00.000Z",
 };
 
 afterEach(() => {
@@ -88,5 +89,27 @@ describe("getVideoMeeting", () => {
     it("rejects with a 404 when the plugin isn't installed (its routes aren't mounted at all)", async () => {
         mockFetch(() => jsonResponse(404, { message: "Not found." }));
         await expect(getVideoMeeting("vm1")).rejects.toMatchObject({ status: 404 });
+    });
+});
+
+describe("listVideoMeetings", () => {
+    it("GETs the mailbox's meetings with the default paging query, each carrying its own join link", async () => {
+        const pub = { ...meeting, uid: "vm2", visibility: "public" as const, calendarEventUid: undefined, publicJoinUrl: "https://meet.example.com/slug" };
+        const priv = { ...meeting, organizerJoinUrl: "https://meet.example.com/tok-org" };
+        const fetchMock = mockFetch(() => jsonResponse(200, [pub, priv]));
+        const result = await listVideoMeetings("mb1");
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/video-meetings?limit=25&page=0&mailboxUid=mb1", expect.anything());
+        expect(result).toEqual([pub, priv]);
+    });
+
+    it("passes explicit limit/page through", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, [meeting]));
+        await listVideoMeetings("mb1", { limit: 100, page: 2 });
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/video-meetings?limit=100&page=2&mailboxUid=mb1", expect.anything());
+    });
+
+    it("rejects with the server's own message on failure", async () => {
+        mockFetch(() => jsonResponse(403, { message: "Forbidden.", code: "api-103" }));
+        await expect(listVideoMeetings("mb1")).rejects.toMatchObject({ status: 403, code: "api-103" });
     });
 });
