@@ -92,6 +92,12 @@ export interface CalendarEvent {
     /** The automatic-reply body while this event's window is active. Only meaningful when
      * `autoReplyEnabled` is `true`. */
     autoReplyMessage?: string;
+    /** The `@rapidmx/videoconf-plugin` `VideoMeeting` minted for this event, when the organizer turned on
+     * video conferencing (see `videoconf/videoMeetingsApi.ts`). Only the link is stored here — each
+     * attendee's own personal join URL is substituted into their own copy of the invitation server-side,
+     * so this event carries no per-attendee link and the organizer's own link is fetched from the meeting
+     * (`getVideoMeeting()`), never read off the event. */
+    videoMeetingUid?: string;
 }
 
 const LIST_PAGE_SIZE = 500;
@@ -146,6 +152,9 @@ export interface CalendarEventInput {
     reminderMinutesBeforeStart?: number;
     autoReplyEnabled?: boolean;
     autoReplyMessage?: string;
+    /** Set (or, sent as `null` on an update, cleared) when the caller has just minted or cancelled this
+     * event's video meeting — see `CalendarEvent.videoMeetingUid`. */
+    videoMeetingUid?: string;
 }
 
 export function createCalendarEvent(input: CalendarEventInput): Promise<CalendarEvent> {

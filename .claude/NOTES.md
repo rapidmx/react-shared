@@ -1123,3 +1123,31 @@ no runtime change, existing passthrough test already covers it.
 `mail/mailApi.ts` gets `resolveMailboxOwner()` and `admin/escrowScopesApi.ts` gets `resolveEscrowScopeHolder()`, both next to `resolveMailboxPrincipal()`'s
 existing pattern and typed against the same re-exported `ResolvedPrincipal` - restapi's new `GET .../resolve-owner`/`GET .../resolve-holder` (exact-match
 only, same as every other principal resolution in this app). Full suite: 95/95 files, 1254/1254 tests, 100/99.48/100/100.
+
+### 2026-09-22 (later) - Video meetings client (`videoconf/videoMeetingsApi.ts`) + `CalendarEvent.videoMeetingUid`
+
+Not committed, unpublished. The react-shared half of web-client's "Add video conferencing" control on the calendar event form (see that repo's
+NOTES entry of the same date for the UI and the flow). Written to the agreed contract for `@rapidmx/videoconf-plugin`'s
+`BaseVideoMeetingRoute` - **not run against a real server**; `organizerJoinUrl` on the create/read answers is being added to that route in
+parallel by another agent, everything else already matches the route as it stands.
+
+- **New `src/videoconf/videoMeetingsApi.ts`** - a new top-level folder, since a video meeting is its own product area (it is neither mail nor
+  calendar; the route only lives under `/mail/video-meetings` because that is where the plugin mounts it). `createVideoMeeting()`,
+  `updateVideoMeeting(uid, { title?, status? })`, `getVideoMeeting(uid)` -> `VideoMeetingDetail` (the meeting plus `organizerJoinUrl`). The
+  anonymous `/join/:token` endpoint is deliberately not wrapped: it belongs to the meeting UI a guest loads, not to the authenticated client.
+- **A plugin's routes need nothing special.** They are mounted on the same server under the same `/api` prefix, so these are plain
+  `apiFetch()` calls - same `jwt` cookie, same `configureApiBaseUrl()` origin, same `ApiRequestError`. There was no existing precedent to copy
+  (booking-plugin has no client here at all); the one thing a caller must know is that an **uninstalled plugin's routes are simply not mounted,
+  so every call 404s** - a caller offering video conferencing optionally must read that as "not available here", not as an error.
+- Responses are typed, not runtime-validated, matching `signingProviderApi.ts`'s documented choice for a plain typed `apiFetch<T>()`.
+- **`UpdateVideoMeetingInput` is title/status only, by the route's own design** - it cannot add or remove invitees, and a private meeting's
+  personal join links are minted once at creation. Callers that need a different invitee list must cancel and create again; the type's doc
+  comment says so, because it is the one constraint the whole calendar integration is shaped around.
+- **`calendarApi.ts`**: `CalendarEvent.videoMeetingUid?: string` (mirroring restapi's own new field) and the same on `CalendarEventInput`, so
+  the link can be set on create/update and cleared with an explicit `null` like every other optional field this client clears. No join link is
+  ever stored on the event - it is shared by every attendee, and each attendee's link is personal (restapi's `MeetingSchedulingJob` substitutes
+  it into their own copy of the invitation); the organizer's own comes from `getVideoMeeting()`.
+- Tests: `test/videoconf/videoMeetingsApi.test.ts` (each call's URL/method/body, uid encoding, the 400 for a private meeting with no invitees,
+  a 403 on update, and a 404 read as "no plugin"). Full suite: 96/96 files, 1261/1261 tests, 100/99.48/100/100 (gates unchanged); `tsc
+  --noEmit`, `yarn lint` clean. `yarn build` run and `dist` copied into web-client's `node_modules/@rapidmx/react-shared/dist` (copy, not a
+  link), as every entry above does.
