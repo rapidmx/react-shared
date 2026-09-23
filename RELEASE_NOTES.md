@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.14.0
+
 ### Security
 
 - **Active signing/encryption private keys are now imported non-extractable (`crypto/keySession.ts`).** They previously were extractable (a stale exemption left over from a consumer removed 2026-09-15), unlike the retained (non-active) encryption keys, which were already non-extractable. A raw-bytes export of a live session key would have survived logout/master-key-zeroing; nothing in this package or its consumers ever called `exportKey()` on one, so nothing depended on the old behavior.

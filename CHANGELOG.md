@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-23
+
+### Added
+- Added missing test files for mailboxPolicyApi and apiQuery.
+
+### Changed
+- Renaming videoconf-plugin to meet-plugin
+- Stop PopoverPortal's outside-click listener from re-subscribing on every render by reading onClose through a ref, like overlayStack.ts already does.
+- Restore folderUid to useMessageAttachments' effect dependency array so a message move/archive still re-fetches attachments.
+- Import active signing/encryption private keys non-extractable in keySession.ts, matching the retained-key pattern, since nothing calls exportKey() on them.
+- Forbid svg/math tags in sanitizeMessageBodyHtml() to match sanitizeQuotedHtml()'s existing policy.
+
+### Fixed
+- Fixed useMessageAttachments re-fetching on metadata-only message patches by narrowing its effect dependency to uid/hasAttachments.
+
 ## [0.13.0] - 2026-09-22
 
 ### Added
@@ -477,7 +492,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/rapidmx/react-shared/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/rapidmx/react-shared/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/rapidmx/react-shared/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/rapidmx/react-shared/compare/v0.10.0...v0.11.0
