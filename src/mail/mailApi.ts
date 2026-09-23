@@ -1094,9 +1094,14 @@ export function impersonateUser(impersonationBaseUrl: string, userUid: string): 
         : apiFetch("/admin/impersonate", init);
 }
 
-/** Ends an active impersonation session, restoring the admin's own — a no-op (`restored: false`) if none is active. */
+/**
+ * Ends an active impersonation session, restoring the admin's own — a no-op (`restored: false`) if none is
+ * active. POST, not GET: this mutates state (swaps the active `jwt` cookie back), and a state-changing GET
+ * is exploitable via a bare navigation — no form or script required at all — bypassing CSRF defenses
+ * entirely, since they only ever apply to non-safe methods. See `@rapidrest/auth`'s `BaseImpersonationRoute`.
+ */
 export function stopImpersonating(impersonationBaseUrl: string): Promise<{ restored: boolean }> {
     return impersonationBaseUrl
-        ? authApiFetch(impersonationBaseUrl, "/admin/impersonate/stop", { method: "GET" })
-        : apiFetch("/admin/impersonate/stop", { method: "GET" });
+        ? authApiFetch(impersonationBaseUrl, "/admin/impersonate/stop", { method: "POST" })
+        : apiFetch("/admin/impersonate/stop", { method: "POST" });
 }

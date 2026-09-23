@@ -85,6 +85,54 @@ export function apiUrl(path: string): string {
 }
 
 /**
+ * Mirrors `@rapidrest/service-core`'s `DEFAULT_CSRF_COOKIE_NAME`/`DEFAULT_CSRF_HEADER_NAME` — kept as
+ * local literals since this package has no dependency on that one.
+ */
+const CSRF_COOKIE_NAME = "csrf";
+const CSRF_HEADER_NAME = "x-csrf-token";
+const CSRF_SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/**
+ * Reads the CSRF double-submit cookie a `jwt`-cookie-issuing server sets (see `@rapidrest/auth`'s
+ * `CsrfUtils`) directly off `document.cookie`. That cookie is deliberately host-only and non-`HttpOnly`
+ * — see `@rapidrest/service-core`'s `src/http/csrf/csrf.ts` for the full rationale, in particular why a
+ * *cross-origin* call (`authApiFetch()` below) can never find one here: a cookie set by auth-server's
+ * host is never present in this app's own `document.cookie`, by design — that's what makes the cookie
+ * host-only in the first place, and it's why `authApiFetch()`'s CSRF protection has to come from the
+ * server checking its Origin allow-list instead (see its own doc comment).
+ */
+function readCsrfCookie(): string | undefined {
+    if (typeof document === "undefined") {
+        return undefined;
+    }
+    for (const part of document.cookie.split("; ")) {
+        const idx = part.indexOf("=");
+        if (idx > 0 && part.slice(0, idx) === CSRF_COOKIE_NAME) {
+            return part.slice(idx + 1);
+        }
+    }
+    return undefined;
+}
+
+/**
+ * Echoes the CSRF double-submit cookie back as a header on `headers`, for a mutating request that doesn't
+ * already carry one — the browser-side half of the double-submit check `@rapidrest/service-core`'s
+ * `RouteUtils.checkCsrf()` enforces server-side. A safe method, a caller-supplied header already present,
+ * or simply no cookie yet (e.g. this page's very first request) all leave `headers` untouched — the
+ * server itself never requires this for any of those cases.
+ */
+function applyCsrfHeader(headers: Headers, method: string | undefined): void {
+    const m = (method ?? "GET").toUpperCase();
+    if (CSRF_SAFE_METHODS.has(m) || headers.has(CSRF_HEADER_NAME)) {
+        return;
+    }
+    const token = readCsrfCookie();
+    if (token) {
+        headers.set(CSRF_HEADER_NAME, token);
+    }
+}
+
+/**
  * `fetch()` against the RapidMX server's API - same-origin unless `configureApiBaseUrl()` has been
  * called, in which case this also switches to `credentials: "include"` so the configured cross-origin
  * call still carries the `jwt` cookie (a plain relative fetch never needs this - `credentials:
@@ -95,6 +143,7 @@ export function apiUrl(path: string): string {
 export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set("Content-Type", "application/json");
+    applyCsrfHeader(headers, init.method);
     const credentials = apiBaseUrl ? "include" : init.credentials;
 
     const res = await fetch(apiUrl(path), { ...init, headers, credentials });
@@ -112,10 +161,16 @@ export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}
  * auth-server and this app are deployed under a shared parent cookie domain (e.g. `Domain=.example.com`) —
  * a deployment-level requirement owned by auth-server/the Helm chart, not configured here — and auth-server's
  * CORS config must explicitly allow this app's origin with credentials.
+ *
+ * `applyCsrfHeader()` is still called here for consistency, but it never actually finds a token for a truly
+ * cross-origin call — see its own doc comment on `readCsrfCookie()` for why that's correct rather than a
+ * gap: auth-server's CSRF protection for this call shape comes from its own Origin allow-list check, not a
+ * double-submit cookie this app's JavaScript could never read in the first place.
  */
 export async function authApiFetch<T = unknown>(authServerUrl: string, path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set("Content-Type", "application/json");
+    applyCsrfHeader(headers, init.method);
 
     const res = await fetch(`${authServerUrl}/api${path}`, { ...init, headers, credentials: "include" });
     return decodeApiResponse<T>(res);

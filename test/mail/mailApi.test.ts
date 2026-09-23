@@ -1086,20 +1086,20 @@ describe("impersonateUser", () => {
 });
 
 describe("stopImpersonating", () => {
-    it("GETs auth-server's stop endpoint with credentials included", async () => {
+    it("POSTs auth-server's stop endpoint with credentials included", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, { restored: true }));
         const result = await stopImpersonating("https://auth.example.com");
         expect(fetchMock).toHaveBeenCalledWith(
             "https://auth.example.com/api/admin/impersonate/stop",
-            expect.objectContaining({ method: "GET", credentials: "include" }),
+            expect.objectContaining({ method: "POST", credentials: "include" }),
         );
         expect(result).toEqual({ restored: true });
     });
 
-    it("GETs this app's own local dev-only stop endpoint when impersonationBaseUrl is empty", async () => {
+    it("POSTs this app's own local dev-only stop endpoint when impersonationBaseUrl is empty", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, { restored: true }));
         const result = await stopImpersonating("");
-        expect(fetchMock).toHaveBeenCalledWith("/api/admin/impersonate/stop", expect.objectContaining({ method: "GET" }));
+        expect(fetchMock).toHaveBeenCalledWith("/api/admin/impersonate/stop", expect.objectContaining({ method: "POST" }));
         expect(result).toEqual({ restored: true });
     });
 });

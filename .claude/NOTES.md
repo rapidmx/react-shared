@@ -1189,7 +1189,20 @@ Committed to `main`. An adversarial review found this repo in good shape overall
 - Full suite after all four fixes: 98/98 files, 1284/1284 tests, 100/99.48/100/100 statements/branches/functions/lines (branch gap is the same
   handful of pre-existing lines listed in every prior entry's coverage table, untouched by this work). `tsc --noEmit` and `yarn lint` clean.
 
-**OPEN FINDING, NOT FIXED - flagged for a coordinated cross-repo change:** `src/util/api.ts:95-122` (`apiFetch`/`authApiFetch`, used by every
+**RESOLVED 2026-09-23** (was: open finding flagged for a coordinated cross-repo change). Fixed exactly as
+this entry's own "fix shape" prescribed: a coordinated change across `service-core` (the actual double-submit
+mechanism + `RouteUtils.checkCsrf()` enforcement, wired automatically into every route), `auth` (`CsrfUtils`
+issuing/rotating the cookie alongside `jwt`/`refresh`), `auth-server` (config defaults + its own frontend's
+CSRF header echo), and this repo (`apiFetch()`/`authApiFetch()` below now echo the cookie back as
+`x-csrf-token` on every mutating request). See `@rapidrest/service-core`'s `src/http/csrf/csrf.ts` and
+`@rapidrest/auth`'s NOTES.md for the full cross-repo design writeup — in particular why the CSRF cookie is
+host-only rather than the naive wildcard-domain double-submit this original finding's own "sharper threat
+model" paragraph (kept below for the record) worried wasn't yet accounted for, and why a genuinely
+cross-origin call like `authApiFetch()` relies on the server's own Origin allow-list instead of a
+double-submit token it could never read in the first place. The original finding and its sharper threat
+model are preserved unedited below for context; do not re-open this as unfixed.
+
+**Original finding, now resolved (see above) - kept verbatim for context:** `src/util/api.ts:95-122` (`apiFetch`/`authApiFetch`, used by every
 API call site in this repo and consumed by `web-client`/`electron-client`) sets only `Content-Type`/`credentials: "include"` - there is no
 CSRF token / double-submit-cookie protection anywhere in the shared fetch wrapper. The `jwt` auth cookie is `SameSite=Lax` for a same-origin
 deployment, but per `api.ts:58`'s own doc comment a cross-origin deployment (e.g. the Electron desktop client via `configureApiBaseUrl()`)
@@ -1215,6 +1228,31 @@ CSRF protection" - it's also "today's default same-origin-cookie deployment is s
 moment a deployment has one (e.g. a per-tenant subdomain alongside the main app). Doesn't change the fix shape above (still needs the
 issuing-side CSRF cookie + header validation, coordinated with `auth-server`), just broadens who should treat it as live risk rather than a
 purely-hypothetical-future-deployment concern.
+
+### 2026-09-23 (later) - CSRF fix implemented: `apiFetch()`/`authApiFetch()` echo the double-submit cookie
+
+Implements the fix the open finding above prescribed. `readCsrfCookie()`/`applyCsrfHeader()` (new, right
+above `apiFetch()`) read a `csrf` cookie off `document.cookie` and echo it as `x-csrf-token` on any mutating
+(`init.method` not GET/HEAD/OPTIONS) request that doesn't already carry the header, in both `apiFetch()` and
+`authApiFetch()`. Also fixed `stopImpersonating()` (`mail/mailApi.ts`) from GET to POST, matching
+`@rapidrest/auth`'s `BaseImpersonationRoute` fix in the same cross-repo change - a state-changing GET is
+exploitable via a bare navigation, bypassing CSRF defenses entirely since they only ever apply to non-safe
+methods. `server`'s own dev-only `DevImpersonationRoute` (mirrors this shape for `yarn dev`) and
+`web-client`'s tests asserting the old GET were updated in the same pass so nothing in the ecosystem is left
+calling the old method.
+
+`authApiFetch()`'s echo can never actually find a token for a genuinely cross-origin call in production -
+that's correct, not a gap: auth-server's CSRF cookie is host-only (see `service-core`'s `src/http/csrf/
+csrf.ts`), so this app's `document.cookie` never has it to begin with, and auth-server's own Origin
+allow-list check is what protects that call shape instead. The unit test for this (`test/util/api.test.ts`)
+can only demonstrate the header-echo wiring itself, since jsdom has no real cross-origin cookie isolation to
+simulate - said so explicitly in the test's own comment rather than asserting something misleading.
+
+New tests: `test/util/api.test.ts` ("CSRF header echo" under both `apiFetch`/`authApiFetch`), plus
+`stopImpersonating()`'s existing tests updated from GET to POST. Full suite: 98/98 files, 1294/1294 tests.
+`tsc --noEmit` clean. Ran against locally-built (not yet published) `@rapidrest/service-core`/`@rapidrest/
+auth`/`@rapidrest/auth-server` - the full protection isn't live until those are published and this
+package's dependents upgrade to them.
 
 ### 2026-09-22 (follow-up) - Second-round review of d82f2fe: a gap in that fix, plus two new findings
 

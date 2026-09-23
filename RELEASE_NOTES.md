@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Security
+
+- Added CSRF (double-submit cookie) protection to `apiFetch()`/`authApiFetch()`: both now echo a `csrf`
+  cookie (set by a `@rapidrest/auth`-backed server) back as an `x-csrf-token` header on every mutating
+  request, the client-side half of a coordinated fix across `@rapidrest/service-core`, `@rapidrest/auth`
+  and `@rapidrest/auth-server`. `stopImpersonating()` also switched from GET to POST — a state-changing
+  GET is exploitable via a bare navigation, bypassing CSRF defenses entirely. Needs a server built on the
+  updated `@rapidrest/service-core`/`@rapidrest/auth` to actually enforce the check; see those projects'
+  own release notes.
+
 ## v0.14.1
 
 ### Fixes

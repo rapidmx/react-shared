@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added CSRF (double-submit cookie) header echo to `apiFetch()`/`authApiFetch()` in `src/util/api.ts` — a `csrf` cookie set by the server is now echoed back as an `x-csrf-token` header on every mutating request, closing the previously-open CSRF finding in NOTES.md
+
+### Changed
+- Changed `stopImpersonating()` (`src/mail/mailApi.ts`) from GET to POST, matching `@rapidrest/auth`'s `BaseImpersonationRoute` fix — a state-changing GET is exploitable via a bare navigation, bypassing CSRF defenses entirely
+
 ## [0.14.1] - 2026-09-23
 
 ### Changed
