@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixes
+
+- **`saveEventSeries()` now shifts exceptions/recurrenceIds on a timezone- or allDay-only edit too (`calendar/calendarMutations.ts`).** Its entry gate previously only entered the wall-clock-shift path when `fields.startDate` was set, even though the function's own doc comment always promised the shift also happens on a timezone/allDay change - a caller that changed only one of those (no `startDate`) would have silently skipped re-pointing the rule's `exceptions` and any detached occurrences' `recurrenceId`s. Not reachable through today's caller (`web-client`'s event modal always supplies `startDate` alongside a genuine allDay/timezone change), but this is an exported function of a shared package.
+
 ## v0.14.0
 
 ### Security

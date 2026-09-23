@@ -1201,6 +1201,21 @@ half existing and being verified would be worse than doing nothing - it would lo
 coordinate with the `server`/`auth-server` repo's `/auth/login` (cookie issuance) and every state-changing route (header validation) in the
 same piece of work.
 
+**Sharper threat model (2026-09-23), merged in from `server`'s own NOTES.md, 2026-09-15 "Review round 6" item 8** (that repo investigated the
+cookie side of this same gap independently - the two write-ups shouldn't stay siloed): auth-server's `jwt`/`refresh` cookies, built by
+`@rapidrest/auth`'s `TokenUtils.buildCookie()`, are `SameSite=Lax` **by default today** (explicit attribute, HttpOnly, Secure, no `Domain` -
+host-only on authserver.host; neither auth-server's config nor any chart overrides it) - confirmed via a fresh grep of both repos that
+`SameSite=None` appears nowhere as a live config value right now, only as the cross-origin case this file's own comments warn a future
+Electron-style deployment into. That matters because `Lax` is weaker than "not exploitable": a genuine cross-*site* `text/plain` POST carries
+no `Lax` cookie (not exploitable that way), but a same-*site* origin - a sibling subdomain of the same registrable domain, a realistic shape
+for a multi-tenant or wildcard-DNS deployment - still gets the cookie attached, since `Lax` only blocks cross-site, not same-site-cross-origin,
+sending. CORS blocks that sibling subdomain from *reading* the response, but says nothing about stopping the state-changing request from being
+*sent* in the first place - CORS and CSRF defend different things. So the open finding isn't only "a future cross-origin deployment has zero
+CSRF protection" - it's also "today's default same-origin-cookie deployment is still exploitable from a same-site sibling subdomain" the
+moment a deployment has one (e.g. a per-tenant subdomain alongside the main app). Doesn't change the fix shape above (still needs the
+issuing-side CSRF cookie + header validation, coordinated with `auth-server`), just broadens who should treat it as live risk rather than a
+purely-hypothetical-future-deployment concern.
+
 ### 2026-09-22 (follow-up) - Second-round review of d82f2fe: a gap in that fix, plus two new findings
 
 Committed to `main` as a follow-up. All three addressed (two code fixes, one investigated-and-fixed - no open-finding-only case this round).
@@ -1233,4 +1248,35 @@ Committed to `main` as a follow-up. All three addressed (two code fixes, one inv
   `test/mail/messageBodySanitizer.test.ts` asserting an `<svg>`/`<math>` payload (with a nested `<script>`) is stripped entirely from
   `sanitizeMessageBodyHtml()`'s output while surrounding content survives.
 - Full suite: 98/98 files, 1287/1287 tests, 100/99.48/100/100 statements/branches/functions/lines (same pre-existing branch gap as every prior
+  entry, untouched by this work). `tsc --noEmit` and `yarn lint` clean.
+
+### 2026-09-23 - Third-round review of cc76edb: `saveEventSeries()`'s entry gate, plus the CSRF finding sharpened
+
+Round 3 re-confirmed all three fixes from the previous entry hold up (dependency array complete, extractability fix verified via a fresh
+ecosystem-wide grep, sanitizer fix applies at the one real choke point both display and quote paths share). Two items this round: one code
+fix, one documentation-only merge.
+
+- **`calendar/calendarMutations.ts`'s `saveEventSeries()` entry gate widened.** Its doc comment (lines 59-66) always promised the wall-clock
+  shift (rule `exceptions`, detached occurrences' `recurrenceId`s) also runs on a timezone or allDay change, not just a moved `startDate` -
+  but the actual gate only checked `fields.startDate !== undefined`, so a caller that set only `fields.timezone` or `fields.allDay` (no
+  `startDate`) silently skipped the whole shift path and sent a bare PUT with no `recurrenceRule` at all. Not reachable today - the only real
+  caller, `web-client`'s `EventModal.tsx`, has no timezone control and always supplies `startDate` alongside a genuine `allDay` change - but
+  this is an exported function of a shared package a future timezone-editing UI would hit silently. Fixed: the gate now also enters the shift
+  path when `fields.timezone !== undefined || fields.allDay !== undefined`; when `fields.startDate` itself is absent, the shift computation
+  falls back to `master.startDate` as the "new" instant (the master's own unchanged instant, reinterpreted under whatever timezone/allDay
+  actually changed) rather than failing to parse `undefined`. The existing "nothing actually moved" fast-exit
+  (`deltaWallMs === 0 && newTimezone === master.timezone && newAllDay === master.allDay`) is unchanged and still short-circuits a call that
+  redundantly repeats the current timezone/allDay to a single plain PUT, exactly as before. New test in `test/calendar/calendarMutations.test.ts`
+  ("also enters the shift path when only the timezone changes, with no startDate"): asserts the master is fetched, detached occurrences are
+  listed, and the PUT body carries a `recurrenceRule` at all (New York and Chicago are both in DST in June, exactly one hour apart, so the
+  reinterpretation delta happens to cancel out numerically for a plain weekly exception with no DST edge in the window - the shifted instant
+  equals the original - so the test deliberately asserts on the shift path *running*, not on the exceptions' values changing, which would be
+  a coincidence of the chosen zones rather than the actual bug being guarded against).
+- **CSRF open finding sharpened, no code change** (see the finding itself above, now with a "Sharper threat model (2026-09-23)" paragraph
+  merged in): `server`'s own NOTES.md (2026-09-15, "Review round 6", item 8) independently investigated the cookie side of the same gap and
+  found the default `SameSite=Lax` (confirmed via a fresh grep of both repos - `SameSite=None` appears nowhere as a live config value today)
+  is exploitable from a same-site sibling subdomain even though it correctly blocks genuine cross-site requests, since CORS blocks reading a
+  response but not sending a state-changing request in the first place. Folded into the existing write-up here rather than left siloed in the
+  other repo's notes, so anyone picking up the CSRF fix sees both investigations together.
+- Full suite: 98/98 files, 1288/1288 tests, 100/99.48/100/100 statements/branches/functions/lines (same pre-existing branch gap as every prior
   entry, untouched by this work). `tsc --noEmit` and `yarn lint` clean.

@@ -67,14 +67,18 @@ export type SeriesSaveResult = CalendarEvent & {
  */
 export async function saveEventSeries(occurrence: CalendarOccurrence, fields: Partial<CalendarEventInput>): Promise<SeriesSaveResult> {
     const update: UpdateCalendarEventInput = { uid: occurrence.uid, version: occurrence.version, ...fields };
-    if (fields.startDate === undefined) {
+    // A shift can be needed even without an explicit startDate: changing timezone or allDay reinterprets the
+    // master's existing (unchanged) instant onto a different wall clock, exactly as the doc comment above
+    // promises - so all three fields, not just startDate, gate entry into the shift path below.
+    if (fields.startDate === undefined && fields.timezone === undefined && fields.allDay === undefined) {
         return updateCalendarEvent(update);
     }
     const master = await getCalendarEvent(occurrence.uid);
     const newTimezone = fields.timezone ?? master.timezone;
     const newAllDay = fields.allDay ?? master.allDay;
     const oldStartWall = toEventWallClock(Date.parse(master.startDate), master.timezone, master.allDay);
-    const deltaWallMs = toEventWallClock(Date.parse(fields.startDate), newTimezone, newAllDay) - oldStartWall;
+    const newStartInstant = Date.parse(fields.startDate ?? master.startDate);
+    const deltaWallMs = toEventWallClock(newStartInstant, newTimezone, newAllDay) - oldStartWall;
     if (deltaWallMs === 0 && newTimezone === master.timezone && newAllDay === master.allDay) {
         return updateCalendarEvent(update);
     }

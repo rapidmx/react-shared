@@ -171,6 +171,41 @@ describe("saveEventSeries", () => {
             await saveEventSeries(occurrence(), { startDate: "2026-06-01T14:00:00.000Z" });
             expect(putBody(plainFetch, "e1")).not.toHaveProperty("recurrenceRule");
         });
+
+        // Round-3 (2nd-round) review: the doc comment above promises a shift on a timezone/allDay change too,
+        // but the entry gate only checked `fields.startDate !== undefined` - a timezone- or allDay-only edit (no
+        // startDate) silently skipped the shift entirely, sending a bare PUT with no recurrenceRule at all. Not
+        // reachable through today's only real caller (web-client's EventModal.tsx always supplies startDate
+        // alongside a genuine allDay/timezone change), but this is an exported function of a shared package.
+        it("also enters the shift path when only the timezone changes, with no startDate", async () => {
+            const tzMaster = {
+                ...master,
+                recurrenceRule: { freq: "weekly" as const, interval: 1, byDay: ["MO" as const], exceptions: ["2026-06-08T13:00:00.000Z"] },
+            };
+            const fetchMock = mockFetch((url, init) => {
+                if (url === "/api/mail/calendar-events/e1" && !init?.method) return jsonResponse(200, tzMaster);
+                if (url.startsWith("/api/mail/calendar-events?")) return jsonResponse(200, []);
+                if (url === "/api/mail/calendar-events/e1" && init?.method === "PUT") return jsonResponse(200, { ...tzMaster, ...JSON.parse(init.body as string) });
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+
+            await saveEventSeries(occurrence(), { timezone: "America/Chicago" });
+
+            const methods = fetchMock.mock.calls.map(([url, init]) => `${init?.method ?? "GET"} ${url}`);
+            // Proves the full shift path ran (master fetched, detached occurrences listed) instead of the old
+            // silent single-PUT skip.
+            expect(methods[0]).toBe("GET /api/mail/calendar-events/e1");
+            expect(methods.some((m) => m.startsWith("GET /api/mail/calendar-events?"))).toBe(true);
+            expect(methods.filter((m) => m.startsWith("PUT"))).toHaveLength(1);
+
+            const body = putBody(fetchMock, "e1");
+            expect(body.timezone).toBe("America/Chicago");
+            // New York and Chicago are both in DST in June, exactly one hour apart, so the wall-clock
+            // reinterpretation delta this reinterpretation produces (-1h) exactly cancels out for a plain
+            // weekly exception with no DST edge - the shifted instant equals the original. What matters is
+            // that `recurrenceRule` is present at all here, where the unfixed code sent none.
+            expect(body.recurrenceRule.exceptions).toEqual(["2026-06-08T13:00:00.000Z"]);
+        });
     });
 });
 
