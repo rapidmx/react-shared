@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 /**
- * Typed wrappers over `@rapidmx/videoconf-plugin`'s `/mail/video-meetings` REST surface — the owner-side
+ * Typed wrappers over `@rapidmx/meet-plugin`'s `/mail/video-meetings` REST surface — the owner-side
  * management endpoints only (create, read, update/cancel). The anonymous `/join/:token` endpoint a guest's
  * link resolves through is deliberately not wrapped here: it belongs to the meeting UI a guest loads, not to
  * the authenticated webmail client this library serves.

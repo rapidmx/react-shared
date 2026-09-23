@@ -92,7 +92,7 @@ export interface CalendarEvent {
     /** The automatic-reply body while this event's window is active. Only meaningful when
      * `autoReplyEnabled` is `true`. */
     autoReplyMessage?: string;
-    /** The `@rapidmx/videoconf-plugin` `VideoMeeting` minted for this event, when the organizer turned on
+    /** The `@rapidmx/meet-plugin` `VideoMeeting` minted for this event, when the organizer turned on
      * video conferencing (see `videoconf/videoMeetingsApi.ts`). Only the link is stored here — each
      * attendee's own personal join URL is substituted into their own copy of the invitation server-side,
      * so this event carries no per-attendee link and the organizer's own link is fetched from the meeting

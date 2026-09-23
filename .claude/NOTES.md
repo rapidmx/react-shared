@@ -1127,7 +1127,7 @@ only, same as every other principal resolution in this app). Full suite: 95/95 f
 ### 2026-09-22 (later) - Video meetings client (`videoconf/videoMeetingsApi.ts`) + `CalendarEvent.videoMeetingUid`
 
 Not committed, unpublished. The react-shared half of web-client's "Add video conferencing" control on the calendar event form (see that repo's
-NOTES entry of the same date for the UI and the flow). Written to the agreed contract for `@rapidmx/videoconf-plugin`'s
+NOTES entry of the same date for the UI and the flow). Written to the agreed contract for `@rapidmx/meet-plugin`'s
 `BaseVideoMeetingRoute` - **not run against a real server**; `organizerJoinUrl` on the create/read answers is being added to that route in
 parallel by another agent, everything else already matches the route as it stands.
 
