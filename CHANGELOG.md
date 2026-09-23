@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-09-23
+
+### Changed
+- Widen saveEventSeries()'s entry gate to also shift exceptions/recurrenceIds on a timezone- or allDay-only edit, matching its doc comment.
+- Merge server repo's sharper same-site-subdomain CSRF threat model into the existing open finding in NOTES.md.
+
 ## [0.14.0] - 2026-09-23
 
 ### Added
@@ -492,7 +498,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/rapidmx/react-shared/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/rapidmx/react-shared/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/rapidmx/react-shared/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/rapidmx/react-shared/compare/v0.11.0...v0.12.0
