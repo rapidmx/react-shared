@@ -259,13 +259,22 @@ describe("getUnlockedKeys / destroyUnlockedKeys", () => {
         expect(first.masterKey.some((x) => x !== 0)).toBe(true);
     });
 
-    it("keeps the active unlocked private keys extractable", async () => {
+    it("imports the active unlocked private keys non-extractable, like the retained ones", async () => {
         const { vault, mailboxKeys } = await enrollForTest(["sign", "encrypt"]);
         getKeyVault.mockResolvedValue(vault);
         await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
         const unlocked = getUnlockedKeys(MAILBOX_UID)!;
-        expect(unlocked.signingPrivateKey!.extractable).toBe(true);
-        expect(unlocked.encryptionPrivateKey!.extractable).toBe(true);
+        expect(unlocked.signingPrivateKey!.extractable).toBe(false);
+        expect(unlocked.encryptionPrivateKey!.extractable).toBe(false);
+    });
+
+    it("refuses to export the active unlocked private keys' raw bytes", async () => {
+        const { vault, mailboxKeys } = await enrollForTest(["sign", "encrypt"]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const unlocked = getUnlockedKeys(MAILBOX_UID)!;
+        await expect(crypto.subtle.exportKey("pkcs8", unlocked.signingPrivateKey!)).rejects.toThrow();
+        await expect(crypto.subtle.exportKey("pkcs8", unlocked.encryptionPrivateKey!)).rejects.toThrow();
     });
 
     it("zeroes the unwrapped master key when unwrapping a private key fails partway", async () => {

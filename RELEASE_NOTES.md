@@ -2,9 +2,14 @@
 
 ## Unreleased
 
+### Security
+
+- **Active signing/encryption private keys are now imported non-extractable (`crypto/keySession.ts`).** They previously were extractable (a stale exemption left over from a consumer removed 2026-09-15), unlike the retained (non-active) encryption keys, which were already non-extractable. A raw-bytes export of a live session key would have survived logout/master-key-zeroing; nothing in this package or its consumers ever called `exportKey()` on one, so nothing depended on the old behavior.
+- **`sanitizeMessageBodyHtml()` now forbids `svg`/`math` tags (`mail/messageBodySanitizer.ts`), matching `sanitizeQuotedHtml()`.** It renders a received message's HTML - attacker-controlled content - and DOMPurify's default SVG/MathML allowlist has a history of mutation-XSS bypasses; there was no legitimate reason for the two sanitizing paths to disagree here.
+
 ### Fixes
 
-- **`useMessageAttachments` no longer re-fetches on a metadata-only message patch (`mail/mailDetailHooks.js`).** Its effect now depends on `message?.uid`/`message?.hasAttachments` instead of the whole `message` object, so marking a message read (or any other star/flag/label patch that hands the hook a new object reference for the same message) no longer triggers a needless attachment re-fetch.
+- **`useMessageAttachments` no longer re-fetches on a metadata-only message patch, but still does on a folder move (`mail/mailDetailHooks.js`).** Its effect now depends on `message?.uid`/`message?.hasAttachments`/`message?.folderUid` instead of the whole `message` object: marking a message read (or any other star/flag/label patch that hands the hook a new object reference for the same message) no longer triggers a needless attachment re-fetch, while `moveMessage()`/`archiveMessage()` - which change `folderUid` in that same "new reference, same uid" shape - still correctly re-fetch against the message's new folder.
 - **`PopoverPortal`'s outside-click listener no longer re-subscribes on every render (`components/overlays/PopoverPortal.js`).** `onClose` is now read through a ref, like `overlayStack.ts`'s `onCloseRef` - callers (`EmojiPicker`/`GifPicker`) routinely pass a fresh inline function every render, and the `pointerdown` listener on `document` is now added/removed once instead of on every parent re-render.
 
 ## v0.13.0

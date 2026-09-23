@@ -68,8 +68,11 @@ function getBodyPurifier(): Purifier | undefined {
     return purifier;
 }
 
-/** Tags a displayed body may never carry, whatever else is allowed. */
-const DISPLAY_FORBIDDEN_TAGS = ["link", "meta", "base"];
+/** Tags a displayed body may never carry, whatever else is allowed. `svg`/`math` are forbidden here too (not just
+ * on the quote path below) because this function renders a RECEIVED message's HTML — attacker-controlled content —
+ * and DOMPurify's default SVG/MathML allowlist has a history of mutation-XSS bypasses; there's no legitimate need
+ * for either in a mail body display. */
+const DISPLAY_FORBIDDEN_TAGS = ["link", "meta", "base", "svg", "math"];
 
 /**
  * Sanitizes a message body for display (a sandboxed `srcDoc`, behind its own CSP): DOMPurify's defaults plus the
@@ -100,8 +103,7 @@ const QUOTE_FORBIDDEN_TAGS = [
     "video",
     "source",
     "track",
-    "svg",
-    "math",
+    // svg/math are already in DISPLAY_FORBIDDEN_TAGS, spread above — not repeated here.
 ];
 
 /**

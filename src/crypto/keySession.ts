@@ -237,15 +237,15 @@ export class UnopenableEncryptionKeyError extends Error {
     }
 }
 
-/** Opens one wrapped PKCS#8 private key under `masterKey` and imports it (extractable), zeroing the
- * transient plaintext whether or not the import succeeds. */
+/** Opens one wrapped PKCS#8 private key under `masterKey` and imports it (non-extractable by default, like
+ * `importPrivateKeyPkcs8()` itself), zeroing the transient plaintext whether or not the import succeeds. */
 async function openPrivateKey(
     masterKey: Uint8Array,
     wrapped: WrappedPrivateKey,
     aad: Uint8Array,
     algorithm: EcKeyImportParams,
     usages: KeyUsage[],
-    extractable = true,
+    extractable = false,
 ): Promise<CryptoKey> {
     const raw = await openWithKey(masterKey, wrapped, aad);
     try {
@@ -415,13 +415,16 @@ async function openSession(
     const unlocked: UnlockedKeys = { masterKey };
     const unopenableKeys: string[] = [];
 
-    // The active private keys are imported *extractable* (unlike `importPrivateKeyPkcs8()`'s default). Their one
-    // consumer, `keyRotation.ts`'s `rewrapPrivateKeysUnderNewMasterKey()`, was removed (2026-09-15; it re-wrapped only
-    // the active keys, and web-client's rotation re-seals every vault wrap itself), so nothing in this package exports
-    // them any more; kept extractable for now so no consumer outside it breaks. Non-extractability would add little: an
-    // XSS that can call `exportKey()` on these handles can equally call `openWithKey()` with the in-memory master key
-    // (round-4 review). The transient
-    // PKCS#8 plaintext buffers are zeroed as soon as WebCrypto has copied them into a `CryptoKey`.
+    // The active private keys are imported *non-extractable*, same as the retained encryption keys below (round-5
+    // review; previously imported extractable, on the reasoning that an XSS able to call `exportKey()` on these
+    // handles could equally call `openWithKey()` with the in-memory master key - but that framing missed that
+    // `exportKey()` yields raw bytes an attacker can copy out and keep *after* the session ends (logout, master-key
+    // zeroing), whereas the master-key-access path only works while the session is live. Their one former consumer,
+    // `keyRotation.ts`'s `rewrapPrivateKeysUnderNewMasterKey()`, was removed (2026-09-15; it re-wrapped only the
+    // active keys, and web-client's rotation re-seals every vault wrap itself) - confirmed nothing in this package
+    // or in `web-client`/`electron-client` calls `exportKey()` on a session key at all, so nothing depends on this
+    // being extractable. The transient PKCS#8 plaintext buffers are zeroed as soon as WebCrypto has copied them
+    // into a `CryptoKey` either way.
     try {
         const signingPublicKey = findActivePublicKey(mailboxKeys, "sign");
         const wrappedSigningKey = signingPublicKey && findWrappedPrivateKey(vault, signingPublicKey.fingerprint);

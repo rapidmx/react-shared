@@ -1200,3 +1200,37 @@ state-changing requests, validated server-side). Bolting a client-only half of t
 half existing and being verified would be worse than doing nothing - it would look fixed without being fixed. Whoever picks this up needs to
 coordinate with the `server`/`auth-server` repo's `/auth/login` (cookie issuance) and every state-changing route (header validation) in the
 same piece of work.
+
+### 2026-09-22 (follow-up) - Second-round review of d82f2fe: a gap in that fix, plus two new findings
+
+Committed to `main` as a follow-up. All three addressed (two code fixes, one investigated-and-fixed - no open-finding-only case this round).
+
+- **Fixed a gap in the previous commit's own fix:** `useMessageAttachments`'s dependency array (`mail/mailDetailHooks.ts`) had narrowed from
+  `[message]` to `[message?.uid, message?.hasAttachments]`, but the effect body reads `message.folderUid` too
+  (`listAttachments(message.folderUid, message.uid)`), and `folderUid` had been dropped from the array entirely rather than deliberately kept.
+  `mailApi.ts`'s `moveMessage()`/`archiveMessage()` change exactly `folderUid` while preserving `uid`/`hasAttachments` - the same
+  "new object reference, same uid" shape the previous fix was guarding against - so a pending/failed attachment fetch could get permanently
+  stuck against a stale folder after a move. Fixed: `folderUid` added back to the dependency array (`[message?.uid, message?.hasAttachments,
+  message?.folderUid]`); folder changes are rare enough this doesn't reintroduce the original over-fetch-on-every-metadata-patch bug (read/
+  star/flag/label patches never touch `folderUid`). New test in `test/mail/mailDetailHooks.test.tsx`: a folderUid-only change (same uid/
+  hasAttachments) does re-fire, asserting the fetch URL's `folderUid=` query param on both the before and after fetch.
+- **Investigated before changing:** `crypto/keySession.ts`'s active signing/encryption private keys were imported `extractable: true` (via
+  `openPrivateKey()`'s default param) while the retained (non-active) encryption keys were correctly `extractable: false`. The existing code
+  comment justified this by comparing to master-key-in-memory access (both need a live-session XSS) - but that misses that `exportKey()` on an
+  extractable key yields raw bytes an attacker can copy out and keep *after* the session ends (logout, master-key zeroing), while the
+  master-key-access path only works while the session is live. Checked for a legitimate consumer before touching anything: grepped this repo
+  and both `web-client` and `electron-client` for `exportKey(` - zero calls anywhere, and the comment already documented that the one former
+  consumer (`keyRotation.ts`'s `rewrapPrivateKeysUnderNewMasterKey()`) was removed 2026-09-15. No key-backup/export or device-transfer UI
+  exists that relies on this. Since nothing depends on it, changed `openPrivateKey()`'s default to `extractable = false`, matching the retained-
+  key pattern; comment rewritten to explain the corrected reasoning and that the "nothing calls exportKey()" claim was actually verified, not
+  assumed. Tests in `test/crypto/keySession.test.ts`: the existing "keeps... extractable" test flipped to assert `false`, plus a new test that
+  `crypto.subtle.exportKey("pkcs8", ...)` now rejects for both the active signing and encryption keys.
+- **`mail/messageBodySanitizer.ts` asymmetry closed:** `sanitizeQuotedHtml()` forbade `svg`/`math` tags but `sanitizeMessageBodyHtml()` -
+  which renders a RECEIVED message's HTML, i.e. attacker-controlled content, arguably higher-stakes than the quote path - did not, leaving
+  DOMPurify's default SVG/MathML allowlist in place (a known historical mutation-XSS vector; no confirmed working bypass found, but the
+  asymmetry itself was unexplained and unjustified). Added `svg`/`math` to `DISPLAY_FORBIDDEN_TAGS`, which `QUOTE_FORBIDDEN_TAGS` spreads -
+  removed the now-redundant duplicate `svg`/`math` entries `QUOTE_FORBIDDEN_TAGS` had added on top. New regression test in
+  `test/mail/messageBodySanitizer.test.ts` asserting an `<svg>`/`<math>` payload (with a nested `<script>`) is stripped entirely from
+  `sanitizeMessageBodyHtml()`'s output while surrounding content survives.
+- Full suite: 98/98 files, 1287/1287 tests, 100/99.48/100/100 statements/branches/functions/lines (same pre-existing branch gap as every prior
+  entry, untouched by this work). `tsc --noEmit` and `yarn lint` clean.

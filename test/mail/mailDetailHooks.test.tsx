@@ -96,6 +96,23 @@ describe("useMessageAttachments", () => {
         expect(screen.getByTestId("count")).toHaveTextContent("1");
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
+
+    it("re-fetches when only folderUid changes (a move/archive), even with the same uid/hasAttachments", async () => {
+        const fetchMock = mockFetch((url) =>
+            url.startsWith("/api/mail/attachments") ? jsonResponse(200, [{ uid: "a1" }]) : jsonResponse(404, {}),
+        );
+        const { rerender } = render(<AttachmentsHarness message={messageFixture({ uid: "m1", folderUid: "inbox", hasAttachments: true })} />);
+        await waitFor(() => expect(screen.getByTestId("count")).toHaveTextContent("1"));
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(fetchMock.mock.calls[0][0]).toContain("folderUid=inbox");
+
+        // Same shape a `moveMessage()`/`archiveMessage()` result has: a new object reference, same uid/hasAttachments,
+        // only folderUid changed — must still re-fetch, against the new folder, or a stale fetch would be stuck
+        // pointed at the message's old folder after the move.
+        rerender(<AttachmentsHarness message={messageFixture({ uid: "m1", folderUid: "archive", hasAttachments: true })} />);
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+        expect(fetchMock.mock.calls[1][0]).toContain("folderUid=archive");
+    });
 });
 
 function MarkReadHarness({ message }: { message: Message | null }) {

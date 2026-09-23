@@ -44,6 +44,19 @@ describe("sanitizeMessageBodyHtml", () => {
         expect(html).toContain('src="data:image/png;base64,AAAA"');
         expect(html).toContain('<a href="https://example.com/page">link</a>');
     });
+
+    it("strips svg/math tags entirely from a received message's rendered body, matching the quote path", () => {
+        // A received message body is attacker-controlled; DOMPurify's default allowlist otherwise still permits
+        // svg/math, a known historical vector for mutation-XSS bypasses (asymmetric with sanitizeQuotedHtml(),
+        // which already forbade both — this closes that gap).
+        const html = sanitizeMessageBodyHtml(
+            '<p>before</p><svg><script>evil()</script><image href="https://t.example/i.png"></image></svg>' +
+                "<math><mtext>evil</mtext></math><p>after</p>",
+        );
+        expect(html).not.toMatch(/<svg|<math/i);
+        expect(html).toContain("<p>before</p>");
+        expect(html).toContain("<p>after</p>");
+    });
 });
 
 describe("sanitizeQuotedHtml", () => {

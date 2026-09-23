@@ -17,10 +17,14 @@ export function useMessageAttachments(message: Message | null): Attachment[] {
         listAttachments(message.folderUid, message.uid)
             .then(setAttachments)
             .catch(() => setAttachments([]));
-        // Only the fields that actually determine what to fetch — not the whole `message` object, which gets a
-        // new reference on every metadata-only patch (e.g. `useMarkMessageRead`'s `onUpdated(updated)`, or a
+        // Only the fields the fetch actually depends on — not the whole `message` object, which gets a new
+        // reference on every metadata-only patch (e.g. `useMarkMessageRead`'s `onUpdated(updated)`, or a
         // star/flag/label change wired to the same state) and would otherwise trigger a needless re-fetch.
-    }, [message?.uid, message?.hasAttachments]);
+        // `folderUid` IS included: `moveMessage()`/`archiveMessage()` change it while preserving uid/hasAttachments
+        // (the same "new object reference, same uid" shape as a metadata-only patch), and dropping it would leave
+        // a stale fetch pointed at the message's old folder after a move — folder changes are rare enough that
+        // including it doesn't reintroduce the over-fetching this dependency array was narrowed to avoid.
+    }, [message?.uid, message?.hasAttachments, message?.folderUid]);
 
     return attachments;
 }
