@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixes
+
+- **`useMessageAttachments` no longer re-fetches on a metadata-only message patch (`mail/mailDetailHooks.js`).** Its effect now depends on `message?.uid`/`message?.hasAttachments` instead of the whole `message` object, so marking a message read (or any other star/flag/label patch that hands the hook a new object reference for the same message) no longer triggers a needless attachment re-fetch.
+- **`PopoverPortal`'s outside-click listener no longer re-subscribes on every render (`components/overlays/PopoverPortal.js`).** `onClose` is now read through a ref, like `overlayStack.ts`'s `onCloseRef` - callers (`EmojiPicker`/`GifPicker`) routinely pass a fresh inline function every render, and the `pointerdown` listener on `document` is now added/removed once instead of on every parent re-render.
+
 ## v0.13.0
 
 ### Features

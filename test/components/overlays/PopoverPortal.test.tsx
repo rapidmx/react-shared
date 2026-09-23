@@ -125,6 +125,41 @@ describe("PopoverPortal positioning", () => {
         expect(onClose).toHaveBeenCalledTimes(1);
     });
 
+    it("does not remove/re-add the outside-click listener on re-render when onClose is a fresh inline function each time.", () => {
+        vi.stubGlobal("innerHeight", 1000);
+        vi.stubGlobal("innerWidth", 1000);
+        const addSpy = vi.spyOn(document, "addEventListener");
+        const removeSpy = vi.spyOn(document, "removeEventListener");
+
+        // Like `EmojiPicker`/`GifPicker` per the doc comment, `onClose` is a fresh inline arrow function on
+        // every render — the harness below mirrors that by not memoizing the callback it passes down.
+        const { rerender } = render(<HarnessWithRect rect={{ top: 100, bottom: 130, left: 50 }} onClose={vi.fn()} />);
+        const pointerDownAddCount = () => addSpy.mock.calls.filter((call) => call[0] === "pointerdown").length;
+        const pointerDownRemoveCount = () => removeSpy.mock.calls.filter((call) => call[0] === "pointerdown").length;
+        expect(pointerDownAddCount()).toBe(1);
+        expect(pointerDownRemoveCount()).toBe(0);
+
+        rerender(<HarnessWithRect rect={{ top: 100, bottom: 130, left: 50 }} onClose={vi.fn()} />);
+        rerender(<HarnessWithRect rect={{ top: 100, bottom: 130, left: 50 }} onClose={vi.fn()} />);
+
+        expect(pointerDownAddCount()).toBe(1);
+        expect(pointerDownRemoveCount()).toBe(0);
+    });
+
+    it("still calls the latest onClose after a re-render swaps in a new inline function.", async () => {
+        vi.stubGlobal("innerHeight", 1000);
+        vi.stubGlobal("innerWidth", 1000);
+        const firstOnClose = vi.fn();
+        const secondOnClose = vi.fn();
+        const { rerender } = render(<HarnessWithRect rect={{ top: 100, bottom: 130, left: 50 }} onClose={firstOnClose} />);
+
+        rerender(<HarnessWithRect rect={{ top: 100, bottom: 130, left: 50 }} onClose={secondOnClose} />);
+        fireEvent.pointerDown(document.body);
+
+        expect(firstOnClose).not.toHaveBeenCalled();
+        expect(secondOnClose).toHaveBeenCalledTimes(1);
+    });
+
     it("renders nothing until the anchor's rect has been measured.", () => {
         function NullAnchorHarness() {
             const anchorRef = useRef<HTMLButtonElement>(null);

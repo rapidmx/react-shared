@@ -77,6 +77,25 @@ describe("useMessageAttachments", () => {
         rerender(<AttachmentsHarness message={messageFixture({ uid: "m2", hasAttachments: false })} />);
         expect(screen.getByTestId("count")).toHaveTextContent("0");
     });
+
+    it("does not re-fetch when only unrelated fields change on a new message object with the same uid/hasAttachments", async () => {
+        const fetchMock = mockFetch((url) =>
+            url.startsWith("/api/mail/attachments") ? jsonResponse(200, [{ uid: "a1" }]) : jsonResponse(404, {}),
+        );
+        const { rerender } = render(<AttachmentsHarness message={messageFixture({ uid: "m1", hasAttachments: true })} />);
+        await waitFor(() => expect(screen.getByTestId("count")).toHaveTextContent("1"));
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        // A new object reference (e.g. `useMarkMessageRead`'s `onUpdated(updated)`) with the same uid/hasAttachments
+        // but a metadata-only patch — must not trigger another fetch.
+        rerender(
+            <AttachmentsHarness
+                message={messageFixture({ uid: "m1", hasAttachments: true, flags: { read: true, flagged: false, answered: false, forwarded: false } })}
+            />,
+        );
+        expect(screen.getByTestId("count")).toHaveTextContent("1");
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
 });
 
 function MarkReadHarness({ message }: { message: Message | null }) {

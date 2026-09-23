@@ -30,6 +30,11 @@ export interface PopoverPortalProps {
 export default function PopoverPortal({ anchorRef, onClose, width, height, children, ...rest }: PropsWithChildren<PopoverPortalProps>) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [style, setStyle] = useState<React.CSSProperties | null>(null);
+    // Read through a ref, like `overlayStack.ts`'s `onCloseRef`: callers (EmojiPicker/GifPicker) routinely pass
+    // `onClose` as a fresh inline function every render, and depending on it directly would remove/re-add the
+    // document listener on every parent re-render instead of just once on mount.
+    const onCloseRef = useRef(onClose);
+    onCloseRef.current = onClose;
 
     useEffect(() => {
         const rect = anchorRef.current?.getBoundingClientRect();
@@ -50,11 +55,11 @@ export default function PopoverPortal({ anchorRef, onClose, width, height, child
             if (containerRef.current?.contains(target) || anchorRef.current?.contains(target)) {
                 return;
             }
-            onClose();
+            onCloseRef.current();
         }
         document.addEventListener("pointerdown", handlePointerDown);
         return () => document.removeEventListener("pointerdown", handlePointerDown);
-    }, [anchorRef, onClose]);
+    }, [anchorRef]);
 
     if (!style) {
         return null;

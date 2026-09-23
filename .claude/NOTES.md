@@ -1162,3 +1162,41 @@ call's passthrough shape, so no new test was needed - confirmed by running it un
 (3 more than the entry above - unrelated work landed on this repo between the two sessions); `tsc --noEmit` clean. `web-client`'s own admin
 domains pages (that repo's NOTES entry, same date) consume this - not yet visible to `web-client`'s own `tsc --noEmit` until this package is
 actually published and that repo's dependency is bumped, same as every other cross-repo addition in this log.
+
+### 2026-09-22 (later still still) - Adversarial-review fixes: two unnecessary-re-render bugs, two missing test files
+
+Committed to `main`. An adversarial review found this repo in good shape overall; these were the actual findings.
+
+- **`useMessageAttachments` (`mail/mailDetailHooks.ts`) depended on the whole `message` object**, not the two fields it actually uses
+  (`folderUid`/`uid` to fetch, `hasAttachments` to decide whether to). `useMarkMessageRead` in the same file calls `onUpdated(updated)` with a
+  new object reference every time a message is marked read, so a caller wiring both hooks to the same message state (the normal case) got an
+  unnecessary attachment re-fetch on every read/star/flag/label patch. Fixed: dependency array is now `[message?.uid, message?.hasAttachments]`.
+  New negative-case test in `test/mail/mailDetailHooks.test.tsx` (`"does not re-fetch when only unrelated fields change..."`), alongside the
+  existing genuine-uid-change test it was modeled on.
+- **`PopoverPortal`'s outside-click effect (`components/overlays/PopoverPortal.tsx`) depended on `[anchorRef, onClose]`.** Since its own doc
+  comment says `EmojiPicker`/`GifPicker` are the callers, and neither promises a stable `onClose`, the `pointerdown` listener on `document` was
+  being removed and re-added on every parent re-render. Fixed the same way `overlayStack.ts`'s `onCloseRef` already does it in this same
+  package (its doc comment literally says why): `onClose` read through a ref, effect now depends on `[anchorRef]` only. Two new tests in
+  `PopoverPortal.test.tsx` - one spies on `document.addEventListener`/`removeEventListener` and asserts the `pointerdown` listener is added
+  exactly once across three re-renders with a fresh inline `onClose` each time; the other confirms the *latest* `onClose` is still the one
+  invoked after such a re-render (not a stale closure).
+- **Two files had no test file at all**: `src/admin/mailboxPolicyApi.ts` and `src/util/apiQuery.ts` (every other `src` file has a matching
+  test). Added `test/admin/mailboxPolicyApi.test.ts` (get/update, partial-patch body, 403/500 passthrough) and `test/util/apiQuery.test.ts`
+  (`buildQuery`'s default page size, extra-param encoding, explicit-0 handled via `??` not `||`; `buildRequestListQuery`'s "no default, empty
+  when nothing supplied" contract). Note: the checked-in `coverage/` directory was stale relative to `HEAD` - it claimed `mailboxPolicyApi.ts`
+  was already 100% covered with only 2 lines, which didn't match current source at all. Don't trust the checked-in coverage report; always run
+  `yarn test` fresh.
+- Full suite after all four fixes: 98/98 files, 1284/1284 tests, 100/99.48/100/100 statements/branches/functions/lines (branch gap is the same
+  handful of pre-existing lines listed in every prior entry's coverage table, untouched by this work). `tsc --noEmit` and `yarn lint` clean.
+
+**OPEN FINDING, NOT FIXED - flagged for a coordinated cross-repo change:** `src/util/api.ts:95-122` (`apiFetch`/`authApiFetch`, used by every
+API call site in this repo and consumed by `web-client`/`electron-client`) sets only `Content-Type`/`credentials: "include"` - there is no
+CSRF token / double-submit-cookie protection anywhere in the shared fetch wrapper. The `jwt` auth cookie is `SameSite=Lax` for a same-origin
+deployment, but per `api.ts:58`'s own doc comment a cross-origin deployment (e.g. the Electron desktop client via `configureApiBaseUrl()`)
+requires `SameSite=None; Secure`, and for that case there is currently **zero** CSRF mitigation beyond CORS allow-listing. Deliberately not
+fixed here: a correct fix needs the issuing side too (whichever service sets the `jwt` cookie - `auth-server`, per this file's own doc
+comments - would need to also issue a readable, non-HttpOnly CSRF cookie and this wrapper would need to echo it back as a header on
+state-changing requests, validated server-side). Bolting a client-only half of that onto `apiFetch()`/`authApiFetch()` without the backend
+half existing and being verified would be worse than doing nothing - it would look fixed without being fixed. Whoever picks this up needs to
+coordinate with the `server`/`auth-server` repo's `/auth/login` (cookie issuance) and every state-changing route (header validation) in the
+same piece of work.
