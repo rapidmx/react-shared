@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.15.0
+
 ### Security
 
 - Added CSRF (double-submit cookie) protection to `apiFetch()`/`authApiFetch()`: both now echo a `csrf`

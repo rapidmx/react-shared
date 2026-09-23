@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-23
+
+### Added
+- Added CSRF (double-submit cookie) header echo to apiFetch()/authApiFetch() in src/util/api.ts, closing the previously-open CSRF finding in NOTES.md.
+- Added regression tests for both changes and mark the CSRF finding resolved in NOTES.md.
+
+### Changed
+- Change stopImpersonating() from GET to POST, matching @rapidrest/auth's BaseImpersonationRoute fix - a state-changing GET is exploitable via a bare navigation.
+
 ### Added
 - Added CSRF (double-submit cookie) header echo to `apiFetch()`/`authApiFetch()` in `src/util/api.ts` — a `csrf` cookie set by the server is now echoed back as an `x-csrf-token` header on every mutating request, closing the previously-open CSRF finding in NOTES.md
 
@@ -77,7 +86,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Load x509, hash-wasm and the S/MIME code on first use instead of at import, awaiting reflect-metadata first, so the bundles that only read mail don't ship the PKI libraries
 - Document the change in the release notes and NOTES, including that web-client's inbox route is 467 KB rather than 1.05 MB only with this release
 - Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
-
 
 ## [0.9.0] - 2026-09-20
 
@@ -504,7 +512,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/rapidmx/react-shared/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/rapidmx/react-shared/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/rapidmx/react-shared/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/rapidmx/react-shared/compare/v0.12.0...v0.13.0
