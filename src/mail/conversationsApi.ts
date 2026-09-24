@@ -39,6 +39,12 @@ export interface ConversationSummary {
     latestPreview: string;
     /** The most recent message's folder. */
     latestFolderUid: string;
+    /** The iTIP `METHOD` of the calendar file the most recent message carries (`Message.meetingMethod`) - `"REQUEST"`, `"REPLY"`,
+     * `"CANCEL"`, `"PUBLISH"`, `"COUNTER"` or `""`. Absent, or `null` from the server's SQL, when it carries none. Lets a collapsed row mark a
+     * meeting request without opening the conversation. */
+    latestMeetingMethod?: string | null;
+    /** What the reader answered that meeting request with (`Message.meetingResponse`). Absent, or `null`, when unanswered. */
+    latestMeetingResponse?: "accepted" | "tentative" | "declined" | null;
 }
 
 /**

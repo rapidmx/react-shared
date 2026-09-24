@@ -547,6 +547,12 @@ export interface Message {
     /** Server-assigned: the thread this message is grouped under in a conversation list (`conversationsApi.ts`).
      * Derived at delivery/send time from `references`/`inReplyTo`, never accepted in a request body. */
     conversationId?: string;
+    /** Server-managed: the iTIP `METHOD` of the calendar file this message carries - `"REQUEST"`, `"REPLY"`, `"CANCEL"`,
+     * `"PUBLISH"` or `"COUNTER"`, or `""` when the file names none - set on delivery for any message with a readable calendar file.
+     * Absent on a message with none. Lets a list mark meeting requests without opening every message. */
+    meetingMethod?: string;
+    /** Server-managed: what the reader answered a meeting request with (`respondToMessageInvite()`), when they have. */
+    meetingResponse?: "accepted" | "tentative" | "declined";
 }
 
 export interface MessageReceiptEntry {

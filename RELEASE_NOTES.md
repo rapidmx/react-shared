@@ -4,6 +4,8 @@
 
 ### Added
 
+- **`calendar/inviteApi.js`**: `getMessageInvite()`, `respondToMessageInvite()`, `removeMessageInvite()`, `proposeNewTime()` and `acceptProposal()` for reading and answering the calendar invitation a mail message carries (a message with none resolves `null`), with the `MessageInvite`, `InviteResponse`, `InviteParticipant`, `InviteScheduleEntry` and `ProposedTime` types - including `canPropose`, `canAcceptProposal`, `reply` (who sent a reply or counter-proposal and what they answered), and the reader's `conflicts` and `schedule` around the meeting. `Message` gains `meetingMethod` and `meetingResponse`, and `ConversationSummary` gains `latestMeetingMethod` and `latestMeetingResponse`. Test the five calls.
+
 - **`deviceTimeZone()` and `timeZoneOptions()` (`util/timeZone.js`)**: the IANA time zone of the device (UTC where the browser cannot say) and the zones a picker can offer. `autoProvisionMailbox()` now sends the device time zone with each call, so a mailbox a user creates for themselves starts in it (needs `@rapidmx/restapi` with `timezone` on `POST /mailboxes/auto-provision`; an older server ignores it and uses UTC).
 
 ### Fixed
