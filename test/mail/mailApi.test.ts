@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
 import { ApiRequestError, configureApiBaseUrl } from "../../src/util/api.js";
+import { deviceTimeZone } from "../../src/util/timeZone.js";
 import {
     approveReceipt,
     archiveMessage,
@@ -204,12 +205,12 @@ describe("listMailboxDomains", () => {
 });
 
 describe("autoProvisionMailbox", () => {
-    it("posts an empty body when called with no selection", async () => {
+    it("posts just the device's time zone when called with no selection", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, { status: "created", mailbox }));
         const result = await autoProvisionMailbox();
         expect(fetchMock).toHaveBeenCalledWith(
             "/api/mail/mailboxes/auto-provision",
-            expect.objectContaining({ method: "POST", body: JSON.stringify({}) }),
+            expect.objectContaining({ method: "POST", body: JSON.stringify({ timezone: deviceTimeZone() }) }),
         );
         expect(result).toEqual({ status: "created", mailbox });
     });
@@ -221,7 +222,7 @@ describe("autoProvisionMailbox", () => {
         const result = await autoProvisionMailbox({ alias: "support", domain: "example.com" });
         expect(fetchMock).toHaveBeenCalledWith(
             "/api/mail/mailboxes/auto-provision",
-            expect.objectContaining({ method: "POST", body: JSON.stringify({ alias: "support", domain: "example.com" }) }),
+            expect.objectContaining({ method: "POST", body: JSON.stringify({ alias: "support", domain: "example.com", timezone: deviceTimeZone() }) }),
         );
         expect(result).toEqual({ status: "existing", mailbox });
     });

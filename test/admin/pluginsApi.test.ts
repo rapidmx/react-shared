@@ -32,12 +32,12 @@ describe("pluginsApi", () => {
         expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/status", expect.anything());
     });
 
-    it("looks a package up with its scoped name encoded, optionally at a version", async () => {
+    it("looks a package up by a name in the query string, optionally at a version", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, {}));
         await lookupPluginPackage("@rapidmx/activesync");
         await lookupPluginPackage("@rapidmx/activesync", "1.0.0-beta.1");
-        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/registry/%40rapidmx%2Factivesync", expect.anything());
-        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/registry/%40rapidmx%2Factivesync?packageVersion=1.0.0-beta.1", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/registry?name=%40rapidmx%2Factivesync", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/registry?name=%40rapidmx%2Factivesync&packageVersion=1.0.0-beta.1", expect.anything());
     });
 
     it("adds, updates and removes a plugin", async () => {

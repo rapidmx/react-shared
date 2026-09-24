@@ -236,10 +236,17 @@ export function getPluginUpdates(): Promise<PluginUpdateInfo[]> {
     return apiFetch(`${BASE}/updates`);
 }
 
-/** A package's published versions and one version's manifest (the latest, unless `packageVersion` is given). */
+/**
+ * A package's published versions and one version's manifest (the latest, unless `packageVersion` is given). The name
+ * goes in the query string: a scoped name in the path needs its `/` escaped as `%2F`, which a proxy in front of the
+ * server (Envoy Gateway's default) unescapes and redirects to a path that matches no route.
+ */
 export function lookupPluginPackage(name: string, packageVersion?: string): Promise<PluginRegistryLookup> {
-    const query = packageVersion ? `?packageVersion=${encodeURIComponent(packageVersion)}` : "";
-    return apiFetch(`${BASE}/registry/${encodeURIComponent(name)}${query}`);
+    const query = new URLSearchParams({ name });
+    if (packageVersion) {
+        query.set("packageVersion", packageVersion);
+    }
+    return apiFetch(`${BASE}/registry?${query.toString()}`);
 }
 
 /** What adding `name` - or changing it, when installed - at `packageVersion` (default: latest) would also install and

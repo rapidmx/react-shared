@@ -36,6 +36,39 @@ describe("BottomTabBar", () => {
         expect(screen.getByRole("link", { name: "Tasks" })).not.toHaveAttribute("aria-current");
     });
 
+    it("keeps every item a readable width and scrolls sideways when there are too many to fit", () => {
+        const many: NavItem[] = Array.from({ length: 10 }, (_, i) => ({ id: `p${i}`, href: `/p${i}`, label: `Distribution Lists ${i}`, icon: HiOutlineEnvelope }));
+        render(<BottomTabBar apps={many} active="p9" />);
+
+        const bar = screen.getByRole("navigation", { name: "Mobile navigation" });
+        expect(bar).toHaveClass("overflow-x-auto");
+        for (const link of screen.getAllByRole("link")) {
+            expect(link).toHaveClass("min-w-[4.75rem]", "shrink-0", "text-center");
+        }
+    });
+
+    it("opens a scrolling bar with the active item centred, and leaves one that fits alone", () => {
+        const many: NavItem[] = Array.from({ length: 10 }, (_, i) => ({ id: `p${i}`, href: `/p${i}`, label: `Item ${i}`, icon: HiOutlineEnvelope }));
+        // jsdom lays nothing out: stand in for a 320px bar of 76px items.
+        const layout = (bar: HTMLElement, links: HTMLElement[]) => {
+            Object.defineProperty(bar, "clientWidth", { value: 320, configurable: true });
+            Object.defineProperty(bar, "scrollWidth", { value: 760, configurable: true });
+            links.forEach((link, i) => {
+                Object.defineProperty(link, "offsetLeft", { value: i * 76, configurable: true });
+                Object.defineProperty(link, "offsetWidth", { value: 76, configurable: true });
+            });
+        };
+        const first = render(<BottomTabBar apps={many} active="p0" />);
+        const bar = screen.getByRole("navigation", { name: "Mobile navigation" });
+        layout(bar, screen.getAllByRole("link"));
+        first.rerender(<BottomTabBar apps={many} active="p9" />);
+        expect(bar.scrollLeft).toBe(9 * 76 - (320 - 76) / 2);
+        first.unmount();
+
+        render(<BottomTabBar apps={APPS} active="tasks" />);
+        expect(screen.getByRole("navigation", { name: "Mobile navigation" }).scrollLeft).toBe(0);
+    });
+
     it("is hidden at md and above, and only shown below it", () => {
         render(<BottomTabBar apps={APPS} active="mail" />);
         expect(screen.getByRole("navigation", { name: "Mobile navigation" })).toHaveClass("md:hidden");

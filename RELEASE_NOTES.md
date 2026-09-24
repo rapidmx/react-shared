@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- **`deviceTimeZone()` and `timeZoneOptions()` (`util/timeZone.js`)**: the IANA time zone of the device (UTC where the browser cannot say) and the zones a picker can offer. `autoProvisionMailbox()` now sends the device time zone with each call, so a mailbox a user creates for themselves starts in it (needs `@rapidmx/restapi` with `timezone` on `POST /mailboxes/auto-provision`; an older server ignores it and uses UTC).
+
+### Fixed
+
+- **`BottomTabBar` is usable with many items.** Every item took an equal share of the width, so the admin console's ten or so tabs ran their labels into one another on a phone. Each item now keeps a minimum width, its label wraps rather than overlapping, and the bar scrolls sideways, opening with the active item in view. A bar of four items looks as before.
+- **`lookupPluginPackage()` sends the package name in the query string** (`/registry?name=@rapidmx%2Fbooking-plugin`) instead of the path, where a proxy such as Envoy Gateway unescapes the `%2F` of a scoped name and redirects to a path that matches no route. Needs a server with `@rapidmx/restapi`'s `GET /registry?name=`.
+
 ## v0.15.0
 
 ### Security

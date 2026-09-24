@@ -15,6 +15,7 @@
 
 import { ApiRequestError, apiFetch, apiUrl, authApiFetch } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
+import { deviceTimeZone } from "../util/timeZone.js";
 import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
 import { bytesToBinaryString } from "../crypto/mime.js";
 import type { ResolvedPrincipal } from "./mailboxAccessApi.js";
@@ -199,7 +200,8 @@ export type MailboxAutoProvisionResult =
 export function autoProvisionMailbox(selection?: { alias: string; domain: string }): Promise<MailboxAutoProvisionResult> {
     return apiFetch("/mail/mailboxes/auto-provision", {
         method: "POST",
-        body: JSON.stringify(selection ?? {}),
+        // The device's time zone goes with every call, for the mailbox this may create.
+        body: JSON.stringify({ ...selection, timezone: deviceTimeZone() }),
     });
 }
 
