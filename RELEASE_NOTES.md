@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.16.0
+
 ### Added
 
 - **Event dialog API.** `CalendarEvent` and `CalendarEventInput` gain `description`, `descriptionHtml`, `visibility`, `guestsCanModify`, `guestsCanInviteOthers`, `guestsCanSeeGuestList` and the response-only `redacted`, with `EventVisibility`, `GuestPermissions`, `DEFAULT_GUEST_PERMISSIONS`, `guestPermissionsOf()` and `visibilityOf()`; `requestEventChange()` (`POST /calendar-events/:id/request-change`); `detachOccurrence()` carries them onto the detached event; and `MessageInvite` gains the description, `visibility`, `guestPermissions`, `canRequestChange`, `canRequestInvite` and `changeRequest`. Needs a `@rapidmx/restapi` with the event dialog fields.

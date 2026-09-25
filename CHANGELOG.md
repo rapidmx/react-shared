@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-25
+
+### Added
+- Added deviceTimeZone() and timeZoneOptions(), and send the device time zone with mailbox auto-provisioning so a mailbox a user creates for themselves starts in it
+- Added calendar/inviteApi with getMessageInvite, respondToMessageInvite, removeMessageInvite, proposeNewTime and acceptProposal for reading and answering the calendar invitation a message carries, and the MessageInvite, InviteScheduleEntry and ProposedTime types
+- Added meetingMethod and meetingResponse to Message and latestMeetingMethod and latestMeetingResponse to ConversationSummary
+- Added the event dialog API: description, descriptionHtml, visibility and the guest permissions on CalendarEvent, requestEventChange for a guest's change request, and the matching fields on MessageInvite
+- Added calendar/freeBusyApi with getFreeBusy and the helpers that turn its answer into availability, suggested times and a summary, never treating unknown or hidden availability as free
+- Added calendar/eventDescription, which reads description HTML into an allow-list tree and produces canonical HTML and plain text without ever returning input markup
+- Added Mailbox.freeBusyVisibility and its update field
+
+### Changed
+- Send the package name of a plugin registry lookup in the query string instead of the path, which a proxy in front of the server can break for a scoped name
+- Make the bottom tab bar usable with many items: each item keeps a minimum width, its label wraps, and the bar scrolls sideways with the active item in view
+- Test the lookup URL, the scrolling tab bar and the time zone helpers
+- Document the changes in the release notes
+- Test the five calls
+- Document the change in the release notes
+- Test the new modules and calls
+- Document the change in the release notes and NOTES
+
 ## [0.15.0] - 2026-09-23
 
 ### Added
@@ -512,7 +533,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/rapidmx/react-shared/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/rapidmx/react-shared/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/rapidmx/react-shared/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/rapidmx/react-shared/compare/v0.13.0...v0.14.0

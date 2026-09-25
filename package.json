@@ -1,6 +1,6 @@
 {
   "name": "@rapidmx/react-shared",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "A library containing platform-agnostic components/data/business-logic for RapidMX's React frontends.",
   "type": "module",
   "repository": "https://github.com/rapidmx/react-shared",
