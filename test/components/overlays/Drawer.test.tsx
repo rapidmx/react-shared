@@ -41,6 +41,28 @@ describe("Drawer", () => {
         expect(screen.getByRole("dialog")).toHaveClass("left-0");
     });
 
+    it("fills the whole window when asked to, whichever side it is on", () => {
+        render(
+            <Drawer open={true} onClose={vi.fn()} title="Folders" side="right" fullScreen>
+                <div>content</div>
+            </Drawer>,
+        );
+        const dialog = screen.getByRole("dialog");
+        expect(dialog).toHaveClass("inset-0", "w-full");
+        expect(dialog).not.toHaveClass("w-72");
+        expect(dialog).not.toHaveClass("right-0");
+        expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
+    });
+
+    it("is a narrow panel beside the page unless it is asked to fill the window", () => {
+        render(
+            <Drawer open={true} onClose={vi.fn()} title="Folders">
+                <div>content</div>
+            </Drawer>,
+        );
+        expect(screen.getByRole("dialog")).toHaveClass("w-72");
+    });
+
     it("slides in from the right when side is set to right", () => {
         render(
             <Drawer open={true} onClose={vi.fn()} title="Folders" side="right">

@@ -1328,3 +1328,7 @@ fix, one documentation-only merge.
 ### 2026-09-25 - admin API for a deleted mailbox's leftover data
 
 - `leftoverMailboxApi.ts` wraps `GET /mailboxes/leftover`, `POST /erasure-requests/leftover` and the create 409. `leftoverConflictOf()` reads `ApiRequestError.details.reason` (`mailbox-data-remaining` / `mailbox-data-erasing`) - callers never parse the 409 message. `deleteMailbox(uid, version, { erase })` sends `?erase=true`; `getErasureRequest()` polling is the caller's (see web-client's `EraseLeftoverDataDialog`).
+
+### 2026-09-25 - `Drawer` `fullScreen`
+
+`fullScreen` swaps the panel classes for `fixed inset-0 w-full` with `pt/pb-[max(1.25rem,env(safe-area-inset-*))]`, no border and no `side` positioning; `side` is ignored while it is set. Default `false` keeps the old strip.

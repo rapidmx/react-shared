@@ -13,6 +13,9 @@ export interface DrawerProps {
     /** Which edge the drawer slides in from. Defaults to "left" (matches every current call site — a
      * secondary sidebar or nav list). */
     side?: "left" | "right";
+    /** Fill the whole window instead of a 18rem strip beside a dimmed page - what a phone's navigation drawer wants, where a sliver of the page behind
+     * it is only a mis-tap waiting to happen. The panel keeps the safe-area insets clear of a notch and the home indicator. Defaults to `false`. */
+    fullScreen?: boolean;
     children: ReactNode;
 }
 
@@ -22,7 +25,7 @@ export interface DrawerProps {
  * instead of a centered card. Used to hold a secondary sidebar's content below the `md` breakpoint,
  * where it doesn't fit alongside the primary content.
  */
-export default function Drawer({ open, onClose, title, side = "left", children }: DrawerProps) {
+export default function Drawer({ open, onClose, title, side = "left", fullScreen = false, children }: DrawerProps) {
     const dialogRef = useRef<HTMLDivElement>(null);
     const childDepth = useOverlayDialog(open, dialogRef, onClose);
 
@@ -37,8 +40,10 @@ export default function Drawer({ open, onClose, title, side = "left", children }
         >
             <div
                 className={[
-                    "fixed inset-y-0 w-72 max-w-[85vw] overflow-y-auto bg-surface border-border shadow-modal p-5 focus:outline-none",
-                    side === "left" ? "left-0 border-r" : "right-0 border-l",
+                    fullScreen
+                        ? "fixed inset-0 w-full overflow-y-auto bg-surface p-5 pt-[max(1.25rem,env(safe-area-inset-top))] pb-[max(1.25rem,env(safe-area-inset-bottom))] focus:outline-none"
+                        : "fixed inset-y-0 w-72 max-w-[85vw] overflow-y-auto bg-surface border-border shadow-modal p-5 focus:outline-none",
+                    fullScreen ? "" : side === "left" ? "left-0 border-r" : "right-0 border-l",
                 ].join(" ")}
                 role="dialog"
                 aria-modal="true"

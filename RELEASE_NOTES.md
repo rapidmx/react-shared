@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- **`Drawer` takes `fullScreen`**, which fills the whole window (keeping the safe-area insets clear) instead of a narrow strip beside a dimmed page. It defaults to `false`, so a drawer that does not ask keeps its look.
+
+
 ## v0.17.0
 
 ### Added
