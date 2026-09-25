@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-25
+
+### Added
+- Added admin/leftoverMailboxApi to list the data a deleted mailbox leaves behind, erase it, recognize the create conflict that names it and tell whether an erasure has settled, and let deleteMailbox ask to erase the data too
+
+### Changed
+- Test the new calls
+- Document the change in the release notes and NOTES
+
 ## [0.16.0] - 2026-09-25
 
 ### Added
@@ -533,7 +542,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/rapidmx/react-shared/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/rapidmx/react-shared/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/rapidmx/react-shared/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/rapidmx/react-shared/compare/v0.14.0...v0.14.1
