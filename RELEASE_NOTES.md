@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.18.0
+
 ### Fixed
 
 - **Uploading a file failed with "This request is missing a valid CSRF token".** The uploads that send a file's own bytes and so cannot go through `apiFetch()` - the branding logo, icon and stylesheet, the appearance background image, message attachments and mailbox imports - never echoed the CSRF cookie as `x-csrf-token`, which the server requires of every mutating request. They now do, through the new `withCsrfHeader(headers, method?)` exported from `util/api.js`, which any other request built without `apiFetch()` can use too.

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-25
+
+### Added
+- Added a fullScreen option to Drawer that fills the whole window, keeping the safe-area insets clear, instead of a narrow strip beside a dimmed page, leaving the default unchanged
+
+### Changed
+- Test both
+- Document the change in the release notes and NOTES
+- Test the helper and that an upload sends the header
+- Document the fix in the release notes and NOTES
+
+### Fixed
+- Fixed uploads that send a file's own bytes failing with a missing CSRF token, by echoing the csrf cookie as x-csrf-token on the branding logo, icon and stylesheet uploads, the appearance background upload, message attachment uploads and mailbox imports, through a new withCsrfHeader in util/api that any request built without apiFetch can use
+
 ## [0.17.0] - 2026-09-25
 
 ### Added
@@ -542,7 +556,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/rapidmx/react-shared/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/rapidmx/react-shared/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/rapidmx/react-shared/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/rapidmx/react-shared/compare/v0.14.1...v0.15.0
