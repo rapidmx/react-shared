@@ -1332,3 +1332,7 @@ fix, one documentation-only merge.
 ### 2026-09-25 - `Drawer` `fullScreen`
 
 `fullScreen` swaps the panel classes for `fixed inset-0 w-full` with `pt/pb-[max(1.25rem,env(safe-area-inset-*))]`, no border and no `side` positioning; `side` is ignored while it is set. Default `false` keeps the old strip.
+
+### 2026-09-25 - CSRF header on raw uploads
+
+JP: uploading the branding stylesheet answered "This request is missing a valid CSRF token". `apiFetch()` echoes the `csrf` cookie as `x-csrf-token` (`applyCsrfHeader()`), but the four uploads that bypass it because they send raw bytes (`brandingApi.uploadBrandingAsset`, `preferencesApi.uploadAppearanceBackground`, `mailApi.uploadAttachment`, `mailboxImportApi.uploadMailboxImport`) built their own headers and never did. `withCsrfHeader()` in `util/api.ts` is the shared way; use it for any new mutating request that cannot use `apiFetch()`. GETs need nothing.

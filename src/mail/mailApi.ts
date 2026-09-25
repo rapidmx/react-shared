@@ -13,7 +13,7 @@
  * `@rapidmx/restapi` and this repo's `.claude/NOTES.md`.
  */
 
-import { ApiRequestError, apiFetch, apiUrl, authApiFetch } from "../util/api.js";
+import { ApiRequestError, apiFetch, apiUrl, authApiFetch, withCsrfHeader } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 import { deviceTimeZone } from "../util/timeZone.js";
 import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
@@ -913,7 +913,7 @@ export async function uploadAttachment(messageUid: string, file: File): Promise<
     const res = await fetch(apiUrl(`/mail/attachments/upload?${params.toString()}`), {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": file.type || "application/octet-stream" },
+        headers: withCsrfHeader({ "Content-Type": file.type || "application/octet-stream" }),
         body: file,
     });
     const contentType = res.headers.get("content-type") ?? "";

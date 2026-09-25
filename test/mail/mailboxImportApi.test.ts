@@ -37,7 +37,7 @@ describe("uploadMailboxImport", () => {
             expect.objectContaining({ method: "POST", body: file, credentials: "include" }),
         );
         const init = fetchMock.mock.calls[0][1] as RequestInit;
-        expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/mbox");
+        expect(new Headers(init.headers).get("Content-Type")).toBe("application/mbox");
         expect(result).toEqual(request);
     });
 
@@ -55,7 +55,7 @@ describe("uploadMailboxImport", () => {
         await uploadMailboxImport(file, { format: "pst", targetFolderUid: "f1" });
 
         const init = fetchMock.mock.calls[0][1] as RequestInit;
-        expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/vnd.ms-outlook");
+        expect(new Headers(init.headers).get("Content-Type")).toBe("application/vnd.ms-outlook");
     });
 
     it("forwards an explicit mailboxUid, only meaningful for a trusted caller", async () => {

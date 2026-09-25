@@ -47,6 +47,15 @@ describe("updateBranding", () => {
 });
 
 describe("uploadBrandingLogo", () => {
+    it("echoes the csrf cookie as x-csrf-token, which the server refuses an upload without", async () => {
+        document.cookie = "csrf=tok-brand";
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        await uploadBrandingStylesheet(new File(["a{}"], "brand.css", { type: "text/css" }));
+        const init = fetchMock.mock.calls[0][1] as RequestInit;
+        expect(new Headers(init.headers).get("x-csrf-token")).toBe("tok-brand");
+        document.cookie = "csrf=; Max-Age=0; path=/";
+    });
+
     it("posts the file's raw bytes with its own content-type, not JSON", async () => {
         const file = new File(["png-bytes"], "logo.png", { type: "image/png" });
         const updated: Branding = { ...branding, logoUrl: "/api/system/branding/logo" };
@@ -59,7 +68,7 @@ describe("uploadBrandingLogo", () => {
             expect.objectContaining({ method: "POST", body: file, credentials: "include" }),
         );
         const init = fetchMock.mock.calls[0][1] as RequestInit;
-        expect((init.headers as Record<string, string>)["Content-Type"]).toBe("image/png");
+        expect(new Headers(init.headers).get("Content-Type")).toBe("image/png");
         expect(result).toEqual(updated);
     });
 
@@ -77,7 +86,7 @@ describe("uploadBrandingLogo", () => {
         await uploadBrandingLogo(file);
 
         const init = fetchMock.mock.calls[0][1] as RequestInit;
-        expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/octet-stream");
+        expect(new Headers(init.headers).get("Content-Type")).toBe("application/octet-stream");
     });
 
     it("throws ApiRequestError using the body's message field on a non-ok response", async () => {

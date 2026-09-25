@@ -19,7 +19,7 @@
  * Everything that comes from outside - the response, a push event, the page's server-rendered props, `localStorage` - goes through
  * `normalizeAppearance()`, which keeps only well-formed values (so a stale or hostile value can never reach a CSS declaration).
  */
-import { ApiRequestError, apiFetch, apiUrl } from "../util/api.js";
+import { ApiRequestError, apiFetch, apiUrl, withCsrfHeader } from "../util/api.js";
 
 export type AppearanceMode = "system" | "light" | "dark";
 export type BackgroundKind = "none" | "color" | "image";
@@ -282,7 +282,7 @@ export async function uploadAppearanceBackground(file: Blob): Promise<Appearance
     const res = await fetch(apiUrl(`${PATH}/background`), {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": file.type || "application/octet-stream" },
+        headers: withCsrfHeader({ "Content-Type": file.type || "application/octet-stream" }),
         body: file,
     });
     const contentType = res.headers.get("content-type") ?? "";

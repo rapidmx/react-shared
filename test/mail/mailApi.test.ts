@@ -817,7 +817,7 @@ describe("uploadAttachment", () => {
             expect.objectContaining({ method: "POST", body: file, credentials: "include" }),
         );
         const init = fetchMock.mock.calls[0][1] as RequestInit;
-        expect((init.headers as Record<string, string>)["Content-Type"]).toBe("text/plain");
+        expect(new Headers(init.headers).get("Content-Type")).toBe("text/plain");
         expect(result).toEqual(attachment);
     });
 

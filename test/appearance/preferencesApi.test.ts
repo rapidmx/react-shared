@@ -192,7 +192,7 @@ describe("uploadAppearanceBackground", () => {
             "/api/mail/preferences/appearance/background",
             expect.objectContaining({ method: "POST", body: file, credentials: "include" }),
         );
-        expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toEqual({ "Content-Type": "image/png" });
+        expect(new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).get("Content-Type")).toBe("image/png");
     });
 
     it("targets the configured API base URL and falls back to octet-stream for an untyped blob", async () => {
@@ -200,7 +200,7 @@ describe("uploadAppearanceBackground", () => {
         const fetchMock = mockFetch(() => jsonResponse(200, stored));
         await uploadAppearanceBackground(new Blob(["x"]));
         expect(fetchMock.mock.calls[0][0]).toBe("https://mail.example.com/api/mail/preferences/appearance/background");
-        expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toEqual({ "Content-Type": "application/octet-stream" });
+        expect(new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).get("Content-Type")).toBe("application/octet-stream");
     });
 
     it("throws the server's message, its error field, its status text, or a default", async () => {

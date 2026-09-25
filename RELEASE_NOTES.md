@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Uploading a file failed with "This request is missing a valid CSRF token".** The uploads that send a file's own bytes and so cannot go through `apiFetch()` - the branding logo, icon and stylesheet, the appearance background image, message attachments and mailbox imports - never echoed the CSRF cookie as `x-csrf-token`, which the server requires of every mutating request. They now do, through the new `withCsrfHeader(headers, method?)` exported from `util/api.js`, which any other request built without `apiFetch()` can use too.
+
+
 ### Added
 
 - **`Drawer` takes `fullScreen`**, which fills the whole window (keeping the safe-area insets clear) instead of a narrow strip beside a dimmed page. It defaults to `false`, so a drawer that does not ask keeps its look.

@@ -133,6 +133,17 @@ function applyCsrfHeader(headers: Headers, method: string | undefined): void {
 }
 
 /**
+ * `headers` as a `Headers` with the CSRF double-submit header added, for a mutating request that is built without `apiFetch()` - an upload of a
+ * file's own bytes, which cannot go through `apiFetch()` because that always sends JSON. Without it the server refuses the request as "missing a valid
+ * CSRF token". `method` defaults to `POST`; a safe method or no cookie leaves the headers as they were, exactly as `apiFetch()` does.
+ */
+export function withCsrfHeader(headers: Record<string, string>, method: string = "POST"): Headers {
+    const result = new Headers(headers);
+    applyCsrfHeader(result, method);
+    return result;
+}
+
+/**
  * `fetch()` against the RapidMX server's API - same-origin unless `configureApiBaseUrl()` has been
  * called, in which case this also switches to `credentials: "include"` so the configured cross-origin
  * call still carries the `jwt` cookie (a plain relative fetch never needs this - `credentials:

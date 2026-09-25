@@ -9,7 +9,7 @@
  * it); every write is `@RequiresTrustedRole()` on the backend.
  */
 
-import { apiFetch, ApiRequestError, apiUrl } from "../util/api.js";
+import { apiFetch, ApiRequestError, apiUrl, withCsrfHeader } from "../util/api.js";
 
 export interface Branding {
     companyName: string;
@@ -52,7 +52,7 @@ async function uploadBrandingAsset(path: string, file: File): Promise<Branding> 
     const res = await fetch(apiUrl(path), {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": file.type || "application/octet-stream" },
+        headers: withCsrfHeader({ "Content-Type": file.type || "application/octet-stream" }),
         body: file,
     });
     const contentType = res.headers.get("content-type") ?? "";

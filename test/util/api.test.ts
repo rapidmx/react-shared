@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { ApiRequestError, apiFetch, apiOrigin, apiUrl, authApiFetch, configureApiBaseUrl, setApiUnauthorizedObserver } from "../../src/util/api.js";
+import { ApiRequestError, apiFetch, apiOrigin, apiUrl, authApiFetch, configureApiBaseUrl, setApiUnauthorizedObserver, withCsrfHeader } from "../../src/util/api.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -180,6 +180,25 @@ describe("apiFetch", () => {
         const init = fetchMock.mock.calls[0][1] as RequestInit;
         expect(fetchMock.mock.calls[0][0]).toBe("/api/status");
         expect(init.credentials).toBeUndefined();
+    });
+
+    describe("withCsrfHeader()", () => {
+        afterEach(() => {
+            document.cookie = "csrf=; Max-Age=0; path=/";
+        });
+
+        it("adds the csrf cookie as x-csrf-token to a request built without apiFetch(), keeping the headers it was given", () => {
+            document.cookie = "csrf=tok-upload";
+            const headers = withCsrfHeader({ "Content-Type": "image/png" });
+            expect(headers.get("x-csrf-token")).toBe("tok-upload");
+            expect(headers.get("Content-Type")).toBe("image/png");
+        });
+
+        it("adds nothing without the cookie, or for a safe method", () => {
+            expect(withCsrfHeader({ "Content-Type": "text/css" }).has("x-csrf-token")).toBe(false);
+            document.cookie = "csrf=tok-upload";
+            expect(withCsrfHeader({}, "GET").has("x-csrf-token")).toBe(false);
+        });
     });
 
     describe("CSRF header echo", () => {

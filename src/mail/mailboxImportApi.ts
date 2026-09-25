@@ -9,7 +9,7 @@
  * stages the upload and returns the `pending` request; poll `getImportRequest()`/`listImportRequests()`
  * for `status` to become `"completed"` (with `importedCount`/`failedCount`) or `"failed"`.
  */
-import { ApiRequestError, apiFetch, apiUrl } from "../util/api.js";
+import { ApiRequestError, apiFetch, apiUrl, withCsrfHeader } from "../util/api.js";
 import { RequestListParams, buildRequestListQuery } from "../util/apiQuery.js";
 
 export type { RequestListParams };
@@ -59,7 +59,7 @@ export async function uploadMailboxImport(file: File, input: UploadMailboxImport
     const res = await fetch(apiUrl(`/mail/mailbox-import-requests?${params.toString()}`), {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": input.format === "pst" ? "application/vnd.ms-outlook" : "application/mbox" },
+        headers: withCsrfHeader({ "Content-Type": input.format === "pst" ? "application/vnd.ms-outlook" : "application/mbox" }),
         body: file,
     });
     const contentType = res.headers.get("content-type") ?? "";
