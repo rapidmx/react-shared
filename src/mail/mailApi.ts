@@ -41,6 +41,16 @@ function scopeQuery(params: AdminScopeParams): Record<string, string> {
     return params.scope ? { scope: params.scope } : {};
 }
 
+/** Who may see a mailbox's free/busy times (`POST /calendar-events/free-busy`): `"domain"` - anyone signed in who owns a mailbox in the same domain (the default);
+ * `"shared"` - only people who already hold access to the mailbox or its calendars; `"nobody"` - only the owner and delegates with full access;
+ * `"everyone"` - anyone signed in to this server. */
+export type FreeBusyVisibility = "domain" | "shared" | "nobody" | "everyone";
+
+/** The free/busy visibility `mailbox` has: `"domain"` when it says none (a mailbox stored before the setting existed). */
+export function freeBusyVisibilityOf(mailbox: Pick<Mailbox, "freeBusyVisibility">): FreeBusyVisibility {
+    return mailbox.freeBusyVisibility ?? "domain";
+}
+
 export interface Mailbox {
     uid: string;
     version: number;
@@ -119,6 +129,9 @@ export interface Mailbox {
      * `crypto/keyvaultApi.ts`'s `getEscrowInfo()` and `crypto/masterKeyWraps.ts`'s `buildEscrowWrap()`).
      * Absent means this mailbox has no escrow scope assigned. */
     escrowScopeId?: string;
+    /** Who may see when this mailbox is busy - see `FreeBusyVisibility`. Absent on a mailbox from before the setting existed, which reads as `"domain"`
+     * (`freeBusyVisibilityOf()`). Only the owner (or a delegate with full access) may change it. */
+    freeBusyVisibility?: FreeBusyVisibility;
 }
 
 /** Lists the mailboxes the caller owns or has been granted - the same for everyone, an administrator included. With
@@ -238,6 +251,8 @@ export interface UpdateMailboxInput {
     /** Trusted-caller-only server-side. `null` (or `""`) unassigns the mailbox's escrow scope; the
      * referenced `EscrowScope` must exist otherwise. See `Mailbox.escrowScopeId`. */
     escrowScopeId?: string | null;
+    /** The owner's own record only (403 for anyone without full access to the mailbox; 400 for a value that is not one of the four). */
+    freeBusyVisibility?: FreeBusyVisibility;
 }
 
 export function updateMailbox(input: UpdateMailboxInput): Promise<Mailbox> {

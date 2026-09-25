@@ -246,6 +246,41 @@ describe("detachOccurrence", () => {
         expect(result.uid).toBe("e2");
     });
 
+    it("carries the series' description, visibility and guest permissions onto the detached event, and none it does not have", async () => {
+        const fetchMock = mockFetch((url, init) =>
+            init?.method === "POST" ? jsonResponse(200, occurrence({ uid: "e2" })) : jsonResponse(200, occurrence()),
+        );
+        await detachOccurrence(
+            occurrence({
+                description: "Agenda",
+                descriptionHtml: "<p>Agenda</p>",
+                visibility: "private",
+                guestsCanModify: true,
+                guestsCanInviteOthers: false,
+                guestsCanSeeGuestList: false,
+            }),
+            { title: "Renamed" },
+        );
+        const post = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(post).toEqual(
+            expect.objectContaining({
+                description: "Agenda",
+                descriptionHtml: "<p>Agenda</p>",
+                visibility: "private",
+                guestsCanModify: true,
+                guestsCanInviteOthers: false,
+                guestsCanSeeGuestList: false,
+            }),
+        );
+
+        fetchMock.mockClear();
+        await detachOccurrence(occurrence({ description: null, descriptionHtml: null, visibility: null, guestsCanModify: null }), { title: "Renamed" });
+        const bare = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        for (const key of ["description", "descriptionHtml", "visibility", "guestsCanModify"]) {
+            expect(bare).not.toHaveProperty(key);
+        }
+    });
+
     it("creates the detached event before excluding the occurrence from the master", async () => {
         const fetchMock = mockFetch((url, init) =>
             init?.method === "POST" ? jsonResponse(200, occurrence({ uid: "e2" })) : jsonResponse(200, occurrence()),

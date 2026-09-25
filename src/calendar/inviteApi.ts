@@ -9,6 +9,7 @@
  * it now stands, ready to draw. */
 
 import { ApiRequestError, apiFetch } from "../util/api.js";
+import type { EventVisibility, GuestPermissions } from "./calendarApi.js";
 
 /** What the reader can answer an invitation with. */
 export type InviteResponse = "accepted" | "tentative" | "declined";
@@ -78,6 +79,21 @@ export interface MessageInvite {
     /** The reader's other events from 12 hours before the invitation's start to 12 hours after its end (recurrences
      * expanded, this meeting left out) - what the RSVP day view draws around the invitation. */
     schedule: InviteScheduleEntry[];
+    /** The description as plain text, if the organizer wrote one. */
+    description?: string;
+    /** The description as HTML the server sanitized - still rendered through `sanitizeEventDescriptionHtml()`, never trusted as it stands. */
+    descriptionHtml?: string;
+    /** Who may see the event's details, as the organizer sent it. */
+    visibility?: EventVisibility;
+    /** What the organizer allows the guests to do. Every field is present when the server says any (all optional here so an older server, which says none, reads
+     * as the defaults - see `guestPermissionsOf()`). */
+    guestPermissions?: Partial<GuestPermissions>;
+    /** A guest's copy that allows a change of the title, location, description or time: offer "Request a change" (`requestEventChange()` on `calendarEventUid`). */
+    canRequestChange?: boolean;
+    /** A guest's copy that allows adding guests: offer "Add guests" (`requestEventChange()` with `addAttendees` on `calendarEventUid`). */
+    canRequestInvite?: boolean;
+    /** On a `COUNTER` that is a guest's change request (rather than a proposed time) received by the organizer: whether it was applied automatically. */
+    changeRequest?: { applied: boolean };
 }
 
 /**

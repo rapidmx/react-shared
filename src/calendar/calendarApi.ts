@@ -44,6 +44,37 @@ export interface RecurrenceRule {
 export type CalendarEventStatus = "tentative" | "confirmed" | "cancelled";
 export type BusyStatus = "free" | "busy" | "tentative" | "oof";
 
+/** Who may see an event's details (iCalendar `CLASS`). A private or confidential event is shown to a read-only reader of a shared calendar only as a
+ * busy block (`CalendarEvent.redacted`). `"default"` is what an event with none says. */
+export type EventVisibility = "default" | "public" | "private" | "confidential";
+
+/** What the guests of an event may do (`CalendarEvent.guestsCan*`). */
+export interface GuestPermissions {
+    /** A guest may ask the organizer to change the title, location, description or time. */
+    guestsCanModify: boolean;
+    /** A guest may ask the organizer to add guests. */
+    guestsCanInviteOthers: boolean;
+    /** A guest sees who else was invited. */
+    guestsCanSeeGuestList: boolean;
+}
+
+/** The guest permissions an event has when none were chosen (Google Calendar's own defaults). */
+export const DEFAULT_GUEST_PERMISSIONS: GuestPermissions = { guestsCanModify: false, guestsCanInviteOthers: true, guestsCanSeeGuestList: true };
+
+/** The guest permissions `source` says, a missing (or `null`) flag reading as its default - an event stored before they existed carries none. */
+export function guestPermissionsOf(source: { [K in keyof GuestPermissions]?: boolean | null }): GuestPermissions {
+    return {
+        guestsCanModify: source.guestsCanModify ?? DEFAULT_GUEST_PERMISSIONS.guestsCanModify,
+        guestsCanInviteOthers: source.guestsCanInviteOthers ?? DEFAULT_GUEST_PERMISSIONS.guestsCanInviteOthers,
+        guestsCanSeeGuestList: source.guestsCanSeeGuestList ?? DEFAULT_GUEST_PERMISSIONS.guestsCanSeeGuestList,
+    };
+}
+
+/** The visibility an event has, `"default"` when it says none. */
+export function visibilityOf(event: { visibility?: EventVisibility | null }): EventVisibility {
+    return event.visibility ?? "default";
+}
+
 /**
  * The organizer's shape is `@rapidmx/restapi`'s general-purpose `Recipient` type (it's reused from the
  * mail-recipient model), so it requires a `type` field even though a to/cc/bcc distinction is meaningless
@@ -98,6 +129,24 @@ export interface CalendarEvent {
      * so this event carries no per-attendee link and the organizer's own link is fetched from the meeting
      * (`getVideoMeeting()`), never read off the event. */
     videoMeetingUid?: string;
+    /** The description as plain text (at most 32,000 characters). When `descriptionHtml` is set this is its plain-text form. `null` or absent: none. */
+    description?: string | null;
+    /** The description as HTML the server has sanitized down to `b`/`strong`, `i`/`em`, `u`, `br`, `p`, `ul`/`ol`/`li` and `a` (`href` of `http`, `https` or
+     * `mailto` only). Still to be rendered through `sanitizeEventDescriptionHtml()` (`eventDescription.ts`), never trusted as it stands. `null` or absent:
+     * the description, if any, is plain text. */
+    descriptionHtml?: string | null;
+    /** Who may see the event's details - absent (or `null`, on a row stored before this existed) reads as `"default"`; see `visibilityOf()`. */
+    visibility?: EventVisibility | null;
+    /** Whether the guests may ask for the event to change (default `false`). Absent or `null` reads as the default; see `guestPermissionsOf()`. */
+    guestsCanModify?: boolean | null;
+    /** Whether the guests may ask for guests to be added (default `true`). */
+    guestsCanInviteOthers?: boolean | null;
+    /** Whether a guest sees the other guests (default `true`). When `false` a guest's copy lists only themselves. */
+    guestsCanSeeGuestList?: boolean | null;
+    /** Response-only. This reader (of a shared calendar, without edit access) sees the event only as a busy block: the title is `"Busy"` and there are no
+     * attendees, location, description or guest permissions. Never sent back. A live-update notification for such an event carries it too, and the
+     * owner's client refetches by `uid` instead of using the payload. */
+    redacted?: boolean;
 }
 
 const LIST_PAGE_SIZE = 500;
@@ -155,6 +204,15 @@ export interface CalendarEventInput {
     /** Set (or, sent as `null` on an update, cleared) when the caller has just minted or cancelled this
      * event's video meeting — see `CalendarEvent.videoMeetingUid`. */
     videoMeetingUid?: string;
+    /** Plain-text description (<= 32,000 characters). `null` (or `""`) clears it on an update. Sending only `descriptionHtml` makes the server derive this. */
+    description?: string | null;
+    /** Description HTML (<= 64,000 characters); the server sanitizes it. `null` (or `""`) clears it. Sending only `description` clears the HTML. */
+    descriptionHtml?: string | null;
+    visibility?: EventVisibility;
+    /** Only the organizer's own copy takes these; on a guest's copy they are ignored. Changing any of them, the description or the visibility re-invites. */
+    guestsCanModify?: boolean;
+    guestsCanInviteOthers?: boolean;
+    guestsCanSeeGuestList?: boolean;
 }
 
 export function createCalendarEvent(input: CalendarEventInput): Promise<CalendarEvent> {
@@ -205,5 +263,40 @@ export function respondToEvent(uid: string, responseStatus: AttendeeResponseInpu
     return apiFetch(`/mail/calendar-events/${encodeURIComponent(uid)}/respond`, {
         method: "POST",
         body: JSON.stringify({ responseStatus }),
+    });
+}
+
+/** A change a guest asks the organizer for (`requestEventChange()`): only what is to differ. */
+export interface EventChangeRequest {
+    /** Non-empty, at most 1,000 characters. A request can set these, not clear them. */
+    title?: string;
+    location?: string;
+    description?: string;
+    descriptionHtml?: string;
+    /** ISO 8601 instants. */
+    startDate?: string;
+    endDate?: string;
+    /** Up to 50 guests to add. */
+    addAttendees?: { address: string; displayName?: string }[];
+}
+
+/** What the server made of a change request. */
+export interface EventChangeRequestResult {
+    requested: true;
+    /** Which fields the request changes (as the server named them, e.g. `title`, `startDate`, `addAttendees`). */
+    changes: string[];
+    addAttendees: { address: string; displayName?: string }[];
+}
+
+/**
+ * Asks the organizer to change an event, as a guest (not the organizer) whose copy allows it: the title, location, description or time need
+ * `guestsCanModify`, added guests need `guestsCanInviteOthers` (403 otherwise; 400 when nothing differs from what the event has, or a value is invalid).
+ * Nothing changes on this mailbox's own copy - the request is mailed to the organizer, and when the change is allowed it is applied there and
+ * arrives back later as an ordinary update of the invitation.
+ */
+export function requestEventChange(uid: string, request: EventChangeRequest): Promise<EventChangeRequestResult> {
+    return apiFetch(`/mail/calendar-events/${encodeURIComponent(uid)}/request-change`, {
+        method: "POST",
+        body: JSON.stringify(request),
     });
 }

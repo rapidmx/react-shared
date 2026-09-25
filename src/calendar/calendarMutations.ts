@@ -153,6 +153,13 @@ export async function detachOccurrence(occurrence: CalendarOccurrence, fields: P
         reminderMinutesBeforeStart: occurrence.reminderMinutesBeforeStart,
         autoReplyEnabled: occurrence.autoReplyEnabled,
         autoReplyMessage: occurrence.autoReplyMessage,
+        // A detached occurrence keeps what the series says about its description, visibility and guests (an absent value is the default).
+        description: occurrence.description ?? undefined,
+        descriptionHtml: occurrence.descriptionHtml ?? undefined,
+        visibility: occurrence.visibility ?? undefined,
+        guestsCanModify: occurrence.guestsCanModify ?? undefined,
+        guestsCanInviteOthers: occurrence.guestsCanInviteOthers ?? undefined,
+        guestsCanSeeGuestList: occurrence.guestsCanSeeGuestList ?? undefined,
         ...fields,
         recurrenceRule: undefined,
         icalUid: occurrence.icalUid,

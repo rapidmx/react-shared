@@ -1318,3 +1318,9 @@ fix, one documentation-only merge.
   other repo's notes, so anyone picking up the CSRF fix sees both investigations together.
 - Full suite: 98/98 files, 1288/1288 tests, 100/99.48/100/100 statements/branches/functions/lines (same pre-existing branch gap as every prior
   entry, untouched by this work). `tsc --noEmit` and `yarn lint` clean.
+
+### 2026-09-24 (later) - event dialog API (description, visibility, guest permissions, free/busy)
+
+- `freeBusyApi.ts` holds the request and the pure helpers. `unknown` and `restricted` are `AvailabilityState "unknown"`, never free. `suggestTimes()` ignores people who cannot be seen and returns [] when nobody is known. `withoutOwnBlock()` removes only an exact-match block, so a real conflict merged with a neighbour is never hidden.
+- `eventDescription.ts` never returns input HTML: it builds a tree from the browser parser (copying text and `href` only), drops script/style and their content, unwraps other elements, and unwraps `<li><p>` so the plain text does not break after the bullet. Leading and trailing blank paragraphs are trimmed, so a description with no text is `""`. Without a DOM everything is empty.
+- Every new `MessageInvite` field is optional so an older server still types and reads as the defaults. Lint pitfall: `no-control-regex`; use `\p{Cc}`.
