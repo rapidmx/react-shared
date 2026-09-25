@@ -262,8 +262,14 @@ export function updateMailbox(input: UpdateMailboxInput): Promise<Mailbox> {
     });
 }
 
-export function deleteMailbox(uid: string, version: number): Promise<void> {
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+/**
+ * Deletes a mailbox. Only the mailbox itself goes: its folders and everything in them stay - and the address can't be used for a
+ * new mailbox - until that data is erased. `erase: true` (administrators only; anybody else is refused 403 before anything is
+ * deleted) also files that erasure in the same step, which the server then runs in the background; without it the data is left for
+ * `admin/leftoverMailboxApi.ts` to list and erase later.
+ */
+export function deleteMailbox(uid: string, version: number, options: { erase?: boolean } = {}): Promise<void> {
+    return apiFetch(`/mail/mailboxes/${encodeURIComponent(uid)}?version=${version}${options.erase ? "&erase=true" : ""}`, { method: "DELETE" });
 }
 
 export type QuarantineReason = "infected" | "spam_policy" | "transport_rule" | "other";

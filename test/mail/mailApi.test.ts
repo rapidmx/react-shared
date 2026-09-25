@@ -256,6 +256,18 @@ describe("deleteMailbox", () => {
         await deleteMailbox("mb/1", 3);
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb%2F1?version=3", expect.objectContaining({ method: "DELETE" }));
     });
+
+    it("asks the server to erase the mailbox's data too when told to", async () => {
+        const fetchMock = mockFetch(() => emptyResponse(200));
+        await deleteMailbox("mb/1", 3, { erase: true });
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb%2F1?version=3&erase=true", expect.objectContaining({ method: "DELETE" }));
+    });
+
+    it("does not ask for the erasure when the option is off", async () => {
+        const fetchMock = mockFetch(() => emptyResponse(200));
+        await deleteMailbox("mb1", 0, { erase: false });
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb1?version=0", expect.objectContaining({ method: "DELETE" }));
+    });
 });
 
 describe("listQuarantine", () => {

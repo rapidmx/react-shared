@@ -32,6 +32,9 @@ export interface DataSubjectErasureRequest {
     reason?: string;
     /** Set once `status === "completed"` — a single aggregate count, not a per-row manifest. */
     purgedCount?: number;
+    /** Set when an administrator filed this request for the data a deleted mailbox left behind (see `admin/leftoverMailboxApi.ts`) - it
+     * was approved when filed, and never removes a mailbox. */
+    leftoverOnly?: boolean;
 }
 
 /** Always the caller's own mailbox — 409s if a `pending` request for it already exists. */

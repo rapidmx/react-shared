@@ -1324,3 +1324,7 @@ fix, one documentation-only merge.
 - `freeBusyApi.ts` holds the request and the pure helpers. `unknown` and `restricted` are `AvailabilityState "unknown"`, never free. `suggestTimes()` ignores people who cannot be seen and returns [] when nobody is known. `withoutOwnBlock()` removes only an exact-match block, so a real conflict merged with a neighbour is never hidden.
 - `eventDescription.ts` never returns input HTML: it builds a tree from the browser parser (copying text and `href` only), drops script/style and their content, unwraps other elements, and unwraps `<li><p>` so the plain text does not break after the bullet. Leading and trailing blank paragraphs are trimmed, so a description with no text is `""`. Without a DOM everything is empty.
 - Every new `MessageInvite` field is optional so an older server still types and reads as the defaults. Lint pitfall: `no-control-regex`; use `\p{Cc}`.
+
+### 2026-09-25 - admin API for a deleted mailbox's leftover data
+
+- `leftoverMailboxApi.ts` wraps `GET /mailboxes/leftover`, `POST /erasure-requests/leftover` and the create 409. `leftoverConflictOf()` reads `ApiRequestError.details.reason` (`mailbox-data-remaining` / `mailbox-data-erasing`) - callers never parse the 409 message. `deleteMailbox(uid, version, { erase })` sends `?erase=true`; `getErasureRequest()` polling is the caller's (see web-client's `EraseLeftoverDataDialog`).

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- **Admin API for the data a deleted mailbox leaves behind (`admin/leftoverMailboxApi.js`).** `listLeftoverMailboxes({ limit, after })` lists deleted mailboxes that still have data (`{ items: [{ mailboxUid, folderCount, messageCount, erasure? }], next? }`). `eraseLeftoverMailbox(mailboxUid)` files an already approved, permanent erasure and answers the request; poll `getErasureRequest()` until `completed`. `leftoverConflictOf(error)` recognises the 409 that `createMailbox()` answers for an address with leftover data (`mailbox-data-remaining`, or `mailbox-data-erasing` with the running request), and `isErasureSettled(status)` says whether a request will no longer change. `deleteMailbox(uid, version, { erase: true })` also erases the data (administrators only), and `DataSubjectErasureRequest.leftoverOnly` marks requests filed this way. Needs `@rapidmx/restapi` 0.22.0 or later.
+
+
 ## v0.16.0
 
 ### Added
