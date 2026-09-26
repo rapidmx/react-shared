@@ -1352,3 +1352,7 @@ Why: meet-plugin 0.4.2 and booking-plugin 0.5.2 were cut as patches after web-cl
 - `reportMessage()` and the `senderListsApi.js` calls need a `@rapidmx/restapi` that has the report route and the list routes (a 404 on an older one; callers fall back).
 - `normalizeSenderEntry()` and `checkSenderEntry()` mirror restapi's `SenderListUtils` (`parseSenderEntry`, `isPlainAddress`): lowercase, trim, a bare domain becomes `@domain`, 254 characters, a plain address pattern, an ASCII DNS domain of at least two labels. Keep them in step.
 - Do not add UI for `fromEquals` / `fromDomainEquals` without a server version check: an older server ignores the condition and the rule would then match every message.
+
+### 2026-09-26 - `Plugin.configured`
+
+Types only in `admin/pluginsApi.ts` (`PluginConfiguredSetting` = `{ value?, secret }`, optional `Plugin.configured`), mirroring restapi. Optional because an older server sends none. Not committed; `tsc` clean.

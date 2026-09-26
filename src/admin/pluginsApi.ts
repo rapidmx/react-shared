@@ -37,6 +37,14 @@ export interface PluginManifest {
 
 export type PluginSettingValue = string | number | boolean;
 
+/** Mirrors `@rapidmx/restapi`'s `PluginConfiguredSetting`: what the deployment's own configuration (the command line, the
+ * environment, the server's defaults) says about one setting. It applies until a value is saved, which wins over it. */
+export interface PluginConfiguredSetting {
+    /** Left out for a secret, which the server never sends. */
+    value?: PluginSettingValue;
+    secret: boolean;
+}
+
 /** Mirrors `@rapidmx/restapi`'s `Plugin`. `version` is the row's optimistic-lock counter; the npm version is
  * `packageVersion`. */
 export interface Plugin {
@@ -47,6 +55,9 @@ export interface Plugin {
     integrity?: string;
     enabled: boolean;
     settings: Record<string, PluginSettingValue>;
+    /** For each setting the deployment's configuration provides a value for, what it says. Absent from a server that
+     * predates it, which reads as nothing being configured. */
+    configured?: Record<string, PluginConfiguredSetting>;
     manifest: PluginManifest;
 }
 
