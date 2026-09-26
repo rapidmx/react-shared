@@ -4,6 +4,11 @@
 
 ### Added
 
+- **`reportMessage(uid, kind, { alwaysTrustSender })` in `mail/mailApi.js`** reports a message as junk, phishing or not junk (`POST /mail/messages/:uid/report`). The server moves it, teaches its spam filter and audits the report, and answers `{ uid, kind, moved, folderUid, learned, learnSkipped?, safeSender? }`. New types are `MessageReportKind`, `MessageLearnSkipped`, `MessageReportResult` and `ReportMessageOptions`; `Message` gains the server-managed `reportedAs` and `dateReported`. Needs `@rapidmx/restapi` with the report route; an older server answers 404.
+- **`Mailbox.blockedSenders` and `Mailbox.safeSenders`** with the null-safe `blockedSendersOf()` and `safeSendersOf()`.
+- **`mail/senderListsApi.js`**: `addBlockedSender`, `removeBlockedSender`, `addSafeSender` and `removeSafeSender` (one entry per call; the server needs full access to the mailbox), and `normalizeSenderEntry()` and `checkSenderEntry()`, which apply the server's entry rules so a form can say what is wrong before sending. Also `senderDomainOf`, `senderEntryMatches` and `senderListEntryFor`.
+- **`MailFilterConditions.fromEquals` and `fromDomainEquals`**: exact sender conditions (types only). A server before them ignores them, so such a rule would match every message.
+
 - **`purgeMessage(uid)` and `emptyFolder(folderUid)` in `mail/mailApi.js`** delete one message, or every message in a folder, permanently (`DELETE /mail/messages/:uid?purge=true` and `DELETE /mail/messages?folderUid=`). Emptying a folder needs the `truncate` right (the owner or a manager) and is all or nothing when a legal hold covers a message.
 
 

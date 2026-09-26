@@ -30,7 +30,13 @@ export interface MailFilterAction {
 }
 
 export interface MailFilterConditions {
+    /** Substrings of the From header, case-insensitive: `ann@x.com` also matches `joann@x.com`. Use `fromEquals` to name one sender exactly. */
     fromContains?: string[];
+    /** Plain addresses, matched exactly and case-insensitively against the From header's address OR the envelope sender (`ann@x.com` does not match `joann@x.com`).
+     * At most 100. A server before this condition ignores it, so the rule would match every message. */
+    fromEquals?: string[];
+    /** Domains (`x.com`, no `@`), matched exactly against the domain of the From header's address or of the envelope sender (`x.com` is not `mail.x.com`). At most 100. */
+    fromDomainEquals?: string[];
     subjectContains?: string[];
     bodyContains?: string[];
     toCcContains?: string[];

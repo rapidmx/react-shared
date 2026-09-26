@@ -1346,3 +1346,9 @@ Why: meet-plugin 0.4.2 and booking-plugin 0.5.2 were cut as patches after web-cl
 ### 2026-09-25 - purgeMessage and emptyFolder
 
 `purgeMessage()` is a hard delete (`?purge=true`, no `version` sent: a stale version would answer "not found", which is no reason to keep a message the user asked to erase) available to whoever holds `delete` on the folder; `emptyFolder()` is `truncate`, which needs the `truncate` right and answers 409 for the whole folder when any message is under a legal hold - callers fall back to listing and purging one by one (web-client's `permanentDelete.ts` does).
+
+### 2026-09-25 - reportMessage and the sender lists API
+
+- `reportMessage()` and the `senderListsApi.js` calls need a `@rapidmx/restapi` that has the report route and the list routes (a 404 on an older one; callers fall back).
+- `normalizeSenderEntry()` and `checkSenderEntry()` mirror restapi's `SenderListUtils` (`parseSenderEntry`, `isPlainAddress`): lowercase, trim, a bare domain becomes `@domain`, 254 characters, a plain address pattern, an ASCII DNS domain of at least two labels. Keep them in step.
+- Do not add UI for `fromEquals` / `fromDomainEquals` without a server version check: an older server ignores the condition and the rule would then match every message.

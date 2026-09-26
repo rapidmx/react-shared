@@ -132,6 +132,24 @@ export interface Mailbox {
     /** Who may see when this mailbox is busy - see `FreeBusyVisibility`. Absent on a mailbox from before the setting existed, which reads as `"domain"`
      * (`freeBusyVisibilityOf()`). Only the owner (or a delegate with full access) may change it. */
     freeBusyVisibility?: FreeBusyVisibility;
+    /** This mailbox's Blocked Senders list (Outlook's): lowercase addresses (`user@example.com`) and domains (`@example.com`, that exact domain
+     * and not its subdomains), at most 1,000 of them, never also on `safeSenders`. Mail from one goes to Junk Email. Absent on a mailbox from
+     * before the list existed, or from a server without it - read it with `blockedSendersOf()`. Change it with `addBlockedSender()` and
+     * `removeBlockedSender()` (full access to the mailbox), not by writing the whole array. */
+    blockedSenders?: string[];
+    /** This mailbox's Safe Senders list, the same shape as `blockedSenders`. Authenticated mail from one is not sent to Junk Email for the spam
+     * filter's verdict. Read it with `safeSendersOf()`; change it with `addSafeSender()` and `removeSafeSender()`. */
+    safeSenders?: string[];
+}
+
+/** The blocked senders `mailbox` has: none when it says none (a mailbox stored before the list existed, or `null` from an SQL row). */
+export function blockedSendersOf(mailbox: Pick<Mailbox, "blockedSenders">): string[] {
+    return mailbox.blockedSenders ?? [];
+}
+
+/** The safe senders `mailbox` has: none when it says none. */
+export function safeSendersOf(mailbox: Pick<Mailbox, "safeSenders">): string[] {
+    return mailbox.safeSenders ?? [];
 }
 
 /** Lists the mailboxes the caller owns or has been granted - the same for everyone, an administrator included. With
@@ -557,6 +575,10 @@ export interface Message {
     verificationSeal?: string;
     /** The vault `masterKeyGeneration` `verificationSeal` was written under, as sent to `setMessageVerificationSeal()`. */
     verificationSealGeneration?: number;
+    /** What the reader reported this message as (`reportMessage()`); server-managed, never written by a client. Absent (or `null`) when never reported. */
+    reportedAs?: MessageReportKind | null;
+    /** When `reportedAs` was last set. */
+    dateReported?: string | null;
     /** The `messageId` of the message this one replies to (RFC 5322 `In-Reply-To`, angle brackets stripped) -
      * parsed from the MIME on a delivered message, and what a compose client passes to `createDraft()` when it
      * opens a reply. Absent on a message that replies to nothing. */
@@ -724,6 +746,51 @@ export function moveMessage(message: Message, folderUid: string): Promise<Messag
     return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
         method: "PUT",
         body: JSON.stringify({ uid: message.uid, version: message.version, folderUid }),
+    });
+}
+
+/** What a message can be reported as - see `reportMessage()`. */
+export type MessageReportKind = "junk" | "phishing" | "not_junk";
+
+/** Why the server did not teach its spam filter from a report: `encrypted` (it has no plaintext to teach), `disabled` (learning is switched off),
+ * `unsupported` (no spam engine, or one that cannot learn), `too_large` (over the size it reads) or `failed` (the engine could not be reached,
+ * refused, or the message could not be read). The report itself still happened. */
+export type MessageLearnSkipped = "encrypted" | "disabled" | "unsupported" | "too_large" | "failed";
+
+/** What `reportMessage()` answers. */
+export interface MessageReportResult {
+    uid: string;
+    kind: MessageReportKind;
+    /** The message changed folder; `false` when it was already where the report sends it. */
+    moved: boolean;
+    /** The folder the message is in now: the mailbox's Junk Email (`junk`, `phishing`) or Inbox (`not_junk`). */
+    folderUid: string;
+    /** The spam filter was taught from the message. */
+    learned: boolean;
+    /** Why it was not, when `learned` is `false` (absent when it was). */
+    learnSkipped?: MessageLearnSkipped;
+    /** The address added to the mailbox's safe senders, for `alwaysTrustSender`; absent when none was asked or the message names no usable one. */
+    safeSender?: string;
+}
+
+/** What `reportMessage()` may also ask for. */
+export interface ReportMessageOptions {
+    /** With `not_junk` only (else a 400): also add the message's From address to the mailbox's safe senders. Needs full access to the mailbox (403 otherwise,
+     * before anything is done). */
+    alwaysTrustSender?: boolean;
+}
+
+/**
+ * Reports a message as junk, phishing or not junk - `POST /mail/messages/:uid/report`. The SERVER moves it (`junk` and `phishing` to the mailbox's Junk Email,
+ * `not_junk` to its Inbox; a message already there is not moved), records what was reported, teaches its spam filter (never for an encrypted message) and
+ * writes an audit entry; a caller needs no folder uid and no `version`. Rejects with a 400 for a message in Drafts or Outbox, a 403 without the right to change
+ * the message (or, for `alwaysTrustSender`, without full access to the mailbox), a 404 for an unknown message - and also for a server that predates the route,
+ * where a caller falls back to `moveMessage()`.
+ */
+export function reportMessage(uid: string, kind: MessageReportKind, options: ReportMessageOptions = {}): Promise<MessageReportResult> {
+    return apiFetch(`/mail/messages/${encodeURIComponent(uid)}/report`, {
+        method: "POST",
+        body: JSON.stringify({ kind, ...(options.alwaysTrustSender ? { alwaysTrustSender: true } : {}) }),
     });
 }
 
