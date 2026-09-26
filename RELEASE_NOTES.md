@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- **`purgeMessage(uid)` and `emptyFolder(folderUid)` in `mail/mailApi.js`** delete one message, or every message in a folder, permanently (`DELETE /mail/messages/:uid?purge=true` and `DELETE /mail/messages?folderUid=`). Emptying a folder needs the `truncate` right (the owner or a manager) and is all or nothing when a legal hold covers a message.
+
+
 ## v0.18.0
 
 ### Fixed

@@ -976,6 +976,35 @@ export function deleteMessage(uid: string, version: number): Promise<void> {
 }
 
 /**
+ * Permanently deletes one message - `DELETE /mail/messages/:uid?purge=true`, the hard delete: the row and its search
+ * document are gone and it cannot be restored, unlike `deleteMessage()` (a soft delete the server can bring back) or a
+ * move into Deleted Items. Whoever may delete in the message's folder may do this - the mailbox's owner, or a delegate
+ * granted `delete` - there is nothing administrative about it.
+ *
+ * Takes no `version`: one that no longer matches (another device flipped a flag since the list was fetched) would make
+ * the server answer "not found", which is no reason to keep a message the reader has asked to erase. Refused with a
+ * `409` for a message under an active legal hold (the response's message says so) or with a send in flight, and with a
+ * `403` without the `delete` grant. Nothing about the message changes when it is refused, so a caller deleting several
+ * reports each refusal and carries on with the rest.
+ */
+export function purgeMessage(uid: string): Promise<void> {
+    return apiFetch(`/mail/messages/${encodeURIComponent(uid)}?purge=true`, { method: "DELETE" });
+}
+
+/**
+ * Permanently deletes every message in a folder in one request - `DELETE /mail/messages?folderUid=` (the collection
+ * `truncate`, always a hard delete). All or nothing: the server checks every message for a legal hold first and refuses
+ * the whole request with a `409` if any is held, and with a `403` unless the caller holds the `truncate` grant on the
+ * mailbox (its owner or a manager - not a delegate who may merely delete). Resolves without saying how many messages
+ * went, so a caller that needs to says so from what it knew. Messages already soft-deleted are not part of it.
+ *
+ * After a refusal, fall back to `purgeMessage()` per message: that removes what may be removed and says which may not.
+ */
+export function emptyFolder(folderUid: string): Promise<void> {
+    return apiFetch(`/mail/messages?${new URLSearchParams({ folderUid }).toString()}`, { method: "DELETE" });
+}
+
+/**
  * Assembles a draft's structured compose input (recipients/subject/HTML body, plus whatever attachments have
  * already been `uploadAttachment()`-ed onto it) into RFC 5322 MIME and stores it as the draft's `bodyBlobKey`
  * — see `BaseMailComposeRoute` (this app's own compose-assembly glue, since `@rapidmx/restapi`'s `send()`

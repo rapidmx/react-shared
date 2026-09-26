@@ -17,6 +17,8 @@ import {
     classifyMessage,
     createDraft,
     deleteMessage,
+    emptyFolder,
+    purgeMessage,
     createFolder,
     createMailbox,
     declineReceipt,
@@ -936,6 +938,32 @@ describe("deleteMessage", () => {
         const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
         await deleteMessage("m/1", 3);
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m%2F1?version=3", expect.objectContaining({ method: "DELETE" }));
+    });
+});
+
+describe("purgeMessage", () => {
+    it("DELETEs the encoded message uid with purge=true and no version", async () => {
+        const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
+        await purgeMessage("m/1");
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages/m%2F1?purge=true", expect.objectContaining({ method: "DELETE" }));
+    });
+
+    it("rejects with the server's refusal, e.g. a legal hold", async () => {
+        mockFetch(() => jsonResponse(409, { message: "This action is blocked by an active legal hold: x." }));
+        await expect(purgeMessage("m1")).rejects.toMatchObject({ status: 409, message: expect.stringContaining("legal hold") });
+    });
+});
+
+describe("emptyFolder", () => {
+    it("DELETEs the messages collection scoped to the encoded folder", async () => {
+        const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
+        await emptyFolder("f/1");
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/messages?folderUid=f%2F1", expect.objectContaining({ method: "DELETE" }));
+    });
+
+    it("rejects with the server's refusal", async () => {
+        mockFetch(() => jsonResponse(403, { message: "forbidden" }));
+        await expect(emptyFolder("f1")).rejects.toMatchObject({ status: 403 });
     });
 });
 
