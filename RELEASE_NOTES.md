@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.19.0
+
 ### Added
 
 - **`reportMessage(uid, kind, { alwaysTrustSender })` in `mail/mailApi.js`** reports a message as junk, phishing or not junk (`POST /mail/messages/:uid/report`). The server moves it, teaches its spam filter and audits the report, and answers `{ uid, kind, moved, folderUid, learned, learnSkipped?, safeSender? }`. New types are `MessageReportKind`, `MessageLearnSkipped`, `MessageReportResult` and `ReportMessageOptions`; `Message` gains the server-managed `reportedAs` and `dateReported`. Needs `@rapidmx/restapi` with the report route; an older server answers 404.

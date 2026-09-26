@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-26
+
+### Added
+- Added purgeMessage and emptyFolder to mailApi for permanently deleting one message and every message in a folder
+- Added reportMessage to report a message as junk, phishing or not junk, the blocked and safe sender lists on Mailbox with calls to add and remove one entry and checks that apply the server's entry rules, and the exact sender conditions of a filter rule
+
+### Changed
+- Document that a downstream package's release bump level follows its upstream dependency's, minor for minor, patch for patch and major for major, in NOTES
+- Test both
+- Document the change in the release notes and NOTES
+- Test the calls and the entry rules
+- Document the change in the release notes and NOTES
+
 ## [0.18.0] - 2026-09-25
 
 ### Added
@@ -556,7 +569,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/rapidmx/react-shared/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/rapidmx/react-shared/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/rapidmx/react-shared/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/rapidmx/react-shared/compare/v0.15.0...v0.16.0
