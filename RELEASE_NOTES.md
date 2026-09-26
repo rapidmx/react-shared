@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.20.0
+
 ### Added
 
 - **`Plugin.configured` and `PluginConfiguredSetting` in `admin/pluginsApi.js`** (types only): what the deployment's configuration sets for each of a plugin's settings, from a `@rapidmx/restapi` that has it. Absent from an older server, which reads as nothing being configured.
