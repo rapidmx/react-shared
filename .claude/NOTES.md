@@ -1356,3 +1356,7 @@ Why: meet-plugin 0.4.2 and booking-plugin 0.5.2 were cut as patches after web-cl
 ### 2026-09-26 - `Plugin.configured`
 
 Types only in `admin/pluginsApi.ts` (`PluginConfiguredSetting` = `{ value?, secret }`, optional `Plugin.configured`), mirroring restapi. Optional because an older server sends none. Not committed; `tsc` clean.
+
+### 2026-09-26 - `prerelease` option on the plugin read calls
+
+Not committed. `getPluginUpdates`, `searchPlugins`, `lookupPluginPackage` and `planPluginChange` (`admin/pluginsApi.ts`) take a last `PrereleaseOptions` argument; `prerelease: true` adds `prerelease=true` to the query and nothing is added otherwise (same URL as before, so existing callers and mocks are untouched). Mirrors restapi's `?prerelease=`; an older server ignores it. `searchPlugins(namespace, options)` now builds its query with `URLSearchParams` (`@` still encodes as `%40`). Tests in `test/admin/pluginsApi.test.ts`; `tsc` clean. web-client was tested against a `tsc --outDir` build of this file copied over its `node_modules/@rapidmx/react-shared/dist/admin/pluginsApi.{js,d.ts}` (needs the next release to be real).

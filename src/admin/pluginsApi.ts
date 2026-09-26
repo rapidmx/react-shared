@@ -223,6 +223,20 @@ export interface UpdatePluginInput {
 
 const BASE = "/system/plugins";
 
+/** Whether prerelease versions (`1.0.0-beta.2`) count when the server picks a package's newest version. */
+export interface PrereleaseOptions {
+    /** Off by default. Sent to the server only when `true`, so a server that predates it is called exactly as before. */
+    prerelease?: boolean;
+}
+
+/** `?name=…` style query parameters for `params`, plus `prerelease=true` when asked for. */
+function withPrerelease(params: URLSearchParams, options: PrereleaseOptions): string {
+    if (options.prerelease) {
+        params.set("prerelease", "true");
+    }
+    return params.toString();
+}
+
 export function listPlugins(): Promise<Plugin[]> {
     return apiFetch(BASE);
 }
@@ -236,38 +250,41 @@ export function listPluginNamespaces(): Promise<PluginNamespace[]> {
     return apiFetch(`${BASE}/namespaces`);
 }
 
-/** Plugin packages (named `*-plugin`) in `namespace`, or in every configured namespace when it's omitted. */
-export function searchPlugins(namespace?: string): Promise<PluginSearchResult[]> {
-    const query = namespace ? `?namespace=${encodeURIComponent(namespace)}` : "";
-    return apiFetch(`${BASE}/search${query}`);
+/** Plugin packages (named `*-plugin`) in `namespace`, or in every configured namespace when it's omitted. Each one's
+ * `version` is its newest release, or its newest version of any kind with `prerelease`. */
+export function searchPlugins(namespace?: string, options: PrereleaseOptions = {}): Promise<PluginSearchResult[]> {
+    const query = withPrerelease(new URLSearchParams(namespace ? { namespace } : {}), options);
+    return apiFetch(`${BASE}/search${query ? `?${query}` : ""}`);
 }
 
-/** Each installed plugin's latest published version. */
-export function getPluginUpdates(): Promise<PluginUpdateInfo[]> {
-    return apiFetch(`${BASE}/updates`);
+/** Each installed plugin's newest published version - a release, unless `prerelease` also counts prereleases. */
+export function getPluginUpdates(options: PrereleaseOptions = {}): Promise<PluginUpdateInfo[]> {
+    const query = withPrerelease(new URLSearchParams(), options);
+    return apiFetch(`${BASE}/updates${query ? `?${query}` : ""}`);
 }
 
 /**
- * A package's published versions and one version's manifest (the latest, unless `packageVersion` is given). The name
- * goes in the query string: a scoped name in the path needs its `/` escaped as `%2F`, which a proxy in front of the
- * server (Envoy Gateway's default) unescapes and redirects to a path that matches no route.
+ * A package's published versions and one version's manifest (the newest, unless `packageVersion` is given). Prereleases
+ * are left out of the versions and never the newest unless `prerelease` is set. The name goes in the query string: a
+ * scoped name in the path needs its `/` escaped as `%2F`, which a proxy in front of the server (Envoy Gateway's
+ * default) unescapes and redirects to a path that matches no route.
  */
-export function lookupPluginPackage(name: string, packageVersion?: string): Promise<PluginRegistryLookup> {
+export function lookupPluginPackage(name: string, packageVersion?: string, options: PrereleaseOptions = {}): Promise<PluginRegistryLookup> {
     const query = new URLSearchParams({ name });
     if (packageVersion) {
         query.set("packageVersion", packageVersion);
     }
-    return apiFetch(`${BASE}/registry?${query.toString()}`);
+    return apiFetch(`${BASE}/registry?${withPrerelease(query, options)}`);
 }
 
-/** What adding `name` - or changing it, when installed - at `packageVersion` (default: latest) would also install and
- * enable, and what would refuse it. Nothing is changed. */
-export function planPluginChange(name: string, packageVersion?: string): Promise<PluginChangePlan> {
+/** What adding `name` - or changing it, when installed - at `packageVersion` (default: the newest, see
+ * `lookupPluginPackage()`) would also install and enable, and what would refuse it. Nothing is changed. */
+export function planPluginChange(name: string, packageVersion?: string, options: PrereleaseOptions = {}): Promise<PluginChangePlan> {
     const query = new URLSearchParams({ name });
     if (packageVersion) {
         query.set("packageVersion", packageVersion);
     }
-    return apiFetch(`${BASE}/plan?${query.toString()}`);
+    return apiFetch(`${BASE}/plan?${withPrerelease(query, options)}`);
 }
 
 /** Adds a plugin, at its latest version unless `packageVersion` is given, installing and enabling the plugins it

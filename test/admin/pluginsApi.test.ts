@@ -118,4 +118,27 @@ describe("pluginsApi", () => {
         expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/search?namespace=%40my-company", expect.anything());
         expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/updates", expect.anything());
     });
+
+    it("asks for prerelease versions only when told to", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await getPluginUpdates({ prerelease: true });
+        await getPluginUpdates({ prerelease: false });
+        await searchPlugins(undefined, { prerelease: true });
+        await searchPlugins("@my-company", { prerelease: true });
+        await lookupPluginPackage("@rapidmx/activesync", undefined, { prerelease: true });
+        await lookupPluginPackage("@rapidmx/activesync", "1.0.0-beta.1", { prerelease: true });
+        await planPluginChange("@rapidmx/autodiscover-plugin", undefined, { prerelease: true });
+        await planPluginChange("@rapidmx/autodiscover-plugin", "1.0.0", { prerelease: false });
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/updates?prerelease=true", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/updates", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/search?prerelease=true", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/search?namespace=%40my-company&prerelease=true", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/registry?name=%40rapidmx%2Factivesync&prerelease=true", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/system/plugins/registry?name=%40rapidmx%2Factivesync&packageVersion=1.0.0-beta.1&prerelease=true",
+            expect.anything(),
+        );
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/plan?name=%40rapidmx%2Fautodiscover-plugin&prerelease=true", expect.anything());
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/plan?name=%40rapidmx%2Fautodiscover-plugin&packageVersion=1.0.0", expect.anything());
+    });
 });
