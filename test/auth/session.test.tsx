@@ -110,6 +110,19 @@ describe("refreshSession", () => {
         expect(localStorage.getItem(REFRESHED_AT_KEY)).toBeNull();
     });
 
+    it("still refreshes when storage cannot be read or written, treating it as no record of a recent refresh", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+            throw new Error("storage blocked");
+        });
+        vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+            throw new Error("storage blocked");
+        });
+        expect(await refreshSession(AUTH)).toBe(true);
+        expect(await refreshSession(AUTH)).toBe(true);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
     it("serialises concurrent refreshes through Web Locks so the second finds it already done", async () => {
         let tail: Promise<unknown> = Promise.resolve();
         vi.stubGlobal("navigator", {
@@ -300,6 +313,22 @@ describe("useSessionRefresh", () => {
             document.dispatchEvent(new Event("visibilitychange"));
         });
         await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    });
+
+    it("with a session, does not start a second refresh while one is still on the wire", async () => {
+        let answer: (response: Response) => void = () => undefined;
+        const fetchMock = mockFetch(() => new Promise<Response>((resolve) => (answer = resolve)) as unknown as Response);
+        render(<RefreshComponent userUid="u1" authServerUrl={AUTH} />);
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+        await act(async () => {
+            document.dispatchEvent(new Event("visibilitychange"));
+            window.dispatchEvent(new Event("online"));
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        await act(async () => answer(jsonResponse(200, {})));
+        await waitFor(() => expect(localStorage.getItem(REFRESHED_AT_KEY)).not.toBeNull());
     });
 
     it("stops checking once the page unmounts", async () => {
