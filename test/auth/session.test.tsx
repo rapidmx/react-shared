@@ -317,7 +317,7 @@ describe("useSessionRefresh", () => {
 
     it("with a session, does not start a second refresh while one is still on the wire", async () => {
         let answer: (response: Response) => void = () => undefined;
-        const fetchMock = mockFetch(() => new Promise<Response>((resolve) => (answer = resolve)) as unknown as Response);
+        const fetchMock = mockFetch(() => new Promise<Response>((resolve) => (answer = resolve)));
         render(<RefreshComponent userUid="u1" authServerUrl={AUTH} />);
         await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 
