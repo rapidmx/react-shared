@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-09-27
+
+### Added
+- Added a prerelease option to getPluginUpdates, searchPlugins, lookupPluginPackage and planPluginChange, sent as prerelease=true only when set so other calls are unchanged
+
+### Changed
+- Test the prerelease option on the plugin read calls
+- Document the change in the release notes and NOTES
+
 ## [0.20.0] - 2026-09-26
 
 ### Added
@@ -577,7 +586,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/rapidmx/react-shared/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/rapidmx/react-shared/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/rapidmx/react-shared/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/rapidmx/react-shared/compare/v0.17.0...v0.18.0

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.21.0
+
 ### Added
 
 - **`getPluginUpdates()`, `searchPlugins()`, `lookupPluginPackage()` and `planPluginChange()` in `admin/pluginsApi.js` take `{ prerelease: true }`** (a last argument, `PrereleaseOptions`) to count pre-release versions such as `1.0.0-beta.2` when the server picks a package's newest version. It is sent only when `true`, so a call without it is the same request as before; a `@rapidmx/restapi` before it ignores it and offers releases only.
