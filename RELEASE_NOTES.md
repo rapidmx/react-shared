@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- **`useSessionRefresh(userUid, authServerUrl)` and `refreshSession(authServerUrl)` in `auth/session.js`** keep a signed-in session alive. An access token lives an hour, and until now nothing renewed it, so a user was sent to sign in again every hour. The hook calls auth-server's `POST /api/auth/refresh` (which reissues the `jwt` and `refresh` cookies) once the token is 45 minutes old, and right away on a page load when this browser has no record of a recent refresh. It re-checks every minute, and when the tab becomes visible or the network returns, since a sleeping laptop stops timers. A page that arrives with no session (the tab was left open, or reopened) refreshes once and reloads; only when that is refused, or a reload just made still found no session, does it go to sign-in. A refresh that fails for a transient reason is retried at the next check. A refresh that is refused (`401`/`403`: the refresh token expired or was revoked, so the session cannot be kept) sends the browser to sign-in with `return_to`, even while the page still has a session. The access token in hand works for a while yet, so `options.beforeRedirect` runs first - the caller's chance to save work in progress - and a failure in it never stops the redirect.
+- Refreshes are serialised across tabs (Web Locks) and each tab reads when the last one happened from `localStorage`, because a refresh token is single-use: two tabs refreshing at once would make the second look like a dead session.
+- The hook's third argument, `SessionRefreshOptions`, takes `beforeRedirect` (above) and `paused`, which stops all refreshing (and sends a page with no session straight to sign-in). It is for a session whose access token did not come from the refresh token in its cookie: an admin viewing as another user holds that user's token beside their own refresh token, and a refresh would swap the admin back in.
+- `SESSION_REFRESH_AFTER_MS`, `SESSION_REFRESH_CHECK_MS` and `SESSION_RELOAD_GUARD_MS` are exported. `useRedirectIfUnauthenticated()` is unchanged and still only redirects; an app frame should call `useSessionRefresh()` instead.
+- Needs what the sign-out call already needs: auth-server and this app under a shared cookie domain for both cookies, and auth-server's CORS and CSRF origin allow-lists including this app's origin. The Helm chart sets both.
+
 ## v0.21.0
 
 ### Added

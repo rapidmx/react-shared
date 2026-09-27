@@ -38,7 +38,7 @@ only pulls in the modules it actually uses:
 ```ts
 import { apiFetch, configureApiBaseUrl } from "@rapidmx/react-shared/util/api.js";
 import { getMailboxes } from "@rapidmx/react-shared/mail/mailApi.js";
-import { useRedirectIfUnauthenticated } from "@rapidmx/react-shared/auth/session.js";
+import { useSessionRefresh } from "@rapidmx/react-shared/auth/session.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 ```
 
