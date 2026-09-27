@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-09-27
+
+### Added
+- Added useSessionRefresh and refreshSession to auth/session, which renew the sign-in through auth-server's POST /api/auth/refresh once the access token is 45 minutes old, on page load, when the tab becomes visible and when the network returns, so a session no longer ends every hour
+- Added a paused option that stops all refreshing, for an admin viewing as another user whose refresh token is their own
+
+### Changed
+- Send a page with no session through one silent refresh and a reload before sign-in, and never reload twice in a minute, so a cookie this host cannot read redirects instead of looping
+- Serialise refreshes across tabs with Web Locks and a shared last-refreshed time, since a refresh token is single-use and the second of two simultaneous refreshes would look like a dead session
+- Redirect to sign-in with return_to when a refresh is refused (401 or 403), after running the caller's beforeRedirect so work in progress can be saved, and retry any other failure at the next check
+- Test the refresh, its thresholds, retries, rejection, redirect, beforeRedirect, paused and tab serialisation
+- Document the change in the release notes, the README and NOTES
+- `yarn build` now lints
+
+### Fixed
+- Fixed linter error
+
 ## [0.21.0] - 2026-09-27
 
 ### Added
@@ -586,7 +603,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/rapidmx/react-shared/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/rapidmx/react-shared/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/rapidmx/react-shared/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/rapidmx/react-shared/compare/v0.18.0...v0.19.0

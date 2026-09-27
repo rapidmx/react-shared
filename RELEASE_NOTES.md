@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.22.0
+
 ### Added
 
 - **`useSessionRefresh(userUid, authServerUrl)` and `refreshSession(authServerUrl)` in `auth/session.js`** keep a signed-in session alive. An access token lives an hour, and until now nothing renewed it, so a user was sent to sign in again every hour. The hook calls auth-server's `POST /api/auth/refresh` (which reissues the `jwt` and `refresh` cookies) once the token is 45 minutes old, and right away on a page load when this browser has no record of a recent refresh. It re-checks every minute, and when the tab becomes visible or the network returns, since a sleeping laptop stops timers. A page that arrives with no session (the tab was left open, or reopened) refreshes once and reloads; only when that is refused, or a reload just made still found no session, does it go to sign-in. A refresh that fails for a transient reason is retried at the next check. A refresh that is refused (`401`/`403`: the refresh token expired or was revoked, so the session cannot be kept) sends the browser to sign-in with `return_to`, even while the page still has a session. The access token in hand works for a while yet, so `options.beforeRedirect` runs first - the caller's chance to save work in progress - and a failure in it never stops the redirect.
