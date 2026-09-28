@@ -1531,3 +1531,7 @@ confirmed green against the copy, and only then were `src/` and `test/` deleted 
 there; `package.json`'s `version`, `dependencies`, `exports` and the rest were left as they were - JP or a
 later session can decide whether to archive this repository on GitHub itself, which is not this session's
 call. Do not `yarn build`/`yarn test` here - there is deliberately nothing left to build or test.
+
+### 2026-09-28 - Always wait for CI to go green before releasing
+
+Standing process rule, applies to every rapidmx/rapidrest repo: push pending commits, wait for the GitHub Actions **Build** workflow on that push to report `success` (`https://api.github.com/repos/<org>/<repo>/actions/runs`, or ask JP for the downloaded log archive if API log access needs auth - it 403s without a token), and only then run `npx @rapidrest/cli release ...`. Do not tag/release first and diagnose CI failures afterward. During a 2026-09-28 multi-repo release wave, restapi was released immediately after pushing pending commits without waiting for CI; CI then failed on a real coverage-threshold regression the pending changes introduced (a missing test for `BasePluginRoute.newestSearchResult()`'s catch branch) - not a flake, as an incomplete local-only reproduction first suggested. Because the release commit/tag were already pushed, the fix had to land as a follow-up commit on top of an already-tagged release instead of before it.
