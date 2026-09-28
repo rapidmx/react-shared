@@ -17,6 +17,7 @@ import {
     senderEntryMatches,
     senderListEntryFor,
 } from "../../src/mail/senderListsApi.js";
+import { createApiClient } from "../../src/util/api.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -187,5 +188,37 @@ describe("reportMessage", () => {
     it("rejects with the status of a refusal, a 404 being also what a server without the route answers", async () => {
         mockFetch(() => jsonResponse(404, { message: "Not found" }));
         await expect(reportMessage("m1", "phishing")).rejects.toMatchObject({ status: 404 });
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    const change = { entry: "ann@x.com", changed: true, blockedSenders: ["ann@x.com"], safeSenders: [] };
+
+    it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, change));
+
+        await addBlockedSender("mb1", "ann@x.com", client);
+        await removeBlockedSender("mb1", "ann@x.com", client);
+        await addSafeSender("mb1", "ann@x.com", client);
+        await removeSafeSender("mb1", "ann@x.com", client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, change));
+        await addBlockedSender("mb1", "ann@x.com");
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/mailboxes/mb1/blocked-senders",
+            expect.objectContaining({ method: "POST" }),
+        );
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

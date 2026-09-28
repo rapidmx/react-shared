@@ -4,7 +4,18 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { ApiRequestError, apiFetch, apiOrigin, apiUrl, authApiFetch, configureApiBaseUrl, setApiUnauthorizedObserver, withCsrfHeader } from "../../src/util/api.js";
+import {
+    ApiRequestError,
+    apiFetch,
+    apiOrigin,
+    apiUrl,
+    authApiFetch,
+    configureApiBaseUrl,
+    createApiClient,
+    setApiUnauthorizedObserver,
+    withClient,
+    withCsrfHeader,
+} from "../../src/util/api.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -240,6 +251,145 @@ describe("apiFetch", () => {
             const headers = init.headers as Headers;
             expect(headers.get("x-csrf-token")).toBe("caller-supplied");
         });
+    });
+});
+
+describe("createApiClient", () => {
+    it("always targets the given baseUrl, never the configureApiBaseUrl() global", async () => {
+        configureApiBaseUrl("https://global.example.com");
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, { ok: true }));
+        const result = await client.fetch("/mail/mailboxes");
+        expect(fetchMock).toHaveBeenCalledWith("https://account-a.example.com/api/mail/mailboxes", expect.anything());
+        expect(result).toEqual({ ok: true });
+    });
+
+    it("strips a trailing slash from baseUrl, same as configureApiBaseUrl()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com/", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        await client.fetch("/status");
+        expect(fetchMock).toHaveBeenCalledWith("https://account-a.example.com/api/status", expect.anything());
+    });
+
+    it("sends Authorization: jwt <token> from getAccessToken(), and never credentials: include (no cookie jar to rely on)", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-fresh" });
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        await client.fetch("/mail/mailboxes", { method: "POST" });
+        const init = fetchMock.mock.calls[0][1] as RequestInit;
+        const headers = init.headers as Headers;
+        expect(headers.get("Authorization")).toBe("jwt tok-fresh");
+        expect(init.credentials).toBeUndefined();
+    });
+
+    it("calls getAccessToken() fresh for every request rather than caching it", async () => {
+        let calls = 0;
+        const getAccessToken = vi.fn(async () => `tok-${++calls}`);
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken });
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        await client.fetch("/one");
+        await client.fetch("/two");
+        await client.fetch("/three");
+        expect(getAccessToken).toHaveBeenCalledTimes(3);
+        expect((fetchMock.mock.calls[0][1].headers as Headers).get("Authorization")).toBe("jwt tok-1");
+        expect((fetchMock.mock.calls[1][1].headers as Headers).get("Authorization")).toBe("jwt tok-2");
+        expect((fetchMock.mock.calls[2][1].headers as Headers).get("Authorization")).toBe("jwt tok-3");
+    });
+
+    it("rejects the request itself when getAccessToken() rejects, without ever calling fetch()", async () => {
+        const client = createApiClient({
+            baseUrl: "https://account-a.example.com",
+            getAccessToken: async () => {
+                throw new Error("refresh failed");
+            },
+        });
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        await expect(client.fetch("/mail/mailboxes")).rejects.toThrow("refresh failed");
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("distinct instances are fully isolated - different baseUrl and token, no cross-talk", async () => {
+        const clientA = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const clientB = createApiClient({ baseUrl: "https://account-b.example.com", getAccessToken: async () => "tok-b" });
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+
+        await clientA.fetch("/status");
+        await clientB.fetch("/status");
+
+        expect(fetchMock.mock.calls[0][0]).toBe("https://account-a.example.com/api/status");
+        expect((fetchMock.mock.calls[0][1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+        expect(fetchMock.mock.calls[1][0]).toBe("https://account-b.example.com/api/status");
+        expect((fetchMock.mock.calls[1][1].headers as Headers).get("Authorization")).toBe("jwt tok-b");
+    });
+
+    it("parses a response and decodes an error the same way apiFetch() does", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        mockFetch(() => jsonResponse(400, { message: "bad input", code: "api-101" }));
+        await expect(client.fetch("/whatever")).rejects.toMatchObject({
+            name: "ApiRequestError",
+            message: "bad input",
+            status: 400,
+            code: "api-101",
+        });
+    });
+
+    describe("setUnauthorizedObserver", () => {
+        it("hears a 401 from this instance's own fetch(), which still rejects with the same error", async () => {
+            const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+            const observer = vi.fn();
+            client.setUnauthorizedObserver(observer);
+            mockFetch(() => jsonResponse(401, { message: "Sign in." }));
+            await expect(client.fetch("/mail/mailboxes")).rejects.toMatchObject({ status: 401 });
+            expect(observer).toHaveBeenCalledTimes(1);
+            expect(observer.mock.calls[0][0]).toBeInstanceOf(ApiRequestError);
+        });
+
+        it("is per-instance - one client's 401 never reaches another client's observer or the global setApiUnauthorizedObserver() one", async () => {
+            const globalObserver = vi.fn();
+            setApiUnauthorizedObserver(globalObserver);
+            const clientA = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+            const clientB = createApiClient({ baseUrl: "https://account-b.example.com", getAccessToken: async () => "tok-b" });
+            const observerA = vi.fn();
+            const observerB = vi.fn();
+            clientA.setUnauthorizedObserver(observerA);
+            clientB.setUnauthorizedObserver(observerB);
+
+            mockFetch(() => jsonResponse(401, { message: "Sign in." }));
+            await expect(clientA.fetch("/x")).rejects.toMatchObject({ status: 401 });
+
+            expect(observerA).toHaveBeenCalledTimes(1);
+            expect(observerB).not.toHaveBeenCalled();
+            expect(globalObserver).not.toHaveBeenCalled();
+        });
+
+        it("never lets a throwing observer change what the caller sees, and works with none registered", async () => {
+            const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+            client.setUnauthorizedObserver(() => {
+                throw new Error("observer bug");
+            });
+            mockFetch(() => jsonResponse(401, { message: "Sign in." }));
+            await expect(client.fetch("/x")).rejects.toMatchObject({ status: 401, message: "Sign in." });
+
+            client.setUnauthorizedObserver(undefined);
+            await expect(client.fetch("/x")).rejects.toMatchObject({ status: 401 });
+        });
+    });
+});
+
+describe("withClient", () => {
+    it("routes to the given client's fetch() instead of the global apiFetch(), when one is given", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, { ok: "a" }));
+        const result = await withClient(client, "/mail/mailboxes");
+        expect(fetchMock).toHaveBeenCalledWith("https://account-a.example.com/api/mail/mailboxes", expect.anything());
+        expect(result).toEqual({ ok: "a" });
+    });
+
+    it("falls back to the global apiFetch() when no client is given - identical to calling apiFetch() directly", async () => {
+        configureApiBaseUrl("https://global.example.com");
+        const fetchMock = mockFetch(() => jsonResponse(200, { ok: "global" }));
+        const result = await withClient(undefined, "/mail/mailboxes");
+        expect(fetchMock).toHaveBeenCalledWith("https://global.example.com/api/mail/mailboxes", expect.anything());
+        expect(result).toEqual({ ok: "global" });
     });
 });
 

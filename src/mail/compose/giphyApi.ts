@@ -6,7 +6,7 @@
  * never calls Giphy directly from the browser, since that would require shipping the API key in the
  * client bundle. See `GifPicker.tsx` for the UI this backs. */
 
-import { apiFetch } from "../../util/api.js";
+import { ApiClient, withClient } from "../../util/api.js";
 
 export interface GiphyGif {
     id: string;
@@ -17,12 +17,15 @@ export interface GiphyGif {
     title: string;
 }
 
-/** An empty/blank `query` returns Giphy's trending feed (see the backend route's own doc comment). */
-export function searchGifs(query: string): Promise<GiphyGif[]> {
+/** An empty/blank `query` returns Giphy's trending feed (see the backend route's own doc comment). `client`,
+ * given here, is an explicit `ApiClient` from `createApiClient()` (e.g. one account of a multi-account app) to
+ * call instead of the default global `apiFetch()` - see `withClient()`'s own doc comment in `util/api.ts`.
+ * Omitted (the default), this behaves exactly as before. */
+export function searchGifs(query: string, client?: ApiClient): Promise<GiphyGif[]> {
     const params = new URLSearchParams();
     const trimmed = query.trim();
     if (trimmed) {
         params.set("q", trimmed);
     }
-    return apiFetch(`/mail/giphy/search?${params.toString()}`);
+    return withClient(client, `/mail/giphy/search?${params.toString()}`);
 }

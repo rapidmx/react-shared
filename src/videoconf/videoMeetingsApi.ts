@@ -21,7 +21,7 @@
  * `apiFetch<T>()` call (see `crypto/signingProviderApi.ts`'s own note on the same choice).
  */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 
 export type { ListParams };
@@ -103,9 +103,13 @@ export interface VideoMeetingCreateResult {
     publicJoinUrl?: string;
 }
 
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+
 /** Creates a meeting owned by `input.mailboxUid`. Requires CREATE on that mailbox. */
-export function createVideoMeeting(input: CreateVideoMeetingInput): Promise<VideoMeetingCreateResult> {
-    return apiFetch("/mail/video-meetings", { method: "POST", body: JSON.stringify(input) });
+export function createVideoMeeting(input: CreateVideoMeetingInput, client?: ApiClient): Promise<VideoMeetingCreateResult> {
+    return withClient(client, "/mail/video-meetings", { method: "POST", body: JSON.stringify(input) });
 }
 
 /**
@@ -119,13 +123,13 @@ export interface UpdateVideoMeetingInput {
 }
 
 /** Renames or cancels a meeting. Requires UPDATE on its owning mailbox. */
-export function updateVideoMeeting(uid: string, input: UpdateVideoMeetingInput): Promise<VideoMeeting> {
-    return apiFetch(`/mail/video-meetings/${encodeURIComponent(uid)}`, { method: "PUT", body: JSON.stringify(input) });
+export function updateVideoMeeting(uid: string, input: UpdateVideoMeetingInput, client?: ApiClient): Promise<VideoMeeting> {
+    return withClient(client, `/mail/video-meetings/${encodeURIComponent(uid)}`, { method: "PUT", body: JSON.stringify(input) });
 }
 
 /** Fetches one meeting, with the organizer's own join link when it has one. Requires READ on its owning mailbox. */
-export function getVideoMeeting(uid: string): Promise<VideoMeetingDetail> {
-    return apiFetch(`/mail/video-meetings/${encodeURIComponent(uid)}`);
+export function getVideoMeeting(uid: string, client?: ApiClient): Promise<VideoMeetingDetail> {
+    return withClient(client, `/mail/video-meetings/${encodeURIComponent(uid)}`);
 }
 
 /**
@@ -135,6 +139,6 @@ export function getVideoMeeting(uid: string): Promise<VideoMeetingDetail> {
  * non-cancelled public meeting) - `BaseVideoMeetingRoute.find()` already supported this exact query (no
  * `calendarEventUid` filter), it just had no typed wrapper here yet.
  */
-export function listVideoMeetings(mailboxUid: string, params: ListParams = {}): Promise<VideoMeetingDetail[]> {
-    return apiFetch(`/mail/video-meetings?${buildQuery(params, { mailboxUid })}`);
+export function listVideoMeetings(mailboxUid: string, params: ListParams = {}, client?: ApiClient): Promise<VideoMeetingDetail[]> {
+    return withClient(client, `/mail/video-meetings?${buildQuery(params, { mailboxUid })}`);
 }

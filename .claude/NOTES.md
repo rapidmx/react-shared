@@ -1371,3 +1371,149 @@ Not committed. JP found on the live server that a session never outlasts the 1-h
 - **`options.paused` (AppShell passes `impersonating`):** during admin impersonation the `jwt` cookie is the *target's* (`createAuthResult(..., impersonation=true)` issues no refresh token) but the `refresh` cookie is still the admin's own, so a refresh would silently swap the admin back in. Paused = no refresh at all, and a page with no session goes straight to sign-in. Only `AppShell` is told `impersonating` (`wwwRoute` sets it from the `jwt_impersonator` cookie, which is not readable from JS); `AdminShell`/`EscrowShell` are not, so an impersonated user who reaches those pages would be swapped back - unlikely (an impersonated user is rarely an admin) and not addressed.
 - **No session on load:** refresh once, reload; guarded by `sessionStorage` `rapidmx.session.reloadedAt` (60 s) so a refresh that succeeds but whose cookie this host can't read (misconfigured cookie domain) redirects to sign-in instead of looping.
 - Tests in `test/auth/session.test.tsx` (24). **Not verified against a live auth-server** - unit tests mock `fetch`. Check live: the refresh response's `Set-Cookie`s (Domain=.<domain>) are accepted from the cross-origin credentialed fetch, and refresh is not rejected by auth-server's CSRF check (it should pass via the Origin allow-list like logout).
+
+### 2026-09-27 - `createApiClient()`: explicit-context calling mode for the multi-account Tauri client
+
+Not committed. Adds an ADDITIVE second calling mode to `util/api.ts` alongside the existing module-global one
+(`configureApiBaseUrl()` + the `jwt` cookie), for a new `tauri-client` app that must hold several fully
+independent RapidMX accounts open at once (own `serverUrl`, own bearer session, own refresh cycle) - something
+the single `apiBaseUrl` global can't represent. Every existing caller (`web-client`, `electron-client`) is
+byte-for-byte unchanged: `apiFetch()`/`authApiFetch()`/`configureApiBaseUrl()`/`setApiUnauthorizedObserver()`
+are untouched in behavior - verified by running every existing test file with zero test-body edits, plus a
+full-suite run afterward (below).
+
+**Shape:**
+```ts
+const client = createApiClient({
+    baseUrl: "https://mail.example.com",
+    getAccessToken: async () => account.currentAccessToken, // called fresh on every request
+});
+await listMailboxes({}, client);          // explicit
+await listMailboxes();                    // unchanged - default global apiFetch()
+```
+`ApiClient` is `{ fetch<T>(path, init?): Promise<T>; setUnauthorizedObserver(observer) }`. `createApiClient()`
+always targets its own `baseUrl` (never the global), always sends `Authorization: jwt <token>` from a fresh
+`getAccessToken()` call per request (never `credentials: "include"` - a native app has no relevant cookie jar
+for a given account's origin), and never touches CSRF (`applyCsrfHeader()`/`withCsrfHeader()` is a cookie-echo
+mechanism that only makes sense for the cookie-based global mode). Distinct instances share nothing - each
+closes over its own `baseUrl`/`getAccessToken`/observer, confirmed by a "two clients never cross-talk" test.
+
+**401 handling is per-instance, not global - deliberate, not an oversight.** `setApiUnauthorizedObserver()` is
+one process-wide "you're signed out" signal, correct for a single-session app where there is only ever one
+session to lose. A multi-account app has no single account whose 401 means "the app" is unauthorized, so a
+`createApiClient()` instance does NOT call the global observer at all; each instance has its own
+`setUnauthorizedObserver()` a caller registers per account (e.g. to mark just that one account's tab as needing
+re-sign-in). Implemented by widening `decodeApiResponse()`'s second parameter from a `boolean`
+(`observeUnauthorized`) to an optional `(error) => void` callback - `apiFetch()` passes one that forwards to the
+module-level observer, `authApiFetch()` passes none (unchanged), and each `ApiClient` passes one that forwards
+to its own.
+
+**Scaling the REST client modules (`mailApi.ts` etc.):** surveyed every module in `src/` that calls
+`apiFetch`/`authApiFetch` directly - 41 files (`grep -rl "apiFetch\|authApiFetch" src --include="*.ts"`,
+excluding `util/api.ts` itself). Rejected a "factory wraps the whole module in a closure,
+`export const fn = bound.fn`" design: it would require relocating every exported `interface`/`type`/`const` in
+a module either in or out of the closure by hand across dozens of large files - high risk of a transcription
+mistake for no behavior difference, since a type never depends on `client`. Instead added one shared helper,
+`withClient(client, path, init?)` in `util/api.ts`, that routes to `client.fetch()` when given, else the
+default global `apiFetch()` - a function picks this up by adding one trailing `client?: ApiClient` parameter
+(so every existing call site, which never passes one, is byte-for-byte unaffected) and swapping its
+`apiFetch(...)` call for `withClient(client, ...)`. A function that calls another exported function of the same
+module internally (e.g. `mailApi.ts`'s `grantMailboxAccess()` calling `getMailboxAcl()`, or `contactsApi.ts`'s
+`setContactFavorite()` calling `updateContact()`) threads its own `client` through that call too, so a whole
+call chain stays pinned to one account - verified with a dedicated test per module.
+
+**Converted this pass** (every exported function that calls `apiFetch` directly now takes a trailing optional
+`client?: ApiClient`, default behavior unchanged): `mail/mailApi.ts` (the flagship, ~52 of its 57 exported
+functions - see the exceptions below), `mail/labelsApi.ts`, `mail/conversationsApi.ts`, `search/searchApi.ts`,
+`calendar/calendarApi.ts`, `contacts/contactsApi.ts`. Dual-path tests (default global vs. explicit client,
+including internal-call-chain threading and two-clients-never-cross-talk) added to `test/mail/mailApi.test.ts`,
+`test/mail/labelsApi.test.ts` and `test/contacts/contactsApi.test.ts`; `test/calendar/calendarApi.test.ts`,
+`test/search/searchApi.test.ts` and `test/mail/conversationsApi.test.ts` were re-run unchanged to confirm the
+default path stayed intact.
+
+**Deliberately NOT given a `client` param in `mailApi.ts` this pass** (documented rather than silently skipped):
+`impersonateUser()`/`stopImpersonating()` (they call *auth-server*, a different origin already explicit via
+their own `impersonationBaseUrl` parameter, not this app's own API - a per-account auth-server session is a
+separate future change, out of scope here) and `getMessageRawContent()`/`uploadAttachment()` (they bypass
+`apiFetch()` entirely for a raw, non-JSON request/response - `ApiClient` only exposes JSON `fetch()` today, so
+an explicit-client path for these would need a second, raw-bytes method on `ApiClient` first; not needed yet
+since a first `tauri-client` cut is read/send mail, not raw MIME/attachment upload). `attachmentContentUrl()`
+is a URL builder, not a fetch - it already takes no client (uses the global `apiUrl()`).
+
+**NOT converted at all this pass - same mechanical pattern applies (`withClient` + trailing `client?` param),
+left for a follow-up session:** every other module the survey found: `admin/auditLogApi.ts`,
+`admin/distributionListsApi.ts`, `admin/domainsApi.ts`, `admin/escrowAccessRequestsApi.ts`,
+`admin/escrowAuditLogApi.ts`, `admin/escrowScopesApi.ts`, `admin/leftoverMailboxApi.ts`,
+`admin/mailboxPolicyApi.ts`, `admin/matterExportApi.ts`, `admin/matterSearchApi.ts`, `admin/mattersApi.ts`,
+`admin/pluginsApi.ts`, `admin/retentionPolicyApi.ts`, `admin/setupApi.ts`, `admin/transportRulesApi.ts`,
+`appearance/preferencesApi.ts`, `auth/profileApi.ts`, `auth/session.ts`, `branding/brandingApi.ts`,
+`calendar/freeBusyApi.ts`, `calendar/inviteApi.ts`, `crypto/keyvaultApi.ts`, `crypto/signingProviderApi.ts`,
+`mail/compose/giphyApi.ts`, `mail/dataExportApi.ts`, `mail/directoryApi.ts`, `mail/erasureRequestApi.ts`,
+`mail/focusedInboxOverridesApi.ts`, `mail/mailFilterRulesApi.ts`, `mail/mailSignaturesApi.ts`,
+`mail/mailboxAccessApi.ts`, `mail/mailboxImportApi.ts`, `mail/senderListsApi.ts`, `tasks/tasksApi.ts`,
+`videoconf/videoMeetingsApi.ts`. None of these were touched, so every one is still byte-for-byte what it was -
+this is a scoping choice (mail/calendar/contacts/search/labels is `tauri-client`'s likely first surface; the
+admin-console-only modules in particular are unlikely to be its first priority), not a correctness gap in what
+*was* converted.
+
+Full suite after this pass: 106 files, 1481 tests, all passing. Coverage 100/99.23/100/100
+statements/branches/functions/lines (same pre-existing 98%-floor branch gaps as every prior entry - see this
+file's `vitest.config.ts` comment - untouched by this work; no new gap introduced). `tsc --noEmit` clean.
+
+### 2026-09-27 (second pass) - `ApiClientContext`/`useApiClient()`, the session-refresh opt-out, and the remaining ~34 REST modules
+
+Finishes what the entry above started, same day. Not committed at the time this was written (JP commits when
+ready). Three pieces:
+
+**1. `ApiClientContext`/`useApiClient()`** (new `src/util/apiClientContext.ts`) - a bare `createContext<ApiClient
+| undefined>(undefined)` + a `useApiClient()` reader, no wrapper `<Provider>` component of its own (matches this
+repo's existing Context convention, e.g. `components/overlays/overlayStack.ts`'s `OverlayDepthContext` - a host
+app wraps its tree in `<ApiClientContext.Provider value={client}>` directly). Default `undefined` means "no
+override, use the global cookie-based path" - exactly what every `client?: ApiClient` parameter added in the
+first pass already treats `undefined` as, so `const client = useApiClient(); await listMessages(params,
+client);` needs no adapter. This is the piece `tauri-client`'s own integration work was missing: the first
+pass gave REST functions a `client` parameter, but nothing in `web-client`'s actual component tree had a way to
+*get* the right client without prop-drilling it through every layer by hand.
+
+**2. Session-refresh hooks now no-op under an `ApiClientContext.Provider`** (`src/auth/session.ts`) -
+`useSessionRefresh()`/`useRedirectIfUnauthenticated()` both assumed a `jwt`/`refresh` cookie pair
+unconditionally; meaningless (and actively wrong - there is no cookie to refresh, and redirecting to
+auth-server's cookie sign-in page is not what a native host's own token lifecycle wants) when the caller is
+using an explicit `ApiClient` instead. Both hooks now call `useApiClient()` and `return` from their `useEffect`
+before any fetch/timer/listener/redirect logic runs when it's set (added to each effect's dependency array,
+hook-rules-compliant - the call itself is unconditional, only the early-return is conditional). With no
+`ApiClientContext.Provider` anywhere above the caller - every existing browser/SSR/Electron consumer, the
+default - `useApiClient()` returns `undefined` and both hooks behave byte-for-byte as before, proven by the
+existing 26 `session.test.tsx` tests staying green unmodified plus 4 new ones for the Provider case.
+
+**3. The remaining ~34 REST client modules converted**, same mechanical `withClient` + trailing `client?:
+ApiClient` pattern as the first pass, split across four parallel sub-agents by area (mail/tasks/videoconf;
+uploads/plugins/exports; admin/escrow/calendar; keyvault/signing/setup) since it was purely mechanical, high-
+file-count work with no cross-cutting design decisions left to make. Every module the first pass's survey had
+listed as "not converted yet" is now converted: `admin/*` (all 10 files), `appearance/preferencesApi.ts`,
+`branding/brandingApi.ts`, `calendar/freeBusyApi.ts`, `calendar/inviteApi.ts`, `crypto/keyvaultApi.ts`,
+`crypto/signingProviderApi.ts`, `mail/compose/giphyApi.ts`, `mail/dataExportApi.ts`, `mail/directoryApi.ts`,
+`mail/erasureRequestApi.ts`, `mail/focusedInboxOverridesApi.ts`, `mail/mailFilterRulesApi.ts`,
+`mail/mailSignaturesApi.ts`, `mail/mailboxAccessApi.ts`, `mail/mailboxImportApi.ts`, `mail/senderListsApi.ts`,
+`tasks/tasksApi.ts`, `videoconf/videoMeetingsApi.ts`. **Deliberately still not given a `client` param**, same
+reasoning as the first pass's `mailApi.ts` exceptions: `auth/profileApi.ts`'s `getMyProfile()`/`getMyUsername()`
+(explicit different-origin `authServerUrl` param already, same shape as `impersonateUser()`), and every raw
+upload/download bypassing `apiFetch()` entirely (`preferencesApi.ts`'s `uploadAppearanceBackground()`,
+`brandingApi.ts`'s three `uploadBranding*()` wrappers, `mailboxImportApi.ts`'s `uploadMailboxImport()`) - same
+"`ApiClient` has no raw-bytes method yet" reasoning as `mailApi.ts`'s `uploadAttachment()`/
+`getMessageRawContent()`. Internal same-module call chains (`directoryApi.ts`'s `fetchSuggestions()` used by two
+exported searches; `senderListsApi.ts`'s `add`/`remove` helpers; `tasksApi.ts`'s `setTaskCompleted`/
+`setTaskMyDay` wrapping `updateTask`; `keyvaultApi.ts`'s `enrollKey()` calling `getKeyVault()`) all thread their
+own `client` through, verified per module.
+
+**Full-suite verification, run once for real after all four sub-agents finished** (each had only verified its
+own slice in isolation) - `npx tsc -p tsconfig.json --noEmit` clean, `npx eslint ./src ./test` clean, `npx
+vitest run --coverage`: **107 files, 1555 tests, all passing**. Coverage 100%/99.24%/100%/100%
+statements/branches/functions/lines - the only branch shortfalls (`auth/session.ts` 86%, `branding/useBranding.ts`
+92.3%, `crypto/escrowKeys.ts` 75%, `crypto/composeSecurity.ts` 98.76%, `crypto/smime.ts` 98.66%,
+`mail/compose/composeQuoting.ts` 96.05%, `search/queryGrammar.ts` 96.55%, `search/searchTier3.ts` 99.04%) are
+all pre-existing (confirmed via `git diff` that the specific uncovered line ranges - e.g. `session.ts`'s
+174-180/202/222, all unmount-race guards and visibility-state checks inside the pre-existing refresh-timer
+logic - fall outside every line this pass actually touched), same "98%-floor" baseline the file's own
+`vitest.config.ts` comment already documents, not a new gap. `package.json` version untouched, nothing
+committed by this session's own agents.

@@ -9,7 +9,7 @@
  * own server-internal `recordAuditLog()`.
  */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 
 export type { ListParams };
@@ -35,11 +35,14 @@ export interface AuditLogFilters {
     targetType?: string;
 }
 
-export function listAuditLog(filters: AuditLogFilters = {}, params: ListParams = {}): Promise<AuditLogEntry[]> {
+/** `client`, given below, is an explicit `ApiClient` from `createApiClient()` (e.g. one account of a multi-account
+ * app) to call instead of the default global `apiFetch()` - see `withClient()`'s own doc comment in `util/api.ts`.
+ * Omitted (the default), this behaves exactly as before. */
+export function listAuditLog(filters: AuditLogFilters = {}, params: ListParams = {}, client?: ApiClient): Promise<AuditLogEntry[]> {
     const extra: Record<string, string> = {};
     if (filters.mailboxUid) extra.mailboxUid = filters.mailboxUid;
     if (filters.actorUserUid) extra.actorUserUid = filters.actorUserUid;
     if (filters.action) extra.action = filters.action;
     if (filters.targetType) extra.targetType = filters.targetType;
-    return apiFetch(`/mail/audit-log?${buildQuery(params, extra)}`);
+    return withClient(client, `/mail/audit-log?${buildQuery(params, extra)}`);
 }

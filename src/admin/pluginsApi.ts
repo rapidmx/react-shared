@@ -8,7 +8,7 @@
  * each server copy installs the new plugin set and restarts itself, one copy at a time, and reports back through
  * `getPluginStatus()`.
  */
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 
 /** Mirrors `@rapidmx/restapi`'s `PluginSettingDefinition`. */
 export interface PluginSettingDefinition {
@@ -237,30 +237,33 @@ function withPrerelease(params: URLSearchParams, options: PrereleaseOptions): st
     return params.toString();
 }
 
-export function listPlugins(): Promise<Plugin[]> {
-    return apiFetch(BASE);
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+export function listPlugins(client?: ApiClient): Promise<Plugin[]> {
+    return withClient(client, BASE);
 }
 
-export function getPluginStatus(): Promise<PluginStatus> {
-    return apiFetch(`${BASE}/status`);
+export function getPluginStatus(client?: ApiClient): Promise<PluginStatus> {
+    return withClient(client, `${BASE}/status`);
 }
 
 /** The namespaces this server searches for plugins. */
-export function listPluginNamespaces(): Promise<PluginNamespace[]> {
-    return apiFetch(`${BASE}/namespaces`);
+export function listPluginNamespaces(client?: ApiClient): Promise<PluginNamespace[]> {
+    return withClient(client, `${BASE}/namespaces`);
 }
 
 /** Plugin packages (named `*-plugin`) in `namespace`, or in every configured namespace when it's omitted. Each one's
  * `version` is its newest release, or its newest version of any kind with `prerelease`. */
-export function searchPlugins(namespace?: string, options: PrereleaseOptions = {}): Promise<PluginSearchResult[]> {
+export function searchPlugins(namespace?: string, options: PrereleaseOptions = {}, client?: ApiClient): Promise<PluginSearchResult[]> {
     const query = withPrerelease(new URLSearchParams(namespace ? { namespace } : {}), options);
-    return apiFetch(`${BASE}/search${query ? `?${query}` : ""}`);
+    return withClient(client, `${BASE}/search${query ? `?${query}` : ""}`);
 }
 
 /** Each installed plugin's newest published version - a release, unless `prerelease` also counts prereleases. */
-export function getPluginUpdates(options: PrereleaseOptions = {}): Promise<PluginUpdateInfo[]> {
+export function getPluginUpdates(options: PrereleaseOptions = {}, client?: ApiClient): Promise<PluginUpdateInfo[]> {
     const query = withPrerelease(new URLSearchParams(), options);
-    return apiFetch(`${BASE}/updates${query ? `?${query}` : ""}`);
+    return withClient(client, `${BASE}/updates${query ? `?${query}` : ""}`);
 }
 
 /**
@@ -269,33 +272,48 @@ export function getPluginUpdates(options: PrereleaseOptions = {}): Promise<Plugi
  * scoped name in the path needs its `/` escaped as `%2F`, which a proxy in front of the server (Envoy Gateway's
  * default) unescapes and redirects to a path that matches no route.
  */
-export function lookupPluginPackage(name: string, packageVersion?: string, options: PrereleaseOptions = {}): Promise<PluginRegistryLookup> {
+export function lookupPluginPackage(
+    name: string,
+    packageVersion?: string,
+    options: PrereleaseOptions = {},
+    client?: ApiClient,
+): Promise<PluginRegistryLookup> {
     const query = new URLSearchParams({ name });
     if (packageVersion) {
         query.set("packageVersion", packageVersion);
     }
-    return apiFetch(`${BASE}/registry?${withPrerelease(query, options)}`);
+    return withClient(client, `${BASE}/registry?${withPrerelease(query, options)}`);
 }
 
 /** What adding `name` - or changing it, when installed - at `packageVersion` (default: the newest, see
  * `lookupPluginPackage()`) would also install and enable, and what would refuse it. Nothing is changed. */
-export function planPluginChange(name: string, packageVersion?: string, options: PrereleaseOptions = {}): Promise<PluginChangePlan> {
+export function planPluginChange(
+    name: string,
+    packageVersion?: string,
+    options: PrereleaseOptions = {},
+    client?: ApiClient,
+): Promise<PluginChangePlan> {
     const query = new URLSearchParams({ name });
     if (packageVersion) {
         query.set("packageVersion", packageVersion);
     }
-    return apiFetch(`${BASE}/plan?${withPrerelease(query, options)}`);
+    return withClient(client, `${BASE}/plan?${withPrerelease(query, options)}`);
 }
 
 /** Adds a plugin, at its latest version unless `packageVersion` is given, installing and enabling the plugins it
  * requires first. Refused (409) when a requirement conflicts with an installed plugin's version, or when
  * `expectedPlan` is given and no longer matches what adding it would install and enable. */
-export function addPlugin(name: string, packageVersion?: string, expectedPlan?: PluginExpectedPlan): Promise<AddPluginResult> {
-    return apiFetch(BASE, { method: "POST", body: JSON.stringify({ name, packageVersion, expectedPlan }) });
+export function addPlugin(
+    name: string,
+    packageVersion?: string,
+    expectedPlan?: PluginExpectedPlan,
+    client?: ApiClient,
+): Promise<AddPluginResult> {
+    return withClient(client, BASE, { method: "POST", body: JSON.stringify({ name, packageVersion, expectedPlan }) });
 }
 
-export function updatePlugin(uid: string, input: UpdatePluginInput): Promise<Plugin> {
-    return apiFetch(`${BASE}/${encodeURIComponent(uid)}`, { method: "PUT", body: JSON.stringify(input) });
+export function updatePlugin(uid: string, input: UpdatePluginInput, client?: ApiClient): Promise<Plugin> {
+    return withClient(client, `${BASE}/${encodeURIComponent(uid)}`, { method: "PUT", body: JSON.stringify(input) });
 }
 
 /**
@@ -306,8 +324,8 @@ export function updatePlugin(uid: string, input: UpdatePluginInput): Promise<Plu
  * and the server only accepts it from an elevated administrator (403 `api-104` otherwise). Adding the plugin again before
  * the deletion starts cancels it.
  */
-export async function removePlugin(uid: string, options: { purgeData?: boolean } = {}): Promise<RemovePluginResult> {
-    const result = await apiFetch<RemovePluginResult | undefined>(`${BASE}/${encodeURIComponent(uid)}`, {
+export async function removePlugin(uid: string, options: { purgeData?: boolean } = {}, client?: ApiClient): Promise<RemovePluginResult> {
+    const result = await withClient<RemovePluginResult | undefined>(client, `${BASE}/${encodeURIComponent(uid)}`, {
         method: "DELETE",
         // Nothing is sent unless asked for, so a server that doesn't know the flag is called exactly as before.
         ...(options.purgeData ? { body: JSON.stringify({ purgeData: true }) } : {}),
@@ -316,6 +334,6 @@ export async function removePlugin(uid: string, options: { purgeData?: boolean }
 }
 
 /** Runs the steps of a failed data deletion that failed again. Needs an elevated administrator. */
-export function retryPluginPurge(purgeUid: string): Promise<PluginPurgeInfo> {
-    return apiFetch(`${BASE}/purges/${encodeURIComponent(purgeUid)}/retry`, { method: "POST" });
+export function retryPluginPurge(purgeUid: string, client?: ApiClient): Promise<PluginPurgeInfo> {
+    return withClient(client, `${BASE}/purges/${encodeURIComponent(purgeUid)}/retry`, { method: "POST" });
 }

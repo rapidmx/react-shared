@@ -9,7 +9,7 @@
  * stages the upload and returns the `pending` request; poll `getImportRequest()`/`listImportRequests()`
  * for `status` to become `"completed"` (with `importedCount`/`failedCount`) or `"failed"`.
  */
-import { ApiRequestError, apiFetch, apiUrl, withCsrfHeader } from "../util/api.js";
+import { ApiClient, ApiRequestError, apiUrl, withClient, withCsrfHeader } from "../util/api.js";
 import { RequestListParams, buildRequestListQuery } from "../util/apiQuery.js";
 
 export type { RequestListParams };
@@ -71,12 +71,17 @@ export async function uploadMailboxImport(file: File, input: UploadMailboxImport
     return responseBody as MailboxImportRequest;
 }
 
+/** `client`, given by every function below that isn't a raw-bytes upload, is an explicit `ApiClient` from
+ * `createApiClient()` (e.g. one account of a multi-account app) to call instead of the default global
+ * `apiFetch()` - see `withClient()`'s own doc comment in `util/api.ts`. Omitted (the default), every
+ * function here behaves exactly as before. */
+
 /** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). Newest
  * first; `params` pages through them (`limit` capped at 500 server-side). */
-export function listImportRequests(params: RequestListParams = {}): Promise<MailboxImportRequest[]> {
-    return apiFetch(`/mail/mailbox-import-requests${buildRequestListQuery(params)}`);
+export function listImportRequests(params: RequestListParams = {}, client?: ApiClient): Promise<MailboxImportRequest[]> {
+    return withClient(client, `/mail/mailbox-import-requests${buildRequestListQuery(params)}`);
 }
 
-export function getImportRequest(uid: string): Promise<MailboxImportRequest> {
-    return apiFetch(`/mail/mailbox-import-requests/${encodeURIComponent(uid)}`);
+export function getImportRequest(uid: string, client?: ApiClient): Promise<MailboxImportRequest> {
+    return withClient(client, `/mail/mailbox-import-requests/${encodeURIComponent(uid)}`);
 }

@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
+import { createApiClient } from "../../src/util/api.js";
 import {
     createDomain,
     deleteDomain,
@@ -119,5 +120,35 @@ describe("getDnsSetup", () => {
         const result = await getDnsSetup("example.com");
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/domains/example.com/dns-setup", expect.anything());
         expect(result).toEqual(checks);
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, domain));
+
+        await listDomains({}, client);
+        await getDomain("example.com", client);
+        await createDomain({ name: "example.com" }, client);
+        await updateDomain({ uid: "example.com", version: 0 }, client);
+        await deleteDomain("example.com", 0, client);
+        await verifyDomain("example.com", client);
+        await getDnsSetup("example.com", client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(7);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, domain));
+        await getDomain("example.com");
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/domains/example.com", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

@@ -7,7 +7,7 @@
  * trusted-role-only, no self-service creation or per-list delegated ownership (v1).
  */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 
 export type { ListParams };
@@ -27,12 +27,15 @@ export interface DistributionList {
     restrictSenders?: boolean;
 }
 
-export function listDistributionLists(params: ListParams = {}): Promise<DistributionList[]> {
-    return apiFetch(`/mail/distribution-lists?${buildQuery(params)}`);
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+export function listDistributionLists(params: ListParams = {}, client?: ApiClient): Promise<DistributionList[]> {
+    return withClient(client, `/mail/distribution-lists?${buildQuery(params)}`);
 }
 
-export function getDistributionList(uid: string): Promise<DistributionList> {
-    return apiFetch(`/mail/distribution-lists/${encodeURIComponent(uid)}`);
+export function getDistributionList(uid: string, client?: ApiClient): Promise<DistributionList> {
+    return withClient(client, `/mail/distribution-lists/${encodeURIComponent(uid)}`);
 }
 
 export interface CreateDistributionListInput {
@@ -45,8 +48,8 @@ export interface CreateDistributionListInput {
     restrictSenders?: boolean;
 }
 
-export function createDistributionList(input: CreateDistributionListInput): Promise<DistributionList> {
-    return apiFetch("/mail/distribution-lists", {
+export function createDistributionList(input: CreateDistributionListInput, client?: ApiClient): Promise<DistributionList> {
+    return withClient(client, "/mail/distribution-lists", {
         method: "POST",
         body: JSON.stringify({ aliasAddresses: [], memberAddresses: [], ...input }),
     });
@@ -62,13 +65,13 @@ export interface UpdateDistributionListInput {
     restrictSenders?: boolean;
 }
 
-export function updateDistributionList(input: UpdateDistributionListInput): Promise<DistributionList> {
-    return apiFetch(`/mail/distribution-lists/${encodeURIComponent(input.uid)}`, {
+export function updateDistributionList(input: UpdateDistributionListInput, client?: ApiClient): Promise<DistributionList> {
+    return withClient(client, `/mail/distribution-lists/${encodeURIComponent(input.uid)}`, {
         method: "PUT",
         body: JSON.stringify(input),
     });
 }
 
-export function deleteDistributionList(uid: string, version: number): Promise<void> {
-    return apiFetch(`/mail/distribution-lists/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+export function deleteDistributionList(uid: string, version: number, client?: ApiClient): Promise<void> {
+    return withClient(client, `/mail/distribution-lists/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 }

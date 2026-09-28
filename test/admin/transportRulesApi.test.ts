@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
+import { createApiClient } from "../../src/util/api.js";
 import {
     createTransportRule,
     deleteTransportRule,
@@ -115,5 +116,33 @@ describe("deleteTransportRule", () => {
             "/api/mail/transport-rules/tr1?version=3",
             expect.objectContaining({ method: "DELETE" }),
         );
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, rule));
+
+        await listTransportRules({}, client);
+        await getTransportRule("tr1", client);
+        await createTransportRule({ name: "Flag external senders" }, client);
+        await updateTransportRule({ uid: "tr1", version: 0, name: "Renamed" }, client);
+        await deleteTransportRule("tr1", 0, client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(5);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, rule));
+        await getTransportRule("tr1");
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/transport-rules/tr1", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

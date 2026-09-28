@@ -12,7 +12,7 @@
  * approved request 409s during approval, and is retried indefinitely (never failed) by the job itself,
  * while the target mailbox is a custodian on an active legal hold.
  */
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { RequestListParams, buildRequestListQuery } from "../util/apiQuery.js";
 
 export type { RequestListParams };
@@ -37,30 +37,34 @@ export interface DataSubjectErasureRequest {
     leftoverOnly?: boolean;
 }
 
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+
 /** Always the caller's own mailbox — 409s if a `pending` request for it already exists. */
-export function createErasureRequest(): Promise<DataSubjectErasureRequest> {
-    return apiFetch(`/mail/erasure-requests`, { method: "POST" });
+export function createErasureRequest(client?: ApiClient): Promise<DataSubjectErasureRequest> {
+    return withClient(client, `/mail/erasure-requests`, { method: "POST" });
 }
 
 /** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). Newest
  * first; `params` pages through them (`limit` capped at 500 server-side). */
-export function listErasureRequests(params: RequestListParams = {}): Promise<DataSubjectErasureRequest[]> {
-    return apiFetch(`/mail/erasure-requests${buildRequestListQuery(params)}`);
+export function listErasureRequests(params: RequestListParams = {}, client?: ApiClient): Promise<DataSubjectErasureRequest[]> {
+    return withClient(client, `/mail/erasure-requests${buildRequestListQuery(params)}`);
 }
 
-export function getErasureRequest(uid: string): Promise<DataSubjectErasureRequest> {
-    return apiFetch(`/mail/erasure-requests/${encodeURIComponent(uid)}`);
+export function getErasureRequest(uid: string, client?: ApiClient): Promise<DataSubjectErasureRequest> {
+    return withClient(client, `/mail/erasure-requests/${encodeURIComponent(uid)}`);
 }
 
 /** 409s if the mailbox is a custodian on an active legal hold, naming the blocking Matter uid(s) in the
  * error message — surface this as-is, the same "server's own message wins" convention used everywhere
  * else in this codebase for a destructive-action error. */
-export function approveErasureRequest(uid: string): Promise<DataSubjectErasureRequest> {
-    return apiFetch(`/mail/erasure-requests/${encodeURIComponent(uid)}/approve`, { method: "POST" });
+export function approveErasureRequest(uid: string, client?: ApiClient): Promise<DataSubjectErasureRequest> {
+    return withClient(client, `/mail/erasure-requests/${encodeURIComponent(uid)}/approve`, { method: "POST" });
 }
 
-export function denyErasureRequest(uid: string, reason: string): Promise<DataSubjectErasureRequest> {
-    return apiFetch(`/mail/erasure-requests/${encodeURIComponent(uid)}/deny`, {
+export function denyErasureRequest(uid: string, reason: string, client?: ApiClient): Promise<DataSubjectErasureRequest> {
+    return withClient(client, `/mail/erasure-requests/${encodeURIComponent(uid)}/deny`, {
         method: "POST",
         body: JSON.stringify({ reason }),
     });

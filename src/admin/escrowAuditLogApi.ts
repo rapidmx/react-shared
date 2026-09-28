@@ -12,7 +12,7 @@
  * enforces it and a non-trusted caller simply gets a 403 `ApiRequestError` back.
  */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 
 export type { ListParams };
@@ -53,12 +53,15 @@ export interface EscrowAuditLogEntry {
     details?: Record<string, unknown>;
 }
 
-export function listAuditLogEntries(params: ListParams = {}): Promise<EscrowAuditLogEntry[]> {
-    return apiFetch(`/escrow/audit-log?${buildQuery(params)}`);
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+export function listAuditLogEntries(params: ListParams = {}, client?: ApiClient): Promise<EscrowAuditLogEntry[]> {
+    return withClient(client, `/escrow/audit-log?${buildQuery(params)}`);
 }
 
-export function getAuditLogEntry(uid: string): Promise<EscrowAuditLogEntry> {
-    return apiFetch(`/escrow/audit-log/${encodeURIComponent(uid)}`);
+export function getAuditLogEntry(uid: string, client?: ApiClient): Promise<EscrowAuditLogEntry> {
+    return withClient(client, `/escrow/audit-log/${encodeURIComponent(uid)}`);
 }
 
 /** Mirrors `@rapidmx/restapi`'s `EscrowAuditHashAlgorithm` enum values. */
@@ -93,6 +96,6 @@ export interface EscrowAuditVerificationResult {
  * holder-accessible — the chain is global across every scope, so `brokenAtSequence` would leak the
  * existence/volume of *other* scopes' escrow activity to a holder who only has standing to know about
  * their own scope. A non-trusted caller gets a 403 `ApiRequestError`, same as any other gated endpoint. */
-export function verifyAuditChain(): Promise<EscrowAuditVerificationResult> {
-    return apiFetch("/escrow/audit-log/verify");
+export function verifyAuditChain(client?: ApiClient): Promise<EscrowAuditVerificationResult> {
+    return withClient(client, "/escrow/audit-log/verify");
 }

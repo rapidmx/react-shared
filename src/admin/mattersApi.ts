@@ -11,7 +11,7 @@
  * admin-only feature — it's consumed exclusively by `apps/escrow`, never `apps/admin`.
  */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 
 export type { ListParams };
@@ -34,12 +34,15 @@ export interface Matter {
     closedAt?: string;
 }
 
-export function listMatters(params: ListParams = {}): Promise<Matter[]> {
-    return apiFetch(`/escrow/matters?${buildQuery(params)}`);
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+export function listMatters(params: ListParams = {}, client?: ApiClient): Promise<Matter[]> {
+    return withClient(client, `/escrow/matters?${buildQuery(params)}`);
 }
 
-export function getMatter(uid: string): Promise<Matter> {
-    return apiFetch(`/escrow/matters/${encodeURIComponent(uid)}`);
+export function getMatter(uid: string, client?: ApiClient): Promise<Matter> {
+    return withClient(client, `/escrow/matters/${encodeURIComponent(uid)}`);
 }
 
 export interface CreateMatterInput {
@@ -51,8 +54,8 @@ export interface CreateMatterInput {
     dateRangeEnd: string;
 }
 
-export function createMatter(input: CreateMatterInput): Promise<Matter> {
-    return apiFetch("/escrow/matters", { method: "POST", body: JSON.stringify(input) });
+export function createMatter(input: CreateMatterInput, client?: ApiClient): Promise<Matter> {
+    return withClient(client, "/escrow/matters", { method: "POST", body: JSON.stringify(input) });
 }
 
 export interface UpdateMatterInput {
@@ -65,19 +68,19 @@ export interface UpdateMatterInput {
     dateRangeEnd?: string;
 }
 
-export function updateMatter(input: UpdateMatterInput): Promise<Matter> {
-    return apiFetch(`/escrow/matters/${encodeURIComponent(input.uid)}`, {
+export function updateMatter(input: UpdateMatterInput, client?: ApiClient): Promise<Matter> {
+    return withClient(client, `/escrow/matters/${encodeURIComponent(input.uid)}`, {
         method: "PUT",
         body: JSON.stringify(input),
     });
 }
 
-export function deleteMatter(uid: string, version: number): Promise<void> {
-    return apiFetch(`/escrow/matters/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+export function deleteMatter(uid: string, version: number, client?: ApiClient): Promise<void> {
+    return withClient(client, `/escrow/matters/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 }
 
 /** One-way — `BaseMatterRoute.close()` 400s if the matter is already closed, and once closed no further
  * `updateMatter()`/`createAccessRequest()` against it will succeed. */
-export function closeMatter(uid: string): Promise<Matter> {
-    return apiFetch(`/escrow/matters/${encodeURIComponent(uid)}/close`, { method: "POST" });
+export function closeMatter(uid: string, client?: ApiClient): Promise<Matter> {
+    return withClient(client, `/escrow/matters/${encodeURIComponent(uid)}/close`, { method: "POST" });
 }

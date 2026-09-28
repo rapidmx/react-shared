@@ -5,7 +5,7 @@
 /** Typed wrappers over `@rapidmx/restapi`'s `/mail/tasks` REST surface — see `mailApi.ts`'s own header
  * comment for the shared ACL/authorization model every wrapper file here follows. */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 
 export type TaskPriority = "low" | "normal" | "high";
@@ -33,9 +33,13 @@ export interface Task {
     assignedTo?: string;
 }
 
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+
 /** Lists a folder's tasks, soonest due date first (tasks with no due date sort last). */
-export function listTasks(folderUid: string, params: ListParams = {}): Promise<Task[]> {
-    return apiFetch(`/mail/tasks?${buildQuery(params, { folderUid, sort: JSON.stringify({ dueDate: "ASC" }) })}`);
+export function listTasks(folderUid: string, params: ListParams = {}, client?: ApiClient): Promise<Task[]> {
+    return withClient(client, `/mail/tasks?${buildQuery(params, { folderUid, sort: JSON.stringify({ dueDate: "ASC" }) })}`);
 }
 
 export interface CreateTaskInput {
@@ -51,8 +55,8 @@ export interface CreateTaskInput {
     assignedTo?: string;
 }
 
-export function createTask(input: CreateTaskInput): Promise<Task> {
-    return apiFetch("/mail/tasks", {
+export function createTask(input: CreateTaskInput, client?: ApiClient): Promise<Task> {
+    return withClient(client, "/mail/tasks", {
         method: "POST",
         body: JSON.stringify({ completed: false, priority: "normal", ...input }),
     });
@@ -72,26 +76,26 @@ export interface UpdateTaskInput {
     assignedTo?: string;
 }
 
-export function updateTask(input: UpdateTaskInput): Promise<Task> {
-    return apiFetch(`/mail/tasks/${encodeURIComponent(input.uid)}`, {
+export function updateTask(input: UpdateTaskInput, client?: ApiClient): Promise<Task> {
+    return withClient(client, `/mail/tasks/${encodeURIComponent(input.uid)}`, {
         method: "PUT",
         body: JSON.stringify(input),
     });
 }
 
 /** Toggles a task's `completed` flag in place — same pattern as `mailApi.ts`'s `setMessageRead`. */
-export function setTaskCompleted(task: Task, completed: boolean): Promise<Task> {
-    return updateTask({ uid: task.uid, version: task.version, completed });
+export function setTaskCompleted(task: Task, completed: boolean, client?: ApiClient): Promise<Task> {
+    return updateTask({ uid: task.uid, version: task.version, completed }, client);
 }
 
 /** Adds/removes a task from the caller's curated "My Day" working set — same thin-wrapper pattern as
  * `setTaskCompleted`. */
-export function setTaskMyDay(task: Task, myDay: boolean): Promise<Task> {
-    return updateTask({ uid: task.uid, version: task.version, myDay });
+export function setTaskMyDay(task: Task, myDay: boolean, client?: ApiClient): Promise<Task> {
+    return updateTask({ uid: task.uid, version: task.version, myDay }, client);
 }
 
-export function deleteTask(uid: string, version: number): Promise<void> {
-    return apiFetch(`/mail/tasks/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+export function deleteTask(uid: string, version: number, client?: ApiClient): Promise<void> {
+    return withClient(client, `/mail/tasks/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 }
 
 export interface TaskList {
@@ -104,21 +108,21 @@ export interface TaskList {
 }
 
 /** Lists a mailbox's task lists (Outlook To-Do-style custom lists), alphabetically by name. */
-export function listTaskLists(mailboxUid: string, params: ListParams = {}): Promise<TaskList[]> {
-    return apiFetch(`/mail/task-lists?${buildQuery(params, { mailboxUid, sort: JSON.stringify({ name: "ASC" }) })}`);
+export function listTaskLists(mailboxUid: string, params: ListParams = {}, client?: ApiClient): Promise<TaskList[]> {
+    return withClient(client, `/mail/task-lists?${buildQuery(params, { mailboxUid, sort: JSON.stringify({ name: "ASC" }) })}`);
 }
 
-export function createTaskList(input: { mailboxUid: string; name: string }): Promise<TaskList> {
-    return apiFetch("/mail/task-lists", { method: "POST", body: JSON.stringify(input) });
+export function createTaskList(input: { mailboxUid: string; name: string }, client?: ApiClient): Promise<TaskList> {
+    return withClient(client, "/mail/task-lists", { method: "POST", body: JSON.stringify(input) });
 }
 
-export function updateTaskList(input: { uid: string; version: number; name: string }): Promise<TaskList> {
-    return apiFetch(`/mail/task-lists/${encodeURIComponent(input.uid)}`, {
+export function updateTaskList(input: { uid: string; version: number; name: string }, client?: ApiClient): Promise<TaskList> {
+    return withClient(client, `/mail/task-lists/${encodeURIComponent(input.uid)}`, {
         method: "PUT",
         body: JSON.stringify(input),
     });
 }
 
-export function deleteTaskList(uid: string, version: number): Promise<void> {
-    return apiFetch(`/mail/task-lists/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+export function deleteTaskList(uid: string, version: number, client?: ApiClient): Promise<void> {
+    return withClient(client, `/mail/task-lists/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 }

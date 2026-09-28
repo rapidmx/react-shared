@@ -7,7 +7,7 @@
  * expansion happens entirely client-side (see `apps/shared/lib/recurrence.ts`) — the backend stores/returns
  * `RecurrenceRule` as-is and does no RFC5545 expansion of its own. */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 
 export type AttendeeRole = "required" | "optional" | "resource";
@@ -168,10 +168,13 @@ const LIST_CALENDAR_EVENTS_MAX_PAGES = 100;
  * `LIST_CALENDAR_EVENTS_MAX_PAGES` pages guards against looping forever should a server ever ignore
  * `page` and keep returning full pages.
  */
-export async function listCalendarEvents(folderUid: string): Promise<CalendarEvent[]> {
+export async function listCalendarEvents(folderUid: string, client?: ApiClient): Promise<CalendarEvent[]> {
     const events: CalendarEvent[] = [];
     for (let page = 0; page < LIST_CALENDAR_EVENTS_MAX_PAGES; page++) {
-        const batch = await apiFetch<CalendarEvent[]>(`/mail/calendar-events?${buildQuery({ limit: LIST_PAGE_SIZE, page }, { folderUid })}`);
+        const batch = await withClient<CalendarEvent[]>(
+            client,
+            `/mail/calendar-events?${buildQuery({ limit: LIST_PAGE_SIZE, page }, { folderUid })}`,
+        );
         events.push(...batch);
         if (batch.length < LIST_PAGE_SIZE) {
             break;
@@ -180,8 +183,8 @@ export async function listCalendarEvents(folderUid: string): Promise<CalendarEve
     return events;
 }
 
-export function getCalendarEvent(uid: string): Promise<CalendarEvent> {
-    return apiFetch(`/mail/calendar-events/${encodeURIComponent(uid)}`);
+export function getCalendarEvent(uid: string, client?: ApiClient): Promise<CalendarEvent> {
+    return withClient(client, `/mail/calendar-events/${encodeURIComponent(uid)}`);
 }
 
 export interface CalendarEventInput {
@@ -215,8 +218,8 @@ export interface CalendarEventInput {
     guestsCanSeeGuestList?: boolean;
 }
 
-export function createCalendarEvent(input: CalendarEventInput): Promise<CalendarEvent> {
-    return apiFetch("/mail/calendar-events", {
+export function createCalendarEvent(input: CalendarEventInput, client?: ApiClient): Promise<CalendarEvent> {
+    return withClient(client, "/mail/calendar-events", {
         method: "POST",
         body: JSON.stringify({
             allDay: false,
@@ -235,15 +238,15 @@ export interface UpdateCalendarEventInput extends Partial<CalendarEventInput> {
     version: number;
 }
 
-export function updateCalendarEvent(input: UpdateCalendarEventInput): Promise<CalendarEvent> {
-    return apiFetch(`/mail/calendar-events/${encodeURIComponent(input.uid)}`, {
+export function updateCalendarEvent(input: UpdateCalendarEventInput, client?: ApiClient): Promise<CalendarEvent> {
+    return withClient(client, `/mail/calendar-events/${encodeURIComponent(input.uid)}`, {
         method: "PUT",
         body: JSON.stringify(input),
     });
 }
 
-export function deleteCalendarEvent(uid: string, version: number): Promise<void> {
-    return apiFetch(`/mail/calendar-events/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+export function deleteCalendarEvent(uid: string, version: number, client?: ApiClient): Promise<void> {
+    return withClient(client, `/mail/calendar-events/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 }
 
 /** The subset of `AttendeeResponseStatus` a caller can actually respond with — `"needsAction"` is only
@@ -259,8 +262,12 @@ export type AttendeeResponseInput = Exclude<AttendeeResponseStatus, "needsAction
  * mailbox's own copy of the event and returns only `{ uid }` — the caller should treat a decline the
  * same as a delete rather than expecting an updated event back.
  */
-export function respondToEvent(uid: string, responseStatus: AttendeeResponseInput): Promise<CalendarEvent | { uid: string }> {
-    return apiFetch(`/mail/calendar-events/${encodeURIComponent(uid)}/respond`, {
+export function respondToEvent(
+    uid: string,
+    responseStatus: AttendeeResponseInput,
+    client?: ApiClient,
+): Promise<CalendarEvent | { uid: string }> {
+    return withClient(client, `/mail/calendar-events/${encodeURIComponent(uid)}/respond`, {
         method: "POST",
         body: JSON.stringify({ responseStatus }),
     });
@@ -294,8 +301,8 @@ export interface EventChangeRequestResult {
  * Nothing changes on this mailbox's own copy - the request is mailed to the organizer, and when the change is allowed it is applied there and
  * arrives back later as an ordinary update of the invitation.
  */
-export function requestEventChange(uid: string, request: EventChangeRequest): Promise<EventChangeRequestResult> {
-    return apiFetch(`/mail/calendar-events/${encodeURIComponent(uid)}/request-change`, {
+export function requestEventChange(uid: string, request: EventChangeRequest, client?: ApiClient): Promise<EventChangeRequestResult> {
+    return withClient(client, `/mail/calendar-events/${encodeURIComponent(uid)}/request-change`, {
         method: "POST",
         body: JSON.stringify(request),
     });

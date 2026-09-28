@@ -16,6 +16,7 @@ import {
     updateTask,
     updateTaskList,
 } from "../../src/tasks/tasksApi.js";
+import { createApiClient } from "../../src/util/api.js";
 
 const task = {
     uid: "t1",
@@ -181,5 +182,40 @@ describe("deleteTaskList", () => {
             "/api/mail/task-lists/tl%2F1?version=2",
             expect.objectContaining({ method: "DELETE" }),
         );
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, task));
+
+        await listTasks("f1", {}, client);
+        await createTask({ mailboxUid: "mb1", folderUid: "f1", title: "Buy milk" }, client);
+        await updateTask({ uid: "t1", version: 0, title: "Buy oat milk" }, client);
+        await setTaskCompleted(task, true, client);
+        await setTaskMyDay(task, true, client);
+        await deleteTask("t1", 2, client);
+        await listTaskLists("mb1", {}, client);
+        await createTaskList({ mailboxUid: "mb1", name: "Home" }, client);
+        await updateTaskList({ uid: "tl1", version: 0, name: "Renamed" }, client);
+        await deleteTaskList("tl1", 2, client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(10);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, [task]));
+        await listTasks("f1");
+        expect(fetchMock.mock.calls[0][0]).toBe(
+            "/api/mail/tasks?limit=25&page=0&folderUid=f1&sort=" + encodeURIComponent(JSON.stringify({ dueDate: "ASC" })),
+        );
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

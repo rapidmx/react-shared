@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
-import { ApiRequestError, configureApiBaseUrl } from "../../src/util/api.js";
+import { ApiRequestError, configureApiBaseUrl, createApiClient } from "../../src/util/api.js";
 import { deviceTimeZone } from "../../src/util/timeZone.js";
 import {
     approveReceipt,
@@ -1142,5 +1142,63 @@ describe("stopImpersonating", () => {
         const result = await stopImpersonating("");
         expect(fetchMock).toHaveBeenCalledWith("/api/admin/impersonate/stop", expect.objectContaining({ method: "POST" }));
         expect(result).toEqual({ restored: true });
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("a directly network-backed function (getMailbox) routes through the given client's own baseUrl/token", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, mailbox));
+        const result = await getMailbox("mb1", {}, client);
+        expect(fetchMock).toHaveBeenCalledWith("https://account-a.example.com/api/mail/mailboxes/mb1", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+        expect(result).toEqual(mailbox);
+    });
+
+    it("grantMailboxAccess (read-modify-write via the internal getMailboxAcl call) threads the client through both requests", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const acl = { uid: "mb1", version: 0, records: [] };
+        const fetchMock = mockFetch((url, init) => ((init?.method ?? "GET") === "GET" ? jsonResponse(200, acl) : jsonResponse(200, { ...acl, version: 1 })));
+
+        await grantMailboxAccess("mb1", "delegate-1", ["read"], client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toBe("https://account-a.example.com/api/acls/mb1");
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+        }
+    });
+
+    it("setMessagesRead (bulk update via the internal bulkUpdateMessages helper) threads the client through every chunk", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, [{ ...message, flags: { ...message.flags, read: true } }]));
+        await setMessagesRead([message], true, client);
+        expect(fetchMock).toHaveBeenCalledWith(
+            "https://account-a.example.com/api/mail/messages",
+            expect.objectContaining({ method: "PUT" }),
+        );
+        expect((fetchMock.mock.calls[0][1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+    });
+
+    it("two distinct clients (two accounts) never cross-talk on the same call in the same test run", async () => {
+        const clientA = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const clientB = createApiClient({ baseUrl: "https://account-b.example.com", getAccessToken: async () => "tok-b" });
+        const fetchMock = mockFetch(() => jsonResponse(200, mailbox));
+
+        await getMailbox("mb1", {}, clientA);
+        await getMailbox("mb1", {}, clientB);
+
+        expect(fetchMock.mock.calls[0][0]).toBe("https://account-a.example.com/api/mail/mailboxes/mb1");
+        expect((fetchMock.mock.calls[0][1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+        expect(fetchMock.mock.calls[1][0]).toBe("https://account-b.example.com/api/mail/mailboxes/mb1");
+        expect((fetchMock.mock.calls[1][1].headers as Headers).get("Authorization")).toBe("jwt tok-b");
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by a client created elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, mailbox));
+        await getMailbox("mb1");
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb1", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

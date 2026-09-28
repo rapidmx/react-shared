@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { ApiRequestError } from "../../src/util/api.js";
+import { ApiRequestError, createApiClient } from "../../src/util/api.js";
 import {
     addMasterKeyWrap,
     cancelSignEnrollment,
@@ -20,6 +20,7 @@ import {
     normalizeEnrollmentResult,
     rekey,
     removeMasterKeyWrap,
+    resolveKeyConflict,
     SignerKeyConflictError,
     startSignEnrollment,
     trustSigner,
@@ -452,5 +453,46 @@ describe("round 6: expectedMasterKeyGeneration", () => {
         expect(err).toBeInstanceOf(ApiRequestError);
         expect(err).not.toBeInstanceOf(VaultAlreadyInitializedError);
         expect((err as ApiRequestError).status).toBe(409);
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, { wrappedKeys: [], masterKeyWraps: [], keys: [] }));
+        const wrappedKey = { ciphertext: "c", nonce: "n", algorithm: "AES-256-GCM" };
+        const wrap = { method: "passkey" as const, methodId: "cred-1", ciphertext: "c", nonce: "n", salt: "s", kdf: "k", schemeVersion: 1, createdAt: 1 };
+
+        await getKeyVault("mb1", client);
+        await enrollKey("mb1", { useType: "encrypt", csr: "csr", wrappedKey }, client);
+        await startSignEnrollment("mb1", { csr: "csr", wrappedKey }, client);
+        await checkSignEnrollmentStatus("mb1", "enr-1", client);
+        await getCurrentSignEnrollment("mb1", client);
+        await checkSignEnrollmentNow("mb1", "enr-1", client);
+        await cancelSignEnrollment("mb1", "enr-1", client);
+        await getEscrowInfo("mb1", client);
+        await addMasterKeyWrap("mb1", wrap, 1, client);
+        await removeMasterKeyWrap("mb1", "passkey", "cred-1", client);
+        await rekey("mb1", { wrappedKeys: [], masterKeyWraps: [], keys: [] }, client);
+        await lookupKeys("mb1", "alice@example.com", client);
+        await trustSigner("mb1", { address: "a@example.com", certificate: "c" }, client);
+        await resolveKeyConflict("mb1", { address: "a@example.com", useType: "sign", action: "accept", expectedPinnedFingerprint: "fp" }, client);
+        await getEncryptionPolicy(client);
+        await updateEncryptionPolicy({ encryptSameOrg: "optional" }, client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(16);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, { wrappedKeys: [], masterKeyWraps: [] }));
+        await getKeyVault("mb1");
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb1/keyvault", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

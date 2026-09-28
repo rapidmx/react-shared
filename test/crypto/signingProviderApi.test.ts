@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
+import { createApiClient } from "../../src/util/api.js";
 import {
     SIGNING_ENROLLMENT_UNKNOWN,
     getSigningEnrollmentInfo,
@@ -79,5 +80,32 @@ describe("signingProviderApi", () => {
         expect(looksLikePemCertificate("")).toBe(false);
         expect(looksLikePemCertificate("-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----")).toBe(false);
         expect(looksLikePemCertificate("not a certificate")).toBe(false);
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+
+        await getSigningEnrollmentInfo(client);
+        await listSigningEnrollments(client);
+        await uploadSigningEnrollmentCertificate("e1", "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----", client);
+        await rejectSigningEnrollment("e1", "not our employee", client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, { backend: "none", automatic: false, adminUpload: false }));
+        await getSigningEnrollmentInfo();
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/signing-enrollment", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

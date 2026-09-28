@@ -10,7 +10,7 @@
  * automatically for inbound mail; there is no separate "assign" endpoint.
  */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 
 export type { ListParams };
@@ -27,12 +27,15 @@ export interface Label {
     color?: string;
 }
 
-export function listLabels(mailboxUid: string, params: ListParams = {}): Promise<Label[]> {
-    return apiFetch(`/mail/labels?${buildQuery(params, { mailboxUid })}`);
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+export function listLabels(mailboxUid: string, params: ListParams = {}, client?: ApiClient): Promise<Label[]> {
+    return withClient(client, `/mail/labels?${buildQuery(params, { mailboxUid })}`);
 }
 
-export function getLabel(uid: string): Promise<Label> {
-    return apiFetch(`/mail/labels/${encodeURIComponent(uid)}`);
+export function getLabel(uid: string, client?: ApiClient): Promise<Label> {
+    return withClient(client, `/mail/labels/${encodeURIComponent(uid)}`);
 }
 
 export interface CreateLabelInput {
@@ -41,8 +44,8 @@ export interface CreateLabelInput {
     color?: string;
 }
 
-export function createLabel(input: CreateLabelInput): Promise<Label> {
-    return apiFetch("/mail/labels", { method: "POST", body: JSON.stringify(input) });
+export function createLabel(input: CreateLabelInput, client?: ApiClient): Promise<Label> {
+    return withClient(client, "/mail/labels", { method: "POST", body: JSON.stringify(input) });
 }
 
 export interface UpdateLabelInput {
@@ -52,8 +55,8 @@ export interface UpdateLabelInput {
     color?: string;
 }
 
-export function updateLabel(input: UpdateLabelInput): Promise<Label> {
-    return apiFetch(`/mail/labels/${encodeURIComponent(input.uid)}`, { method: "PUT", body: JSON.stringify(input) });
+export function updateLabel(input: UpdateLabelInput, client?: ApiClient): Promise<Label> {
+    return withClient(client, `/mail/labels/${encodeURIComponent(input.uid)}`, { method: "PUT", body: JSON.stringify(input) });
 }
 
 /**
@@ -63,6 +66,6 @@ export function updateLabel(input: UpdateLabelInput): Promise<Label> {
  * still drop the deleted uid from any locally-cached `labelUids` itself, since this call doesn't return
  * the affected messages.
  */
-export function deleteLabel(uid: string, version: number): Promise<void> {
-    return apiFetch(`/mail/labels/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+export function deleteLabel(uid: string, version: number, client?: ApiClient): Promise<void> {
+    return withClient(client, `/mail/labels/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 }

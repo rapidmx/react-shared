@@ -16,6 +16,7 @@
  */
 import { useEffect, useRef } from "react";
 import { ApiRequestError, authApiFetch } from "../util/api.js";
+import { useApiClient } from "../util/apiClientContext.js";
 
 /** An access token's age at which it is refreshed. The token lives an hour; the margin leaves time to retry a failed refresh. */
 export const SESSION_REFRESH_AFTER_MS = 45 * 60 * 1000;
@@ -85,10 +86,15 @@ function isAuthRejection(err: unknown): boolean {
  * `return_to` so auth-server can send the browser back here afterward. A no-op once `userUid` is present.
  *
  * This does not try to recover the session first; `useSessionRefresh()` does, and is what an app frame should call.
+ *
+ * A no-op under an `ApiClientContext.Provider` (see `useSessionRefresh()`'s own doc comment for why) — there is
+ * no `jwt` cookie in that context for `userUid` to ever meaningfully reflect, and redirecting to auth-server's
+ * cookie-based sign-in page would be wrong for a session whose lifecycle a host app's own `ApiClient` manages.
  */
 export function useRedirectIfUnauthenticated(userUid: string | undefined, authServerUrl: string | undefined): void {
+    const explicitClient = useApiClient();
     useEffect(() => {
-        if (userUid) {
+        if (explicitClient || userUid) {
             return;
         }
         if (!authServerUrl) {
@@ -96,7 +102,7 @@ export function useRedirectIfUnauthenticated(userUid: string | undefined, authSe
             return;
         }
         window.location.href = signInUrl(authServerUrl);
-    }, [userUid, authServerUrl]);
+    }, [userUid, authServerUrl, explicitClient]);
 }
 
 /** Options for `useSessionRefresh()`. */
@@ -128,13 +134,27 @@ export interface SessionRefreshOptions {
  * whenever the tab becomes visible or the network returns, because a sleeping laptop stops timers. A failure that is
  * not a rejection is simply retried at the next check. A rejection (`401`/`403`: the refresh token expired or was
  * revoked, so the session cannot be kept) redirects to sign-in with `return_to` after `options.beforeRedirect` has run.
+ *
+ * **A no-op under an `ApiClientContext.Provider`** (see `util/apiClientContext.ts`): everything above assumes a
+ * `jwt`/`refresh` cookie pair this app can renew through auth-server's own `/auth/refresh` - meaningless for a
+ * component whose network calls actually go through an explicit `ApiClient` from `createApiClient()` instead
+ * (e.g. one account of the native, multi-account `tauri-client`), which has no cookie jar for that origin at all
+ * and whose token lifecycle is the host app's own job via a completely different mechanism (its own refresh
+ * flow, keyed to `ApiClient.getAccessToken()`). Detected via `useApiClient()`; when it returns anything other
+ * than `undefined`, this hook does nothing at all - no timer, no listener, no redirect, regardless of `userUid`/
+ * `authServerUrl`/`options`. The default (no `ApiClientContext.Provider` anywhere - every existing browser/SSR/
+ * Electron consumer) is completely unchanged: `useApiClient()` there always returns `undefined`.
  */
 export function useSessionRefresh(userUid: string | undefined, authServerUrl: string | undefined, options: SessionRefreshOptions = {}): void {
     const paused = !!options.paused;
+    const explicitClient = useApiClient();
     const beforeRedirectRef = useRef(options.beforeRedirect);
     beforeRedirectRef.current = options.beforeRedirect;
 
     useEffect(() => {
+        if (explicitClient) {
+            return;
+        }
         if (!authServerUrl) {
             if (!userUid) {
                 console.error("Cannot redirect to sign-in: mail:auth_server_url is not configured.");
@@ -214,5 +234,5 @@ export function useSessionRefresh(userUid: string | undefined, authServerUrl: st
             document.removeEventListener("visibilitychange", onVisible);
             window.removeEventListener("online", check);
         };
-    }, [userUid, authServerUrl, paused]);
+    }, [userUid, authServerUrl, paused, explicitClient]);
 }

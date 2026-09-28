@@ -9,7 +9,7 @@
  * it); every write is `@RequiresTrustedRole()` on the backend.
  */
 
-import { apiFetch, ApiRequestError, apiUrl, withCsrfHeader } from "../util/api.js";
+import { ApiClient, ApiRequestError, apiUrl, withClient, withCsrfHeader } from "../util/api.js";
 
 export interface Branding {
     companyName: string;
@@ -27,8 +27,12 @@ export interface Branding {
     footerHtml?: string;
 }
 
-export function getBranding(): Promise<Branding> {
-    return apiFetch("/system/branding");
+/** `client`, given by every function below that isn't a raw-bytes upload, is an explicit `ApiClient` from
+ * `createApiClient()` (e.g. one account of a multi-account app) to call instead of the default global
+ * `apiFetch()` - see `withClient()`'s own doc comment in `util/api.ts`. Omitted (the default), every
+ * function here behaves exactly as before. */
+export function getBranding(client?: ApiClient): Promise<Branding> {
+    return withClient(client, "/system/branding");
 }
 
 export interface UpdateBrandingInput {
@@ -41,8 +45,8 @@ export interface UpdateBrandingInput {
     footerHtml?: string;
 }
 
-export function updateBranding(input: UpdateBrandingInput): Promise<Branding> {
-    return apiFetch("/system/branding", {
+export function updateBranding(input: UpdateBrandingInput, client?: ApiClient): Promise<Branding> {
+    return withClient(client, "/system/branding", {
         method: "PUT",
         body: JSON.stringify(input),
     });
@@ -80,14 +84,14 @@ export function uploadBrandingStylesheet(file: File): Promise<Branding> {
     return uploadBrandingAsset("/system/branding/stylesheet", file);
 }
 
-export function deleteBrandingLogo(): Promise<void> {
-    return apiFetch("/system/branding/logo", { method: "DELETE" });
+export function deleteBrandingLogo(client?: ApiClient): Promise<void> {
+    return withClient(client, "/system/branding/logo", { method: "DELETE" });
 }
 
-export function deleteBrandingIcon(): Promise<void> {
-    return apiFetch("/system/branding/icon", { method: "DELETE" });
+export function deleteBrandingIcon(client?: ApiClient): Promise<void> {
+    return withClient(client, "/system/branding/icon", { method: "DELETE" });
 }
 
-export function deleteBrandingStylesheet(): Promise<void> {
-    return apiFetch("/system/branding/stylesheet", { method: "DELETE" });
+export function deleteBrandingStylesheet(client?: ApiClient): Promise<void> {
+    return withClient(client, "/system/branding/stylesheet", { method: "DELETE" });
 }

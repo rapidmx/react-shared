@@ -8,7 +8,7 @@
  * admin-scoped entities.
  */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 
 export type { ListParams };
@@ -33,12 +33,15 @@ export interface Domain {
     aliasOf?: string;
 }
 
-export function listDomains(params: ListParams = {}): Promise<Domain[]> {
-    return apiFetch(`/mail/domains?${buildQuery(params)}`);
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+export function listDomains(params: ListParams = {}, client?: ApiClient): Promise<Domain[]> {
+    return withClient(client, `/mail/domains?${buildQuery(params)}`);
 }
 
-export function getDomain(uid: string): Promise<Domain> {
-    return apiFetch(`/mail/domains/${encodeURIComponent(uid)}`);
+export function getDomain(uid: string, client?: ApiClient): Promise<Domain> {
+    return withClient(client, `/mail/domains/${encodeURIComponent(uid)}`);
 }
 
 export interface CreateDomainInput {
@@ -51,8 +54,8 @@ export interface CreateDomainInput {
     aliasOf?: string;
 }
 
-export function createDomain(input: CreateDomainInput): Promise<Domain> {
-    return apiFetch("/mail/domains", {
+export function createDomain(input: CreateDomainInput, client?: ApiClient): Promise<Domain> {
+    return withClient(client, "/mail/domains", {
         method: "POST",
         body: JSON.stringify({ enabled: true, ...input }),
     });
@@ -69,22 +72,22 @@ export interface UpdateDomainInput {
     aliasOf?: string;
 }
 
-export function updateDomain(input: UpdateDomainInput): Promise<Domain> {
-    return apiFetch(`/mail/domains/${encodeURIComponent(input.uid)}`, {
+export function updateDomain(input: UpdateDomainInput, client?: ApiClient): Promise<Domain> {
+    return withClient(client, `/mail/domains/${encodeURIComponent(input.uid)}`, {
         method: "PUT",
         body: JSON.stringify(input),
     });
 }
 
-export function deleteDomain(uid: string, version: number): Promise<void> {
-    return apiFetch(`/mail/domains/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+export function deleteDomain(uid: string, version: number, client?: ApiClient): Promise<void> {
+    return withClient(client, `/mail/domains/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 }
 
 /** Triggers an immediate DNS ownership check rather than waiting for the next scheduled background pass.
  * Idempotent on an already-verified domain; a still-unverified result is not an error (only
  * `lastCheckedAt` advances) — always returns the domain's current state either way. */
-export function verifyDomain(uid: string): Promise<Domain> {
-    return apiFetch(`/mail/domains/${encodeURIComponent(uid)}/verify`, { method: "POST" });
+export function verifyDomain(uid: string, client?: ApiClient): Promise<Domain> {
+    return withClient(client, `/mail/domains/${encodeURIComponent(uid)}/verify`, { method: "POST" });
 }
 
 export type DnsRecordType = "ownership" | "mx" | "spf" | "dkim" | "dmarc" | "autodiscover_cname" | "autodiscover_srv";
@@ -105,6 +108,6 @@ export interface DnsRecordCheck {
     actualValue?: string;
 }
 
-export function getDnsSetup(uid: string): Promise<DnsRecordCheck[]> {
-    return apiFetch(`/mail/domains/${encodeURIComponent(uid)}/dns-setup`);
+export function getDnsSetup(uid: string, client?: ApiClient): Promise<DnsRecordCheck[]> {
+    return withClient(client, `/mail/domains/${encodeURIComponent(uid)}/dns-setup`);
 }

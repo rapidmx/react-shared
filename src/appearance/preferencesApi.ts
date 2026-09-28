@@ -19,7 +19,7 @@
  * Everything that comes from outside - the response, a push event, the page's server-rendered props, `localStorage` - goes through
  * `normalizeAppearance()`, which keeps only well-formed values (so a stale or hostile value can never reach a CSS declaration).
  */
-import { ApiRequestError, apiFetch, apiUrl, withCsrfHeader } from "../util/api.js";
+import { ApiClient, ApiRequestError, apiUrl, withClient, withCsrfHeader } from "../util/api.js";
 
 export type AppearanceMode = "system" | "light" | "dark";
 export type BackgroundKind = "none" | "color" | "image";
@@ -255,10 +255,15 @@ export function isDefaultAppearance(prefs: AppearanceInput | undefined): boolean
     );
 }
 
+/** `client`, given by every function below that isn't a raw-bytes upload, is an explicit `ApiClient` from
+ * `createApiClient()` (e.g. one account of a multi-account app) to call instead of the default global
+ * `apiFetch()` - see `withClient()`'s own doc comment in `util/api.ts`. Omitted (the default), every
+ * function here behaves exactly as before. */
+
 /** The user's stored preferences, or `undefined` when there are none to read (a `404`, or a body that isn't preferences). */
-export async function getAppearance(): Promise<AppearancePreferences | undefined> {
+export async function getAppearance(client?: ApiClient): Promise<AppearancePreferences | undefined> {
     try {
-        return normalizeAppearance(await apiFetch(PATH));
+        return normalizeAppearance(await withClient(client, PATH));
     } catch (err) {
         if (err instanceof ApiRequestError && err.status === 404) {
             return undefined;
@@ -268,8 +273,8 @@ export async function getAppearance(): Promise<AppearancePreferences | undefined
 }
 
 /** Merges `update` into the user's preferences and returns what the server stored. */
-export async function saveAppearance(update: AppearanceUpdate): Promise<AppearancePreferences> {
-    const stored = normalizeAppearance(await apiFetch(PATH, { method: "PUT", body: JSON.stringify(update) }));
+export async function saveAppearance(update: AppearanceUpdate, client?: ApiClient): Promise<AppearancePreferences> {
+    const stored = normalizeAppearance(await withClient(client, PATH, { method: "PUT", body: JSON.stringify(update) }));
     if (!stored) {
         throw new ApiRequestError("The server did not return the saved appearance.", 502);
     }
@@ -299,8 +304,8 @@ export async function uploadAppearanceBackground(file: Blob): Promise<Appearance
 }
 
 /** Removes the stored background image. Answers with the updated preferences when the server sends them, else `undefined`. */
-export async function deleteAppearanceBackground(): Promise<AppearancePreferences | undefined> {
-    return normalizeAppearance(await apiFetch(`${PATH}/background`, { method: "DELETE" }));
+export async function deleteAppearanceBackground(client?: ApiClient): Promise<AppearancePreferences | undefined> {
+    return normalizeAppearance(await withClient(client, `${PATH}/background`, { method: "DELETE" }));
 }
 
 /** The URL of the stored background image `version` - what CSS `url()` and `<img src>` use. Immutable per version. */

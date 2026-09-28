@@ -18,6 +18,7 @@ import {
     retryPluginPurge,
     updatePlugin,
 } from "../../src/admin/pluginsApi.js";
+import { createApiClient } from "../../src/util/api.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -140,5 +141,39 @@ describe("pluginsApi", () => {
         );
         expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/plan?name=%40rapidmx%2Fautodiscover-plugin&prerelease=true", expect.anything());
         expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins/plan?name=%40rapidmx%2Fautodiscover-plugin&packageVersion=1.0.0", expect.anything());
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, { uid: "p1" }));
+
+        await listPlugins(client);
+        await getPluginStatus(client);
+        await listPluginNamespaces(client);
+        await searchPlugins(undefined, {}, client);
+        await getPluginUpdates({}, client);
+        await lookupPluginPackage("@rapidmx/mapi", undefined, {}, client);
+        await planPluginChange("@rapidmx/mapi", undefined, {}, client);
+        await addPlugin("@rapidmx/mapi", "1.0.0", undefined, client);
+        await updatePlugin("p1", { version: 1 }, client);
+        await removePlugin("p1", {}, client);
+        await retryPluginPurge("u1", client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(11);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await listPlugins();
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/plugins", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

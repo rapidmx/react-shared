@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
+import { createApiClient } from "../../src/util/api.js";
 import {
     createEscrowScope,
     deleteEscrowScope,
@@ -137,5 +138,34 @@ describe("resolveEscrowScopeHolder", () => {
     it("rejects with the server's own message when nobody is found", async () => {
         mockFetch(() => jsonResponse(404, { message: 'No user found for "nobody".' }));
         await expect(resolveEscrowScopeHolder("nobody")).rejects.toMatchObject({ status: 404, message: 'No user found for "nobody".' });
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, scope));
+
+        await listEscrowScopes({}, client);
+        await getEscrowScope("es1", client);
+        await createEscrowScope({ name: "Legal Hold Q1", publicKey, holderUserUids: ["u1"], requiredHolders: 1 }, client);
+        await updateEscrowScope({ uid: "es1", version: 0, name: "Renamed" }, client);
+        await deleteEscrowScope("es1", 0, client);
+        await resolveEscrowScopeHolder("jp@example.com", client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(6);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, scope));
+        await getEscrowScope("es1");
+        expect(fetchMock).toHaveBeenCalledWith("/api/escrow/scopes/es1", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

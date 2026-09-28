@@ -12,6 +12,7 @@ import {
     resolveMailboxPrincipal,
     setMailboxAccess,
 } from "../../src/mail/mailboxAccessApi.js";
+import { createApiClient } from "../../src/util/api.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -94,5 +95,34 @@ describe("lookupMailboxOwnerByEmail", () => {
         mockFetch(() => jsonResponse(200, null));
         const result = await lookupMailboxOwnerByEmail("nobody@example.com");
         expect(result).toBeNull();
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, { userOrRoleId: "u1", role: "viewer", userUid: "u1" }));
+
+        await resolveMailboxPrincipal("mb1", "jp@example.com", client);
+        await listMailboxAccess("mb1", client);
+        await setMailboxAccess("mb1", "u1", "manager", client);
+        await getMyMailboxAccess("mb1", client);
+        await removeMailboxAccess("mb1", "u1", client);
+        await lookupMailboxOwnerByEmail("jane@example.com", client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(6);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await listMailboxAccess("mb1");
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/mailboxes/mb1/access", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

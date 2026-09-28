@@ -14,6 +14,8 @@ import {
     useRedirectIfUnauthenticated,
     useSessionRefresh,
 } from "../../src/auth/session.js";
+import { ApiClientContext } from "../../src/util/apiClientContext.js";
+import { createApiClient } from "../../src/util/api.js";
 
 const AUTH = "https://auth.example.com";
 const REFRESHED_AT_KEY = "rapidmx.session.refreshedAt";
@@ -341,5 +343,61 @@ describe("useSessionRefresh", () => {
             await vi.advanceTimersByTimeAsync(2 * SESSION_REFRESH_AFTER_MS);
         });
         expect(fetchMock).not.toHaveBeenCalled();
+    });
+});
+
+// A component under an `ApiClientContext.Provider` (e.g. one account of the native, multi-account
+// `tauri-client`) has its network calls routed through that explicit `ApiClient` instead of this app's own
+// `jwt` cookie - there is nothing here for auth-server's cookie-based session-refresh/redirect logic to do,
+// and it would be actively wrong (there is no cookie for this origin to refresh, and the client's own token
+// lifecycle is the host app's job via a different mechanism entirely). Proven both ways: present, both hooks
+// go completely inert regardless of what `userUid`/`options` say; absent (every test above, and the plain
+// `render()` calls below with no wrapping provider), behavior is exactly what it always was.
+describe("useRedirectIfUnauthenticated and useSessionRefresh under an ApiClientContext.Provider", () => {
+    const client = createApiClient({ baseUrl: "https://tauri.example.com", getAccessToken: async () => "tok" });
+
+    function withClientProvider(children: React.ReactNode) {
+        return <ApiClientContext.Provider value={client}>{children}</ApiClientContext.Provider>;
+    }
+
+    it("useRedirectIfUnauthenticated does not redirect even with no userUid", async () => {
+        const location = mockLocation();
+        location.href = "https://mail.example.com/admin";
+        render(withClientProvider(<RedirectComponent authServerUrl={AUTH} />));
+        await act(async () => undefined);
+        expect(location.href).toBe("https://mail.example.com/admin");
+    });
+
+    it("useSessionRefresh never refreshes, reloads or redirects with no userUid", async () => {
+        const location = mockLocation();
+        location.href = "https://mail.example.com/mail";
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        render(withClientProvider(<RefreshComponent authServerUrl={AUTH} />));
+        await act(async () => undefined);
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(location.reload).not.toHaveBeenCalled();
+        expect(location.href).toBe("https://mail.example.com/mail");
+    });
+
+    it("useSessionRefresh never refreshes with a session either, including on visibilitychange", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        render(withClientProvider(<RefreshComponent userUid="u1" authServerUrl={AUTH} />));
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(2 * SESSION_REFRESH_AFTER_MS);
+            document.dispatchEvent(new Event("visibilitychange"));
+        });
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("useSessionRefresh stays inert even when paused is explicitly false and no session is present", async () => {
+        // Not just `paused` doing the work under the hood - the provider itself is what disables it.
+        const location = mockLocation();
+        location.href = "https://mail.example.com/mail";
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        render(withClientProvider(<RefreshComponent authServerUrl={AUTH} options={{ paused: false }} />));
+        await act(async () => undefined);
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(location.href).toBe("https://mail.example.com/mail");
     });
 });

@@ -9,7 +9,7 @@
  * computed fresh on every call — a `ConversationSummary` is never itself persisted.
  */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { Message, MessageListFilter, Recipient } from "./mailApi.js";
 
 export interface ConversationSummary {
@@ -84,10 +84,15 @@ function conversationQuery(mailboxUid: string, params: Record<string, string | n
 
 /** Lists a mailbox's conversations, newest activity first. Computed mailbox-wide unless `folderUid` narrows
  * them — folder scope is a filter here, not part of the endpoint. */
-export function listConversations(mailboxUid: string, params: ConversationListParams = {}): Promise<ConversationSummary[]> {
+export function listConversations(
+    mailboxUid: string,
+    params: ConversationListParams = {},
+    client?: ApiClient,
+): Promise<ConversationSummary[]> {
     const { labelUids, ...rest } = params;
     // One comma-separated value, as `messageListQuery()` sends it; an empty selection sends no parameter.
-    return apiFetch(
+    return withClient(
+        client,
         `/mail/messages/conversations?${conversationQuery(mailboxUid, { ...rest, labelUids: labelUids?.length ? labelUids.join(",") : undefined })}`,
     );
 }
@@ -109,8 +114,10 @@ export function listConversationMessages(
     mailboxUid: string,
     conversationId: string,
     params: ConversationMessagesParams = {},
+    client?: ApiClient,
 ): Promise<Message[]> {
-    return apiFetch(
+    return withClient(
+        client,
         `/mail/messages/conversations/${encodeURIComponent(conversationId)}?${conversationQuery(mailboxUid, { ...params })}`,
     );
 }

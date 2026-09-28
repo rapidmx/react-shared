@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import { createVideoMeeting, getVideoMeeting, listVideoMeetings, updateVideoMeeting } from "../../src/videoconf/videoMeetingsApi.js";
+import { createApiClient } from "../../src/util/api.js";
 
 const meeting = {
     uid: "vm1",
@@ -111,5 +112,32 @@ describe("listVideoMeetings", () => {
     it("rejects with the server's own message on failure", async () => {
         mockFetch(() => jsonResponse(403, { message: "Forbidden.", code: "api-103" }));
         await expect(listVideoMeetings("mb1")).rejects.toMatchObject({ status: 403, code: "api-103" });
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, { meeting }));
+
+        await createVideoMeeting({ mailboxUid: "mb1", title: "Standup", visibility: "private", invitees: [{ email: "bob@example.com" }] }, client);
+        await updateVideoMeeting("vm1", { title: "Renamed" }, client);
+        await getVideoMeeting("vm1", client);
+        await listVideoMeetings("mb1", {}, client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, meeting));
+        await getVideoMeeting("vm1");
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/video-meetings/vm1", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

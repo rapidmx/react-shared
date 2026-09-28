@@ -13,7 +13,7 @@
  * `@rapidmx/restapi` and this repo's `.claude/NOTES.md`.
  */
 
-import { ApiRequestError, apiFetch, apiUrl, authApiFetch, withCsrfHeader } from "../util/api.js";
+import { ApiClient, ApiRequestError, apiFetch, apiUrl, authApiFetch, withClient, withCsrfHeader } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 import { deviceTimeZone } from "../util/timeZone.js";
 import type { EncryptionPreference, PublicKey } from "../crypto/keyvaultApi.js";
@@ -154,20 +154,20 @@ export function safeSendersOf(mailbox: Pick<Mailbox, "safeSenders">): string[] {
 
 /** Lists the mailboxes the caller owns or has been granted - the same for everyone, an administrator included. With
  * `scope: "admin"` (admin console only) it lists every mailbox as administrative metadata instead. */
-export function listMailboxes(params: ListParams & AdminScopeParams = {}): Promise<Mailbox[]> {
-    return apiFetch(`/mail/mailboxes?${buildQuery(params, scopeQuery(params))}`);
+export function listMailboxes(params: ListParams & AdminScopeParams = {}, client?: ApiClient): Promise<Mailbox[]> {
+    return withClient(client, `/mail/mailboxes?${buildQuery(params, scopeQuery(params))}`);
 }
 
 /** One mailbox the caller owns or has been granted; with `scope: "admin"` (admin console only), its administrative metadata. */
-export function getMailbox(uid: string, options: AdminScopeParams = {}): Promise<Mailbox> {
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(uid)}${options.scope ? `?scope=${options.scope}` : ""}`);
+export function getMailbox(uid: string, options: AdminScopeParams = {}, client?: ApiClient): Promise<Mailbox> {
+    return withClient(client, `/mail/mailboxes/${encodeURIComponent(uid)}${options.scope ? `?scope=${options.scope}` : ""}`);
 }
 
 /** Lists bookable resource mailboxes (rooms/equipment) visible to the caller — same ACL scoping as
  * `listMailboxes()`, just pre-filtered server-side to `isResource: true` so `ResourcePicker` doesn't
  * need to fetch and filter the caller's entire mailbox list client-side. */
-export function listResourceMailboxes(params: ListParams = {}): Promise<Mailbox[]> {
-    return apiFetch(`/mail/mailboxes?${buildQuery(params, { isResource: "true" })}`);
+export function listResourceMailboxes(params: ListParams = {}, client?: ApiClient): Promise<Mailbox[]> {
+    return withClient(client, `/mail/mailboxes?${buildQuery(params, { isResource: "true" })}`);
 }
 
 export interface CreateMailboxInput {
@@ -187,8 +187,8 @@ export interface CreateMailboxInput {
     maxDurationMinutes?: number;
 }
 
-export function createMailbox(input: CreateMailboxInput): Promise<Mailbox> {
-    return apiFetch("/mail/mailboxes", {
+export function createMailbox(input: CreateMailboxInput, client?: ApiClient): Promise<Mailbox> {
+    return withClient(client, "/mail/mailboxes", {
         method: "POST",
         body: JSON.stringify({ aliasAddresses: [], usedBytes: 0, ...input }),
     });
@@ -201,14 +201,14 @@ export function createMailbox(input: CreateMailboxInput): Promise<Mailbox> {
  * (`BaseMailboxRoute.resolveOwner()` in `@rapidmx/restapi`) - the same exact-match resolution
  * `resolveMailboxPrincipal()` (`mailboxAccessApi.ts`) uses for sharing.
  */
-export function resolveMailboxOwner(principal: string): Promise<ResolvedPrincipal> {
-    return apiFetch(`/mail/mailboxes/resolve-owner?principal=${encodeURIComponent(principal)}`);
+export function resolveMailboxOwner(principal: string, client?: ApiClient): Promise<ResolvedPrincipal> {
+    return withClient(client, `/mail/mailboxes/resolve-owner?principal=${encodeURIComponent(principal)}`);
 }
 
 /** This server's configured domain list (`mail:domains`) — empty when unconfigured, meaning no
  * restriction applies and a `primarySmtpAddress` may be on any domain. */
-export function listMailboxDomains(): Promise<string[]> {
-    return apiFetch("/mail/mailboxes/domains");
+export function listMailboxDomains(client?: ApiClient): Promise<string[]> {
+    return withClient(client, "/mail/mailboxes/domains");
 }
 
 /** One (name alias, domain) combination the caller could register as their mailbox address. */
@@ -228,8 +228,11 @@ export type MailboxAutoProvisionResult =
  * doc comment in `@rapidmx/restapi` for the full contract. Call with no `selection` first; if the
  * result is `needs_selection`, call again with the option the user picked from that list.
  */
-export function autoProvisionMailbox(selection?: { alias: string; domain: string }): Promise<MailboxAutoProvisionResult> {
-    return apiFetch("/mail/mailboxes/auto-provision", {
+export function autoProvisionMailbox(
+    selection?: { alias: string; domain: string },
+    client?: ApiClient,
+): Promise<MailboxAutoProvisionResult> {
+    return withClient(client, "/mail/mailboxes/auto-provision", {
         method: "POST",
         // The device's time zone goes with every call, for the mailbox this may create.
         body: JSON.stringify({ ...selection, timezone: deviceTimeZone() }),
@@ -273,8 +276,8 @@ export interface UpdateMailboxInput {
     freeBusyVisibility?: FreeBusyVisibility;
 }
 
-export function updateMailbox(input: UpdateMailboxInput): Promise<Mailbox> {
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(input.uid)}`, {
+export function updateMailbox(input: UpdateMailboxInput, client?: ApiClient): Promise<Mailbox> {
+    return withClient(client, `/mail/mailboxes/${encodeURIComponent(input.uid)}`, {
         method: "PUT",
         body: JSON.stringify(input),
     });
@@ -286,8 +289,12 @@ export function updateMailbox(input: UpdateMailboxInput): Promise<Mailbox> {
  * deleted) also files that erasure in the same step, which the server then runs in the background; without it the data is left for
  * `admin/leftoverMailboxApi.ts` to list and erase later.
  */
-export function deleteMailbox(uid: string, version: number, options: { erase?: boolean } = {}): Promise<void> {
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(uid)}?version=${version}${options.erase ? "&erase=true" : ""}`, { method: "DELETE" });
+export function deleteMailbox(uid: string, version: number, options: { erase?: boolean } = {}, client?: ApiClient): Promise<void> {
+    return withClient(
+        client,
+        `/mail/mailboxes/${encodeURIComponent(uid)}?version=${version}${options.erase ? "&erase=true" : ""}`,
+        { method: "DELETE" },
+    );
 }
 
 export type QuarantineReason = "infected" | "spam_policy" | "transport_rule" | "other";
@@ -307,16 +314,25 @@ export interface QuarantineEntry {
 }
 
 /** Lists quarantined mail for a mailbox the caller owns or has been granted; with `scope: "admin"` (admin console only), for any mailbox. */
-export function listQuarantine(mailboxUid: string, params: ListParams & AdminScopeParams = {}): Promise<QuarantineEntry[]> {
-    return apiFetch(`/mail/quarantine?${buildQuery(params, { mailboxUid, ...scopeQuery(params) })}`);
+export function listQuarantine(
+    mailboxUid: string,
+    params: ListParams & AdminScopeParams = {},
+    client?: ApiClient,
+): Promise<QuarantineEntry[]> {
+    return withClient(client, `/mail/quarantine?${buildQuery(params, { mailboxUid, ...scopeQuery(params) })}`);
 }
 
 /**
  * Marks a quarantined entry released. This only updates the record's metadata — it does not re-inject the
  * message into normal delivery (see `@rapidmx/restapi`'s NOTES.md for why that's an explicit non-goal here).
  */
-export function releaseQuarantineEntry(uid: string, version: number, releasedByUserUid: string): Promise<QuarantineEntry> {
-    return apiFetch(`/mail/quarantine/${encodeURIComponent(uid)}`, {
+export function releaseQuarantineEntry(
+    uid: string,
+    version: number,
+    releasedByUserUid: string,
+    client?: ApiClient,
+): Promise<QuarantineEntry> {
+    return withClient(client, `/mail/quarantine/${encodeURIComponent(uid)}`, {
         method: "PUT",
         body: JSON.stringify({ uid, version, releasedAt: new Date().toISOString(), releasedByUserUid }),
     });
@@ -346,8 +362,12 @@ export interface IngestQueueEntry {
 
 /** Lists ingest-queue entries for a mailbox the caller owns or has been granted - useful for diagnosing stuck delivery; with
  * `scope: "admin"` (admin console only), for any mailbox. */
-export function listIngestQueue(mailboxUid: string, params: ListParams & AdminScopeParams = {}): Promise<IngestQueueEntry[]> {
-    return apiFetch(`/mail/ingest-queue?${buildQuery(params, { mailboxUid, ...scopeQuery(params) })}`);
+export function listIngestQueue(
+    mailboxUid: string,
+    params: ListParams & AdminScopeParams = {},
+    client?: ApiClient,
+): Promise<IngestQueueEntry[]> {
+    return withClient(client, `/mail/ingest-queue?${buildQuery(params, { mailboxUid, ...scopeQuery(params) })}`);
 }
 
 export interface AclRecord {
@@ -366,8 +386,8 @@ export interface AccessControlList {
  * caller who holds full access to that mailbox as themselves (never through a trusted role): to list, grant or revoke a mailbox's
  * members use `listMailboxAccess()`/`setMailboxAccess()`/`removeMailboxAccess()` (`mailboxAccessApi.ts`), which is also the
  * audited way an administrator shares an ownerless mailbox. */
-export function getMailboxAcl(mailboxUid: string): Promise<AccessControlList> {
-    return apiFetch(`/acls/${encodeURIComponent(mailboxUid)}`);
+export function getMailboxAcl(mailboxUid: string, client?: ApiClient): Promise<AccessControlList> {
+    return withClient(client, `/acls/${encodeURIComponent(mailboxUid)}`);
 }
 
 /**
@@ -375,21 +395,26 @@ export function getMailboxAcl(mailboxUid: string): Promise<AccessControlList> {
  * mechanism behind Exchange-style shared mailboxes. Read-modify-write against the ACL's own optimistic
  * `version`, so concurrent grants can conflict; the caller should retry on a 409/version-mismatch.
  */
-export async function grantMailboxAccess(mailboxUid: string, userOrRoleId: string, actions: string[]): Promise<AccessControlList> {
-    const acl = await getMailboxAcl(mailboxUid);
+export async function grantMailboxAccess(
+    mailboxUid: string,
+    userOrRoleId: string,
+    actions: string[],
+    client?: ApiClient,
+): Promise<AccessControlList> {
+    const acl = await getMailboxAcl(mailboxUid, client);
     const records = acl.records.filter((r) => r.userOrRoleId !== userOrRoleId);
     records.push({ userOrRoleId, actions });
-    return apiFetch(`/acls/${encodeURIComponent(mailboxUid)}`, {
+    return withClient(client, `/acls/${encodeURIComponent(mailboxUid)}`, {
         method: "PUT",
         body: JSON.stringify({ uid: mailboxUid, version: acl.version, records }),
     });
 }
 
 /** Revokes a delegate's access to a mailbox previously granted via `grantMailboxAccess`. */
-export async function revokeMailboxAccess(mailboxUid: string, userOrRoleId: string): Promise<AccessControlList> {
-    const acl = await getMailboxAcl(mailboxUid);
+export async function revokeMailboxAccess(mailboxUid: string, userOrRoleId: string, client?: ApiClient): Promise<AccessControlList> {
+    const acl = await getMailboxAcl(mailboxUid, client);
     const records = acl.records.filter((r) => r.userOrRoleId !== userOrRoleId);
-    return apiFetch(`/acls/${encodeURIComponent(mailboxUid)}`, {
+    return withClient(client, `/acls/${encodeURIComponent(mailboxUid)}`, {
         method: "PUT",
         body: JSON.stringify({ uid: mailboxUid, version: acl.version, records }),
     });
@@ -427,8 +452,8 @@ export interface Folder {
 }
 
 /** Lists a mailbox's folders — visible to its owner, any delegate the mailbox is shared with, or (trusted) anyone. */
-export function listFolders(mailboxUid: string): Promise<Folder[]> {
-    return apiFetch(`/mail/folders?${buildQuery({ limit: 200 }, { mailboxUid })}`);
+export function listFolders(mailboxUid: string, client?: ApiClient): Promise<Folder[]> {
+    return withClient(client, `/mail/folders?${buildQuery({ limit: 200 }, { mailboxUid })}`);
 }
 
 export interface CreateFolderInput {
@@ -442,8 +467,8 @@ export interface CreateFolderInput {
 /** Creates a new folder — e.g. an additional `calendar`-type folder for multi-calendar support. Nothing
  * about folder creation is type-restricted server-side (see the Phase 4 plan's own note on
  * `BaseFolderRoute.create()`), so this is just a thin wrapper, not a new backend capability. */
-export function createFolder(input: CreateFolderInput): Promise<Folder> {
-    return apiFetch("/mail/folders", {
+export function createFolder(input: CreateFolderInput, client?: ApiClient): Promise<Folder> {
+    return withClient(client, "/mail/folders", {
         method: "POST",
         body: JSON.stringify({ unreadCount: 0, totalCount: 0, ...input }),
     });
@@ -456,8 +481,8 @@ export interface UpdateFolderInput {
     color?: string;
 }
 
-export function updateFolder(input: UpdateFolderInput): Promise<Folder> {
-    return apiFetch(`/mail/folders/${encodeURIComponent(input.uid)}`, {
+export function updateFolder(input: UpdateFolderInput, client?: ApiClient): Promise<Folder> {
+    return withClient(client, `/mail/folders/${encodeURIComponent(input.uid)}`, {
         method: "PUT",
         body: JSON.stringify(input),
     });
@@ -678,12 +703,12 @@ export function messageListQuery(params: MessageListParams): Record<string, stri
  * rather than over the page this call happens to return, so `page`/`limit` stay correct under a filter and a
  * sort. Ties are broken by `uid`, so a message never appears on two pages or on neither.
  */
-export function listMessages(folderUid: string, params: MessageListParams = {}): Promise<Message[]> {
-    return apiFetch(`/mail/messages?${buildQuery(params, { folderUid, ...messageListQuery(params) })}`);
+export function listMessages(folderUid: string, params: MessageListParams = {}, client?: ApiClient): Promise<Message[]> {
+    return withClient(client, `/mail/messages?${buildQuery(params, { folderUid, ...messageListQuery(params) })}`);
 }
 
-export function getMessage(uid: string): Promise<Message> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(uid)}`);
+export function getMessage(uid: string, client?: ApiClient): Promise<Message> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(uid)}`);
 }
 
 /**
@@ -693,8 +718,8 @@ export function getMessage(uid: string): Promise<Message> {
  * each recipient's own mail system — there is no synchronous "recalled" outcome to report back, and the
  * only visible effect here is `recallRequestedAt` getting set on the response.
  */
-export function recallMessage(uid: string): Promise<Message> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(uid)}/recall`, { method: "POST" });
+export function recallMessage(uid: string, client?: ApiClient): Promise<Message> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(uid)}/recall`, { method: "POST" });
 }
 
 /**
@@ -703,8 +728,8 @@ export function recallMessage(uid: string): Promise<Message> {
  * (400, surfaced as an `ApiRequestError`) for a message currently in Drafts or Outbox. Idempotent —
  * archiving an already-archived message is a no-op that still returns the message.
  */
-export function archiveMessage(uid: string): Promise<Message> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(uid)}/archive`, { method: "POST" });
+export function archiveMessage(uid: string, client?: ApiClient): Promise<Message> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(uid)}/archive`, { method: "POST" });
 }
 
 /**
@@ -712,8 +737,13 @@ export function archiveMessage(uid: string): Promise<Message> {
  * With `applyToSender: true` ("Always move to Other"), also upserts a standing `FocusedInboxOverride` for
  * every future message from the same sender (see `focusedInboxOverridesApi.ts`) in the same round trip.
  */
-export function classifyMessage(uid: string, classifyAs: MessageClassification, applyToSender = false): Promise<Message> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(uid)}/classify`, {
+export function classifyMessage(
+    uid: string,
+    classifyAs: MessageClassification,
+    applyToSender = false,
+    client?: ApiClient,
+): Promise<Message> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(uid)}/classify`, {
         method: "POST",
         body: JSON.stringify({ classifyAs, applyToSender }),
     });
@@ -724,8 +754,8 @@ export function classifyMessage(uid: string, classifyAs: MessageClassification, 
  * `Message` update is scoped by its owning folder (see `BaseScopedChildRoute`), and this framework's `PUT`
  * routes replace the whole record rather than patch individual fields.
  */
-export function setMessageRead(message: Message, read: boolean): Promise<Message> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
+export function setMessageRead(message: Message, read: boolean, client?: ApiClient): Promise<Message> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(message.uid)}`, {
         method: "PUT",
         body: JSON.stringify({ uid: message.uid, version: message.version, flags: { ...message.flags, read } }),
     });
@@ -733,8 +763,8 @@ export function setMessageRead(message: Message, read: boolean): Promise<Message
 
 /** Flags/unflags a message in place — Outlook's flag-status toggle, and what `listMessages({ filter:
  * "flagged" })` and `listFlaggedMessages()` select on. */
-export function setMessageFlagged(message: Message, flagged: boolean): Promise<Message> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
+export function setMessageFlagged(message: Message, flagged: boolean, client?: ApiClient): Promise<Message> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(message.uid)}`, {
         method: "PUT",
         body: JSON.stringify({ uid: message.uid, version: message.version, flags: { ...message.flags, flagged } }),
     });
@@ -742,8 +772,8 @@ export function setMessageFlagged(message: Message, flagged: boolean): Promise<M
 
 /** Moves a message into another folder of the same mailbox — how "Move to", "Archive" (to the Archive folder),
  * "Report junk" (to Junk) and "Delete" (to Deleted Items) are all expressed. */
-export function moveMessage(message: Message, folderUid: string): Promise<Message> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
+export function moveMessage(message: Message, folderUid: string, client?: ApiClient): Promise<Message> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(message.uid)}`, {
         method: "PUT",
         body: JSON.stringify({ uid: message.uid, version: message.version, folderUid }),
     });
@@ -787,8 +817,13 @@ export interface ReportMessageOptions {
  * the message (or, for `alwaysTrustSender`, without full access to the mailbox), a 404 for an unknown message - and also for a server that predates the route,
  * where a caller falls back to `moveMessage()`.
  */
-export function reportMessage(uid: string, kind: MessageReportKind, options: ReportMessageOptions = {}): Promise<MessageReportResult> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(uid)}/report`, {
+export function reportMessage(
+    uid: string,
+    kind: MessageReportKind,
+    options: ReportMessageOptions = {},
+    client?: ApiClient,
+): Promise<MessageReportResult> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(uid)}/report`, {
         method: "POST",
         body: JSON.stringify({ kind, ...(options.alwaysTrustSender ? { alwaysTrustSender: true } : {}) }),
     });
@@ -822,46 +857,54 @@ export interface MessageUpdate {
  *
  * Resolves with every message actually updated, in request order.
  */
-export async function bulkUpdateMessages(updates: MessageUpdate[]): Promise<Message[]> {
+export async function bulkUpdateMessages(updates: MessageUpdate[], client?: ApiClient): Promise<Message[]> {
     const updated: Message[] = [];
     for (let i = 0; i < updates.length; i += MAX_BULK_MESSAGE_UPDATE) {
         const chunk = updates.slice(i, i + MAX_BULK_MESSAGE_UPDATE);
-        updated.push(...(await apiFetch<Message[]>("/mail/messages", { method: "PUT", body: JSON.stringify(chunk) })));
+        updated.push(...(await withClient<Message[]>(client, "/mail/messages", { method: "PUT", body: JSON.stringify(chunk) })));
     }
     return updated;
 }
 
 /** Marks a whole selection read/unread in one pass — see `bulkUpdateMessages()` for the failure semantics. */
-export function setMessagesRead(messages: Message[], read: boolean): Promise<Message[]> {
+export function setMessagesRead(messages: Message[], read: boolean, client?: ApiClient): Promise<Message[]> {
     return bulkUpdateMessages(
         messages.map((message) => ({ uid: message.uid, version: message.version, flags: { ...message.flags, read } })),
+        client,
     );
 }
 
 /** Flags/unflags a whole selection in one pass — see `bulkUpdateMessages()`. */
-export function setMessagesFlagged(messages: Message[], flagged: boolean): Promise<Message[]> {
+export function setMessagesFlagged(messages: Message[], flagged: boolean, client?: ApiClient): Promise<Message[]> {
     return bulkUpdateMessages(
         messages.map((message) => ({ uid: message.uid, version: message.version, flags: { ...message.flags, flagged } })),
+        client,
     );
 }
 
 /** Moves a whole selection into `folderUid` — bulk Move, Archive, Report junk and Delete (to Deleted Items)
  * are all this call with a different target folder. See `bulkUpdateMessages()`. */
-export function moveMessages(messages: Message[], folderUid: string): Promise<Message[]> {
-    return bulkUpdateMessages(messages.map((message) => ({ uid: message.uid, version: message.version, folderUid })));
+export function moveMessages(messages: Message[], folderUid: string, client?: ApiClient): Promise<Message[]> {
+    return bulkUpdateMessages(
+        messages.map((message) => ({ uid: message.uid, version: message.version, folderUid })),
+        client,
+    );
 }
 
 /** Sets the full `labelUids` list on a whole selection — see `setMessageLabels()` and `bulkUpdateMessages()`. */
-export function setMessagesLabels(messages: Message[], labelUids: string[]): Promise<Message[]> {
-    return bulkUpdateMessages(messages.map((message) => ({ uid: message.uid, version: message.version, labelUids })));
+export function setMessagesLabels(messages: Message[], labelUids: string[], client?: ApiClient): Promise<Message[]> {
+    return bulkUpdateMessages(
+        messages.map((message) => ({ uid: message.uid, version: message.version, labelUids })),
+        client,
+    );
 }
 
 /** Sets a message's full `labelUids` list (not an add/remove delta - the caller computes the complete
  * new set, same convention as `Note`/`Task` label-like fields elsewhere in restapi). Deleting a label
  * elsewhere already strips it server-side from every message (`labelsApi.ts#deleteLabel()`'s own doc
  * comment) - this is only for a user explicitly applying/removing labels on one message. */
-export function setMessageLabels(message: Message, labelUids: string[]): Promise<Message> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
+export function setMessageLabels(message: Message, labelUids: string[], client?: ApiClient): Promise<Message> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(message.uid)}`, {
         method: "PUT",
         body: JSON.stringify({ uid: message.uid, version: message.version, labelUids }),
     });
@@ -872,8 +915,8 @@ export function setMessageLabels(message: Message, labelUids: string[]): Promise
  * folder, which the caller resolves). The server clears `scheduledSendTime` itself on any move out of Outbox;
  * the `null` sent here is accepted and ignored.
  */
-export function cancelScheduledSend(message: Message, draftsFolderUid: string): Promise<Message> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
+export function cancelScheduledSend(message: Message, draftsFolderUid: string, client?: ApiClient): Promise<Message> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(message.uid)}`, {
         method: "PUT",
         body: JSON.stringify({ uid: message.uid, version: message.version, scheduledSendTime: null, folderUid: draftsFolderUid }),
     });
@@ -884,8 +927,8 @@ export function cancelScheduledSend(message: Message, draftsFolderUid: string): 
  * `alwaysRequestReceiptInternal`/`External` defaults for this one message — same ordinary-`PUT`-before-
  * `send()` convention.
  */
-export function setMessageRequestReceipt(message: Message, requestReceipt: boolean): Promise<Message> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
+export function setMessageRequestReceipt(message: Message, requestReceipt: boolean, client?: ApiClient): Promise<Message> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(message.uid)}`, {
         method: "PUT",
         body: JSON.stringify({ uid: message.uid, version: message.version, requestReceipt }),
     });
@@ -912,9 +955,14 @@ export class VerificationSealConflictError extends ApiRequestError {
  * isn't replaceable - see that class), and a plain `ApiRequestError` for `400` (an invalid seal or generation) and
  * `403`/`404`.
  */
-export async function setMessageVerificationSeal(messageUid: string, seal: string, masterKeyGeneration: number): Promise<Message> {
+export async function setMessageVerificationSeal(
+    messageUid: string,
+    seal: string,
+    masterKeyGeneration: number,
+    client?: ApiClient,
+): Promise<Message> {
     try {
-        return await apiFetch<Message>(`/mail/messages/${encodeURIComponent(messageUid)}/verification-seal`, {
+        return await withClient<Message>(client, `/mail/messages/${encodeURIComponent(messageUid)}/verification-seal`, {
             method: "PUT",
             body: JSON.stringify({ seal, masterKeyGeneration }),
         });
@@ -930,16 +978,16 @@ export type ReceiptType = "delivery" | "read";
 
 /** Sends a delivery/read receipt this mailbox held pending the owner's explicit approval (see
  * `Message.deliveryReceiptPending`/`readReceiptPending`). */
-export function approveReceipt(uid: string, type: ReceiptType): Promise<Message> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(uid)}/receipt/approve`, {
+export function approveReceipt(uid: string, type: ReceiptType, client?: ApiClient): Promise<Message> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(uid)}/receipt/approve`, {
         method: "POST",
         body: JSON.stringify({ type }),
     });
 }
 
 /** Permanently declines a pending receipt — no later re-prompt for that same event. */
-export function declineReceipt(uid: string, type: ReceiptType): Promise<Message> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(uid)}/receipt/decline`, {
+export function declineReceipt(uid: string, type: ReceiptType, client?: ApiClient): Promise<Message> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(uid)}/receipt/decline`, {
         method: "POST",
         body: JSON.stringify({ type }),
     });
@@ -960,8 +1008,8 @@ export interface Attachment {
 }
 
 /** Lists the attachments belonging to a single message. */
-export function listAttachments(folderUid: string, messageUid: string): Promise<Attachment[]> {
-    return apiFetch(`/mail/attachments?${buildQuery({ limit: 200 }, { folderUid, messageUid })}`);
+export function listAttachments(folderUid: string, messageUid: string, client?: ApiClient): Promise<Attachment[]> {
+    return withClient(client, `/mail/attachments?${buildQuery({ limit: 200 }, { folderUid, messageUid })}`);
 }
 
 /** The URL to download/display an attachment's binary content — not fetched via `apiFetch`, used directly as
@@ -1023,8 +1071,13 @@ export interface DraftThreading {
  * conversation. Nothing else recovers them: this server composes the MIME from the recipients, subject and HTML
  * passed to `assembleDraft()`, which say nothing about what is being replied to.
  */
-export function createDraft(mailboxUid: string, folderUid: string, threading?: DraftThreading): Promise<Message> {
-    return apiFetch("/mail/messages", {
+export function createDraft(
+    mailboxUid: string,
+    folderUid: string,
+    threading?: DraftThreading,
+    client?: ApiClient,
+): Promise<Message> {
+    return withClient(client, "/mail/messages", {
         method: "POST",
         body: JSON.stringify({
             mailboxUid,
@@ -1038,8 +1091,8 @@ export function createDraft(mailboxUid: string, folderUid: string, threading?: D
 
 /** Deletes a message - e.g. an unsent draft that's no longer needed because compose switched to a different
  * sending mailbox. */
-export function deleteMessage(uid: string, version: number): Promise<void> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+export function deleteMessage(uid: string, version: number, client?: ApiClient): Promise<void> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 }
 
 /**
@@ -1054,8 +1107,8 @@ export function deleteMessage(uid: string, version: number): Promise<void> {
  * `403` without the `delete` grant. Nothing about the message changes when it is refused, so a caller deleting several
  * reports each refusal and carries on with the rest.
  */
-export function purgeMessage(uid: string): Promise<void> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(uid)}?purge=true`, { method: "DELETE" });
+export function purgeMessage(uid: string, client?: ApiClient): Promise<void> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(uid)}?purge=true`, { method: "DELETE" });
 }
 
 /**
@@ -1067,8 +1120,8 @@ export function purgeMessage(uid: string): Promise<void> {
  *
  * After a refusal, fall back to `purgeMessage()` per message: that removes what may be removed and says which may not.
  */
-export function emptyFolder(folderUid: string): Promise<void> {
-    return apiFetch(`/mail/messages?${new URLSearchParams({ folderUid }).toString()}`, { method: "DELETE" });
+export function emptyFolder(folderUid: string, client?: ApiClient): Promise<void> {
+    return withClient(client, `/mail/messages?${new URLSearchParams({ folderUid }).toString()}`, { method: "DELETE" });
 }
 
 /**
@@ -1077,8 +1130,8 @@ export function emptyFolder(folderUid: string): Promise<void> {
  * — see `BaseMailComposeRoute` (this app's own compose-assembly glue, since `@rapidmx/restapi`'s `send()`
  * itself does no MIME composition). Does not send the message.
  */
-export function assembleDraft(messageUid: string, input: AssembleDraftInput): Promise<Message> {
-    return apiFetch(`/mail/compose/${encodeURIComponent(messageUid)}/assemble`, {
+export function assembleDraft(messageUid: string, input: AssembleDraftInput, client?: ApiClient): Promise<Message> {
+    return withClient(client, `/mail/compose/${encodeURIComponent(messageUid)}/assemble`, {
         method: "POST",
         body: JSON.stringify(input),
     });
@@ -1105,8 +1158,8 @@ export interface AssembleDraftRawInput {
  * draft assembled this way cannot carry file attachments yet — see `BaseMailComposeRoute.assembleRaw()`'s
  * own doc comment in `server`.
  */
-export function assembleDraftRaw(messageUid: string, input: AssembleDraftRawInput): Promise<Message> {
-    return apiFetch(`/mail/compose/${encodeURIComponent(messageUid)}/assemble-raw`, {
+export function assembleDraftRaw(messageUid: string, input: AssembleDraftRawInput, client?: ApiClient): Promise<Message> {
+    return withClient(client, `/mail/compose/${encodeURIComponent(messageUid)}/assemble-raw`, {
         method: "POST",
         body: JSON.stringify(input),
     });
@@ -1123,8 +1176,8 @@ export interface SendMessageOptions {
  * `scheduledSendTime`, queues it in Outbox for `@rapidmx/restapi`'s `ScheduledSendJob`. A message already in
  * Outbox or Sent Items is refused (409); move it back to Drafts first.
  */
-export function sendMessage(messageUid: string, options?: SendMessageOptions): Promise<Message> {
-    return apiFetch(`/mail/messages/${encodeURIComponent(messageUid)}/send`, {
+export function sendMessage(messageUid: string, options?: SendMessageOptions, client?: ApiClient): Promise<Message> {
+    return withClient(client, `/mail/messages/${encodeURIComponent(messageUid)}/send`, {
         method: "POST",
         ...(options?.scheduledSendTime ? { body: JSON.stringify({ scheduledSendTime: options.scheduledSendTime }) } : {}),
     });
@@ -1148,16 +1201,17 @@ export interface QueuedSend {
  * relays first and answers with the message, which resolves as `{ queued: false }` - as does a message class with no send job, which
  * answers a background send `501`: it is then sent the ordinary, synchronous way.
  */
-export async function queueMessageSend(messageUid: string): Promise<QueuedSend> {
+export async function queueMessageSend(messageUid: string, client?: ApiClient): Promise<QueuedSend> {
     let result: Message | { status?: string; message?: Message };
     try {
-        result = await apiFetch<Message | { status?: string; message?: Message }>(`/mail/messages/${encodeURIComponent(messageUid)}/send`, {
-            method: "POST",
-            body: JSON.stringify({ background: true }),
-        });
+        result = await withClient<Message | { status?: string; message?: Message }>(
+            client,
+            `/mail/messages/${encodeURIComponent(messageUid)}/send`,
+            { method: "POST", body: JSON.stringify({ background: true }) },
+        );
     } catch (err) {
         if (err instanceof ApiRequestError && err.status === 501) {
-            return { queued: false, message: await sendMessage(messageUid) };
+            return { queued: false, message: await sendMessage(messageUid, undefined, client) };
         }
         throw err;
     }

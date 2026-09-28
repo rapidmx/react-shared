@@ -4,11 +4,13 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
+import { createApiClient } from "../../src/util/api.js";
 import {
     createContact,
     createContactList,
     deleteContact,
     deleteContactList,
+    fetchPinnedSigningFingerprints,
     getContact,
     listContactLists,
     listContacts,
@@ -208,5 +210,43 @@ describe("deleteContactList", () => {
             "/api/mail/contact-lists/cl%2F1?version=2",
             expect.objectContaining({ method: "DELETE" }),
         );
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("a directly network-backed function (getContact) routes through the given client instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, contact));
+        const result = await getContact("c1", client);
+        expect(fetchMock).toHaveBeenCalledWith("https://account-a.example.com/api/mail/contacts/c1", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+        expect(result).toEqual(contact);
+    });
+
+    it("setContactFavorite (which internally calls updateContact) threads the client through the internal call", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, { ...contact, favorite: true }));
+        await setContactFavorite(contact, true, client);
+        expect(fetchMock).toHaveBeenCalledWith(
+            "https://account-a.example.com/api/mail/contacts/c1",
+            expect.objectContaining({ method: "PUT" }),
+        );
+        expect((fetchMock.mock.calls[0][1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+    });
+
+    it("fetchPinnedSigningFingerprints (which pages via the internal listContactsInFolders helper) threads the client through every page request", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, []));
+        await fetchPinnedSigningFingerprints(["f1"], "jane@example.com", client);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(fetchMock.mock.calls[0][0]).toMatch(/^https:\/\/account-a\.example\.com\/api\/mail\/contacts\?/);
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by a client created elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, contact));
+        await getContact("c1");
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/contacts/c1", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

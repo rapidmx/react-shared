@@ -10,7 +10,7 @@
  * resolved signature's `contentHtml` into a new draft.
  */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 
 export type { ListParams };
@@ -32,12 +32,15 @@ export interface MailSignature {
     isDefaultForReplyForward: boolean;
 }
 
-export function listMailSignatures(mailboxUid: string, params: ListParams = {}): Promise<MailSignature[]> {
-    return apiFetch(`/mail/mail-signatures?${buildQuery(params, { mailboxUid })}`);
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+export function listMailSignatures(mailboxUid: string, params: ListParams = {}, client?: ApiClient): Promise<MailSignature[]> {
+    return withClient(client, `/mail/mail-signatures?${buildQuery(params, { mailboxUid })}`);
 }
 
-export function getMailSignature(uid: string): Promise<MailSignature> {
-    return apiFetch(`/mail/mail-signatures/${encodeURIComponent(uid)}`);
+export function getMailSignature(uid: string, client?: ApiClient): Promise<MailSignature> {
+    return withClient(client, `/mail/mail-signatures/${encodeURIComponent(uid)}`);
 }
 
 export interface CreateMailSignatureInput {
@@ -48,8 +51,8 @@ export interface CreateMailSignatureInput {
     isDefaultForReplyForward?: boolean;
 }
 
-export function createMailSignature(input: CreateMailSignatureInput): Promise<MailSignature> {
-    return apiFetch("/mail/mail-signatures", {
+export function createMailSignature(input: CreateMailSignatureInput, client?: ApiClient): Promise<MailSignature> {
+    return withClient(client, "/mail/mail-signatures", {
         method: "POST",
         body: JSON.stringify({
             contentHtml: "",
@@ -69,13 +72,13 @@ export interface UpdateMailSignatureInput {
     isDefaultForReplyForward?: boolean;
 }
 
-export function updateMailSignature(input: UpdateMailSignatureInput): Promise<MailSignature> {
-    return apiFetch(`/mail/mail-signatures/${encodeURIComponent(input.uid)}`, {
+export function updateMailSignature(input: UpdateMailSignatureInput, client?: ApiClient): Promise<MailSignature> {
+    return withClient(client, `/mail/mail-signatures/${encodeURIComponent(input.uid)}`, {
         method: "PUT",
         body: JSON.stringify(input),
     });
 }
 
-export function deleteMailSignature(uid: string, version: number): Promise<void> {
-    return apiFetch(`/mail/mail-signatures/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+export function deleteMailSignature(uid: string, version: number, client?: ApiClient): Promise<void> {
+    return withClient(client, `/mail/mail-signatures/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 }

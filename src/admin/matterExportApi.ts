@@ -11,7 +11,7 @@
  * `MatterExportJob`, not this client) — `createMatterExportRequest()` only stages a `pending` request;
  * poll `listMatterExportRequests()` for `status` to become `"ready"` (or `"failed"`).
  */
-import { apiFetch, apiUrl } from "../util/api.js";
+import { ApiClient, apiUrl, withClient } from "../util/api.js";
 import { RequestListParams, buildRequestListQuery } from "../util/apiQuery.js";
 
 export type { RequestListParams };
@@ -33,8 +33,12 @@ export interface MatterExportRequest {
     processingAttempts?: number;
 }
 
-export function createMatterExportRequest(matterId: string): Promise<MatterExportRequest> {
-    return apiFetch(`/escrow/matter-export-requests`, {
+/** `client`, given by every function below that isn't a plain URL builder, is an explicit `ApiClient` from
+ * `createApiClient()` (e.g. one account of a multi-account app) to call instead of the default global
+ * `apiFetch()` - see `withClient()`'s own doc comment in `util/api.ts`. Omitted (the default), every
+ * function here behaves exactly as before. */
+export function createMatterExportRequest(matterId: string, client?: ApiClient): Promise<MatterExportRequest> {
+    return withClient(client, `/escrow/matter-export-requests`, {
         method: "POST",
         body: JSON.stringify({ matterId }),
     });
@@ -43,12 +47,12 @@ export function createMatterExportRequest(matterId: string): Promise<MatterExpor
 /** Scoped server-side to matters under scopes the caller holds — never all requests, even for a trusted
  * admin who isn't also a holder. Newest first; `params` pages through them (`limit` capped at 500
  * server-side) and/or narrows to one `matterId`. */
-export function listMatterExportRequests(params: RequestListParams = {}): Promise<MatterExportRequest[]> {
-    return apiFetch(`/escrow/matter-export-requests${buildRequestListQuery(params)}`);
+export function listMatterExportRequests(params: RequestListParams = {}, client?: ApiClient): Promise<MatterExportRequest[]> {
+    return withClient(client, `/escrow/matter-export-requests${buildRequestListQuery(params)}`);
 }
 
-export function getMatterExportRequest(uid: string): Promise<MatterExportRequest> {
-    return apiFetch(`/escrow/matter-export-requests/${encodeURIComponent(uid)}`);
+export function getMatterExportRequest(uid: string, client?: ApiClient): Promise<MatterExportRequest> {
+    return withClient(client, `/escrow/matter-export-requests/${encodeURIComponent(uid)}`);
 }
 
 /** A plain URL, not a fetch wrapper — same "let the browser download it natively" pattern

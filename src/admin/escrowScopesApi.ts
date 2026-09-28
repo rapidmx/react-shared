@@ -11,7 +11,7 @@
  * `apps/admin/escrow-scopes/*`, never by the holder-facing `apps/escrow` area.
  */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 import type { ResolvedPrincipal } from "../mail/mailboxAccessApi.js";
 
@@ -49,8 +49,11 @@ export interface EscrowScope {
     notifySubjectOnAccess: boolean;
 }
 
-export function listEscrowScopes(params: ListParams = {}): Promise<EscrowScope[]> {
-    return apiFetch(`/escrow/scopes?${buildQuery(params)}`);
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+export function listEscrowScopes(params: ListParams = {}, client?: ApiClient): Promise<EscrowScope[]> {
+    return withClient(client, `/escrow/scopes?${buildQuery(params)}`);
 }
 
 /**
@@ -59,12 +62,12 @@ export function listEscrowScopes(params: ListParams = {}): Promise<EscrowScope[]
  * ("No user found for ...") for nobody. Trusted-role-only (`BaseEscrowScopeRoute.resolveHolder()` in
  * `@rapidmx/restapi`) - never weaker than `createEscrowScope()`/`updateEscrowScope()`'s own gate on this same field.
  */
-export function resolveEscrowScopeHolder(principal: string): Promise<ResolvedPrincipal> {
-    return apiFetch(`/escrow/scopes/resolve-holder?principal=${encodeURIComponent(principal)}`);
+export function resolveEscrowScopeHolder(principal: string, client?: ApiClient): Promise<ResolvedPrincipal> {
+    return withClient(client, `/escrow/scopes/resolve-holder?principal=${encodeURIComponent(principal)}`);
 }
 
-export function getEscrowScope(uid: string): Promise<EscrowScope> {
-    return apiFetch(`/escrow/scopes/${encodeURIComponent(uid)}`);
+export function getEscrowScope(uid: string, client?: ApiClient): Promise<EscrowScope> {
+    return withClient(client, `/escrow/scopes/${encodeURIComponent(uid)}`);
 }
 
 export interface CreateEscrowScopeInput {
@@ -76,8 +79,8 @@ export interface CreateEscrowScopeInput {
     notifySubjectOnAccess?: boolean;
 }
 
-export function createEscrowScope(input: CreateEscrowScopeInput): Promise<EscrowScope> {
-    return apiFetch("/escrow/scopes", {
+export function createEscrowScope(input: CreateEscrowScopeInput, client?: ApiClient): Promise<EscrowScope> {
+    return withClient(client, "/escrow/scopes", {
         method: "POST",
         body: JSON.stringify({ notifySubjectOnAccess: false, ...input }),
     });
@@ -94,8 +97,8 @@ export interface UpdateEscrowScopeInput {
     notifySubjectOnAccess?: boolean;
 }
 
-export function updateEscrowScope(input: UpdateEscrowScopeInput): Promise<EscrowScope> {
-    return apiFetch(`/escrow/scopes/${encodeURIComponent(input.uid)}`, {
+export function updateEscrowScope(input: UpdateEscrowScopeInput, client?: ApiClient): Promise<EscrowScope> {
+    return withClient(client, `/escrow/scopes/${encodeURIComponent(input.uid)}`, {
         method: "PUT",
         body: JSON.stringify(input),
     });
@@ -104,6 +107,6 @@ export function updateEscrowScope(input: UpdateEscrowScopeInput): Promise<Escrow
 /** 409s if a `Matter` still references this scope (`BaseEscrowScopeRoute.delete()`'s own referencing-Matter
  * guard) — the caller is expected to surface that `ApiRequestError` as-is, same as every other CRUD wrapper
  * in this package. */
-export function deleteEscrowScope(uid: string, version: number): Promise<void> {
-    return apiFetch(`/escrow/scopes/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+export function deleteEscrowScope(uid: string, version: number, client?: ApiClient): Promise<void> {
+    return withClient(client, `/escrow/scopes/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 }

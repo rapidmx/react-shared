@@ -12,7 +12,7 @@
  * decrypt either — see `EscrowAccessMaterial`'s own doc comment.
  */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, RequestListParams, buildQuery } from "../util/apiQuery.js";
 
 export type { ListParams, RequestListParams };
@@ -67,15 +67,18 @@ export interface EscrowAccessMaterial {
     masterKeyWraps: MasterKeyWrap[];
 }
 
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
 /** Newest first. Every request belongs to one Matter, so `params.matterId` narrows the list to that
  * Matter's requests (still only ever within scopes the caller holds). */
-export function listAccessRequests(params: RequestListParams = {}): Promise<EscrowAccessRequest[]> {
+export function listAccessRequests(params: RequestListParams = {}, client?: ApiClient): Promise<EscrowAccessRequest[]> {
     const { matterId, ...paging } = params;
-    return apiFetch(`/escrow/access-requests?${buildQuery(paging, matterId ? { matterId } : {})}`);
+    return withClient(client, `/escrow/access-requests?${buildQuery(paging, matterId ? { matterId } : {})}`);
 }
 
-export function getAccessRequest(uid: string): Promise<EscrowAccessRequest> {
-    return apiFetch(`/escrow/access-requests/${encodeURIComponent(uid)}`);
+export function getAccessRequest(uid: string, client?: ApiClient): Promise<EscrowAccessRequest> {
+    return withClient(client, `/escrow/access-requests/${encodeURIComponent(uid)}`);
 }
 
 export interface CreateAccessRequestInput {
@@ -85,23 +88,23 @@ export interface CreateAccessRequestInput {
 
 /** The requester's own creation counts as their first approval — auto-approved immediately if
  * `EscrowScope.requiredHolders` is `1`. */
-export function createAccessRequest(input: CreateAccessRequestInput): Promise<EscrowAccessRequest> {
-    return apiFetch("/escrow/access-requests", { method: "POST", body: JSON.stringify(input) });
+export function createAccessRequest(input: CreateAccessRequestInput, client?: ApiClient): Promise<EscrowAccessRequest> {
+    return withClient(client, "/escrow/access-requests", { method: "POST", body: JSON.stringify(input) });
 }
 
 /** 409s if the request isn't `pending`; 400s if the caller already approved it. */
-export function approveAccessRequest(uid: string): Promise<EscrowAccessRequest> {
-    return apiFetch(`/escrow/access-requests/${encodeURIComponent(uid)}/approve`, { method: "POST" });
+export function approveAccessRequest(uid: string, client?: ApiClient): Promise<EscrowAccessRequest> {
+    return withClient(client, `/escrow/access-requests/${encodeURIComponent(uid)}/approve`, { method: "POST" });
 }
 
 /** 409s if the request isn't `pending`. */
-export function denyAccessRequest(uid: string): Promise<EscrowAccessRequest> {
-    return apiFetch(`/escrow/access-requests/${encodeURIComponent(uid)}/deny`, { method: "POST" });
+export function denyAccessRequest(uid: string, client?: ApiClient): Promise<EscrowAccessRequest> {
+    return withClient(client, `/escrow/access-requests/${encodeURIComponent(uid)}/deny`, { method: "POST" });
 }
 
 /** 403s ("Dual control threshold not yet met.") unless the request is `approved`/`fulfilled`. Marks the
  * request `fulfilled` server-side as a side effect of a successful call, and records an
  * `EscrowAuditAction.MATERIAL_READ` entry — see `escrowAuditLogApi.ts`. */
-export function getAccessRequestMaterial(uid: string): Promise<EscrowAccessMaterial> {
-    return apiFetch(`/escrow/access-requests/${encodeURIComponent(uid)}/material`);
+export function getAccessRequestMaterial(uid: string, client?: ApiClient): Promise<EscrowAccessMaterial> {
+    return withClient(client, `/escrow/access-requests/${encodeURIComponent(uid)}/material`);
 }

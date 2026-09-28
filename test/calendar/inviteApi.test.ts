@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { ApiRequestError } from "../../src/util/api.js";
+import { ApiRequestError, createApiClient } from "../../src/util/api.js";
 import {
     acceptProposal,
     getMessageInvite,
@@ -151,5 +151,33 @@ describe("acceptProposal", () => {
     it("rejects with the server's error", async () => {
         mockFetch(() => jsonResponse(409, { message: "Conflict" }));
         await expect(acceptProposal("m1")).rejects.toBeInstanceOf(ApiRequestError);
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, invite));
+
+        await getMessageInvite("m1", client);
+        await respondToMessageInvite("m1", "accepted", client);
+        await removeMessageInvite("m1", client);
+        await proposeNewTime("m1", { startDate: "2026-06-17T14:00:00.000Z", endDate: "2026-06-17T15:00:00.000Z" }, client);
+        await acceptProposal("m1", client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(5);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, invite));
+        await getMessageInvite("m1");
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/calendar-events/invite/m1", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

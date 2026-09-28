@@ -8,7 +8,7 @@
  * lists; `GET /mail/directory/contacts` searches the caller's own contacts. Both match every word of the query against
  * the start of a name word or of an address, and return only a display name, an address and a kind.
  */
-import { ApiRequestError, apiFetch } from "../util/api.js";
+import { ApiClient, ApiRequestError, withClient } from "../util/api.js";
 
 /** What a suggestion names. `"contact"` comes from the caller's contacts, everything else from the server directory. */
 export type RecipientSuggestionKind = "user" | "shared" | "room" | "equipment" | "list" | "contact";
@@ -59,7 +59,13 @@ function wellFormed(body: unknown): RecipientSuggestion[] {
         : [];
 }
 
-async function fetchSuggestions(path: string, query: string, params: Record<string, string | undefined>, signal?: AbortSignal): Promise<RecipientSuggestion[]> {
+async function fetchSuggestions(
+    path: string,
+    query: string,
+    params: Record<string, string | undefined>,
+    signal?: AbortSignal,
+    client?: ApiClient,
+): Promise<RecipientSuggestion[]> {
     const q = normalizeQuery(query);
     if (q === undefined) {
         return [];
@@ -70,18 +76,32 @@ async function fetchSuggestions(path: string, query: string, params: Record<stri
             search.set(key, value);
         }
     }
-    return wellFormed(await apiFetch(`${path}?${search.toString()}`, signal ? { signal } : {}));
+    return wellFormed(await withClient(client, `${path}?${search.toString()}`, signal ? { signal } : {}));
 }
+
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
 
 /** Searches the server directory. Rejects with a 403 `ApiRequestError` for a caller without a mailbox on the server,
  * and a 429 one when the caller searches too often. */
-export function searchDirectory(query: string, options: RecipientSuggestionOptions = {}): Promise<RecipientSuggestion[]> {
-    return fetchSuggestions("/mail/directory", query, { limit: options.limit?.toString() }, options.signal);
+export function searchDirectory(query: string, options: RecipientSuggestionOptions = {}, client?: ApiClient): Promise<RecipientSuggestion[]> {
+    return fetchSuggestions("/mail/directory", query, { limit: options.limit?.toString() }, options.signal, client);
 }
 
 /** Searches the caller's contacts (every address of a contact whose name matches, or the addresses that match). */
-export function searchContactSuggestions(query: string, options: ContactSuggestionOptions = {}): Promise<RecipientSuggestion[]> {
-    return fetchSuggestions("/mail/directory/contacts", query, { limit: options.limit?.toString(), mailboxUid: options.mailboxUid }, options.signal);
+export function searchContactSuggestions(
+    query: string,
+    options: ContactSuggestionOptions = {},
+    client?: ApiClient,
+): Promise<RecipientSuggestion[]> {
+    return fetchSuggestions(
+        "/mail/directory/contacts",
+        query,
+        { limit: options.limit?.toString(), mailboxUid: options.mailboxUid },
+        options.signal,
+        client,
+    );
 }
 
 /** Contacts first, then directory entries, without repeating an address (compared case-insensitively; the first
@@ -115,11 +135,15 @@ function isAbort(error: unknown): boolean {
  * directory for a caller with no mailbox here, a 429, a network error) still returns the other's entries; only when
  * both fail does this reject, with the contacts error. An aborted `signal` always rejects with the `AbortError`.
  */
-export async function fetchRecipientSuggestions(query: string, options: ContactSuggestionOptions = {}): Promise<RecipientSuggestion[]> {
+export async function fetchRecipientSuggestions(
+    query: string,
+    options: ContactSuggestionOptions = {},
+    client?: ApiClient,
+): Promise<RecipientSuggestion[]> {
     const limit = options.limit ?? RECIPIENT_SUGGESTION_DEFAULT_LIMIT;
     const [contacts, directory] = await Promise.allSettled([
-        searchContactSuggestions(query, { ...options, limit }),
-        searchDirectory(query, { limit, signal: options.signal }),
+        searchContactSuggestions(query, { ...options, limit }, client),
+        searchDirectory(query, { limit, signal: options.signal }, client),
     ]);
     for (const outcome of [contacts, directory]) {
         if (outcome.status === "rejected" && isAbort(outcome.reason)) {

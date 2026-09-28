@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
+import { createApiClient } from "../../src/util/api.js";
 import { listAuditLog } from "../../src/admin/auditLogApi.js";
 
 const entry = {
@@ -48,5 +49,29 @@ describe("listAuditLog", () => {
         const fetchMock = mockFetch(() => jsonResponse(200, []));
         await listAuditLog({ mailboxUid: "mb1" });
         expect(fetchMock).toHaveBeenCalledWith("/api/mail/audit-log?limit=25&page=0&mailboxUid=mb1", expect.anything());
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, [entry]));
+
+        await listAuditLog({}, {}, client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, [entry]));
+        await listAuditLog();
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/audit-log?limit=25&page=0", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

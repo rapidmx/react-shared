@@ -8,7 +8,7 @@
  * effect (server config fills anything never saved), along with the server's current config values for the same
  * fields as `defaults`; `PUT` is trusted-admin-only.
  */
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 
 /** Mirrors `@rapidmx/restapi`'s `PublicMailboxPolicy`. */
 export interface MailboxPolicy {
@@ -25,11 +25,14 @@ export interface MailboxPolicy {
     defaults?: Omit<MailboxPolicy, "defaults">;
 }
 
-export function getMailboxPolicy(): Promise<MailboxPolicy> {
-    return apiFetch("/system/mailbox-policy");
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+export function getMailboxPolicy(client?: ApiClient): Promise<MailboxPolicy> {
+    return withClient(client, "/system/mailbox-policy");
 }
 
 /** Partial patch - only supplied fields change. */
-export function updateMailboxPolicy(patch: Partial<Omit<MailboxPolicy, "defaults">>): Promise<MailboxPolicy> {
-    return apiFetch("/system/mailbox-policy", { method: "PUT", body: JSON.stringify(patch) });
+export function updateMailboxPolicy(patch: Partial<Omit<MailboxPolicy, "defaults">>, client?: ApiClient): Promise<MailboxPolicy> {
+    return withClient(client, "/system/mailbox-policy", { method: "PUT", body: JSON.stringify(patch) });
 }

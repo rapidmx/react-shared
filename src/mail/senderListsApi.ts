@@ -11,7 +11,7 @@
  * an entry to one list takes it off the other. Both lists are owner-level settings: every call needs FULL access to the mailbox (a 403
  * otherwise), which the mailbox's owner and a "manager" delegate have.
  */
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 
 /** The most entries one list may hold (a 400 past it). */
 export const MAX_SENDER_LIST_ENTRIES = 1000;
@@ -120,13 +120,17 @@ function listPath(mailboxUid: string, list: SenderListKind): string {
     return `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/${list === "blocked" ? "blocked-senders" : "safe-senders"}`;
 }
 
-function add(mailboxUid: string, list: SenderListKind, entry: string): Promise<SenderListsChange> {
-    return apiFetch(listPath(mailboxUid, list), { method: "POST", body: JSON.stringify({ entry }) });
+function add(mailboxUid: string, list: SenderListKind, entry: string, client?: ApiClient): Promise<SenderListsChange> {
+    return withClient(client, listPath(mailboxUid, list), { method: "POST", body: JSON.stringify({ entry }) });
 }
 
-function remove(mailboxUid: string, list: SenderListKind, entry: string): Promise<SenderListsChange> {
-    return apiFetch(`${listPath(mailboxUid, list)}/${encodeURIComponent(entry)}`, { method: "DELETE" });
+function remove(mailboxUid: string, list: SenderListKind, entry: string, client?: ApiClient): Promise<SenderListsChange> {
+    return withClient(client, `${listPath(mailboxUid, list)}/${encodeURIComponent(entry)}`, { method: "DELETE" });
 }
+
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
 
 /**
  * Adds an address or domain to the mailbox's Blocked Senders (`POST .../blocked-senders`) and takes it off its Safe Senders. Mail from it goes to Junk Email
@@ -134,24 +138,24 @@ function remove(mailboxUid: string, list: SenderListKind, entry: string): Promis
  * Adding an entry already there changes nothing (`changed: false`). Rejects with a 400 for an invalid entry or a full list, a 403 without full access to the
  * mailbox, and a 404 for a mailbox the caller cannot read - or a server without the lists.
  */
-export function addBlockedSender(mailboxUid: string, entry: string): Promise<SenderListsChange> {
-    return add(mailboxUid, "blocked", entry);
+export function addBlockedSender(mailboxUid: string, entry: string, client?: ApiClient): Promise<SenderListsChange> {
+    return add(mailboxUid, "blocked", entry, client);
 }
 
 /** Takes an address or domain off the mailbox's Blocked Senders (`DELETE .../blocked-senders/:entry`, the entry URL-encoded, `@` included). Removing an absent entry
  * succeeds with `changed: false`. */
-export function removeBlockedSender(mailboxUid: string, entry: string): Promise<SenderListsChange> {
-    return remove(mailboxUid, "blocked", entry);
+export function removeBlockedSender(mailboxUid: string, entry: string, client?: ApiClient): Promise<SenderListsChange> {
+    return remove(mailboxUid, "blocked", entry, client);
 }
 
 /** Adds an address or domain to the mailbox's Safe Senders (`POST .../safe-senders`) and takes it off its Blocked Senders. Authenticated mail from it (a passing DKIM signature
  * aligned with its From domain) is then not sent to Junk Email for the spam filter's verdict; mail that fails authentication, carries a virus or is quarantined
  * by policy still is. Errors as `addBlockedSender()`. */
-export function addSafeSender(mailboxUid: string, entry: string): Promise<SenderListsChange> {
-    return add(mailboxUid, "safe", entry);
+export function addSafeSender(mailboxUid: string, entry: string, client?: ApiClient): Promise<SenderListsChange> {
+    return add(mailboxUid, "safe", entry, client);
 }
 
 /** Takes an address or domain off the mailbox's Safe Senders (`DELETE .../safe-senders/:entry`). Removing an absent entry succeeds with `changed: false`. */
-export function removeSafeSender(mailboxUid: string, entry: string): Promise<SenderListsChange> {
-    return remove(mailboxUid, "safe", entry);
+export function removeSafeSender(mailboxUid: string, entry: string, client?: ApiClient): Promise<SenderListsChange> {
+    return remove(mailboxUid, "safe", entry, client);
 }

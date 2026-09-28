@@ -3,7 +3,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { ApiRequestError } from "../../src/util/api.js";
+import { ApiRequestError, createApiClient } from "../../src/util/api.js";
 import {
     FreeBusyResponse,
     PersonAvailability,
@@ -152,5 +152,33 @@ describe("suggestTimes", () => {
         expect(suggestTimes([person("a@example.com", [])], { windows: [window], durationMs: 0 })).toEqual([]);
         expect(suggestTimes([person("a@example.com", [])], { windows: [window], durationMs: 5 * HOUR })).toEqual([]);
         expect(suggestTimes([person("a@example.com", [["2026-06-16T08:00:00Z", "2026-06-16T12:00:00Z"]])], { windows: [window], durationMs: HOUR })).toEqual([]);
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const answer: FreeBusyResponse = { start: "2026-06-16T00:00:00.000Z", end: "2026-06-17T00:00:00.000Z", results: [] };
+        const fetchMock = mockFetch(() => jsonResponse(200, answer));
+
+        await getFreeBusy(["a@example.com"], "2026-06-16T00:00:00.000Z", "2026-06-17T00:00:00.000Z", client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const answer: FreeBusyResponse = { start: "2026-06-16T00:00:00.000Z", end: "2026-06-17T00:00:00.000Z", results: [] };
+        const fetchMock = mockFetch(() => jsonResponse(200, answer));
+
+        await getFreeBusy(["a@example.com"], "2026-06-16T00:00:00.000Z", "2026-06-17T00:00:00.000Z");
+
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/calendar-events/free-busy", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

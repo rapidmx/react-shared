@@ -12,7 +12,7 @@
  * and speak a simple 2-tier `"viewer"`/`"manager"` vocabulary instead, so a non-admin mailbox owner or
  * delegate can use them too.
  */
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 
 /** A role that can be granted. */
 export type MailboxAccessRole = "viewer" | "manager";
@@ -40,9 +40,13 @@ export interface ResolvedPrincipal {
     address?: string;
 }
 
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+
 /** Who a typed principal is, without granting anything - rejects with a 404 `ApiRequestError` ("No user found for ...") for nobody. */
-export function resolveMailboxPrincipal(mailboxUid: string, principal: string): Promise<ResolvedPrincipal> {
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/resolve?principal=${encodeURIComponent(principal)}`);
+export function resolveMailboxPrincipal(mailboxUid: string, principal: string, client?: ApiClient): Promise<ResolvedPrincipal> {
+    return withClient(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/resolve?principal=${encodeURIComponent(principal)}`);
 }
 
 export interface MailboxOwnerLookup {
@@ -53,15 +57,15 @@ export interface MailboxOwnerLookup {
 /** Lists a mailbox's delegate members (excludes the owner's own implicit grant) - rejects with a 403
  * `ApiRequestError` if the caller doesn't hold at least `"update"` on the mailbox (an administrator, trusted + elevated, may
  * list any mailbox's members through the audited administration path). */
-export function listMailboxAccess(mailboxUid: string): Promise<MailboxAccessMember[]> {
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access`);
+export function listMailboxAccess(mailboxUid: string, client?: ApiClient): Promise<MailboxAccessMember[]> {
+    return withClient(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access`);
 }
 
 /** Grants (or, if already a member, updates the role of) a delegate's access to a mailbox. `userOrRoleId` names the PERSON - a user
  * uid, or anything the server resolves to one (a mailbox address, an auth-server username or e-mail alias): only the resolved uid is
  * stored, and a name that resolves to nobody rejects with a 400 `ApiRequestError` ("No user found for ..."). */
-export function setMailboxAccess(mailboxUid: string, userOrRoleId: string, role: MailboxAccessRole): Promise<MailboxAccessMember> {
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/${encodeURIComponent(userOrRoleId)}`, {
+export function setMailboxAccess(mailboxUid: string, userOrRoleId: string, role: MailboxAccessRole, client?: ApiClient): Promise<MailboxAccessMember> {
+    return withClient(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/${encodeURIComponent(userOrRoleId)}`, {
         method: "PUT",
         body: JSON.stringify({ role }),
     });
@@ -80,13 +84,13 @@ export interface MyMailboxAccess {
 }
 
 /** The signed-in caller's own access to a mailbox. */
-export function getMyMailboxAccess(mailboxUid: string): Promise<MyMailboxAccess> {
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/me`);
+export function getMyMailboxAccess(mailboxUid: string, client?: ApiClient): Promise<MyMailboxAccess> {
+    return withClient(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/me`);
 }
 
 /** Revokes a delegate's access to a mailbox - never rejects for a `userOrRoleId` that wasn't a member. */
-export function removeMailboxAccess(mailboxUid: string, userOrRoleId: string): Promise<void> {
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/${encodeURIComponent(userOrRoleId)}`, { method: "DELETE" });
+export function removeMailboxAccess(mailboxUid: string, userOrRoleId: string, client?: ApiClient): Promise<void> {
+    return withClient(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/access/${encodeURIComponent(userOrRoleId)}`, { method: "DELETE" });
 }
 
 /**
@@ -97,6 +101,6 @@ export function removeMailboxAccess(mailboxUid: string, userOrRoleId: string): P
  * an address with no matching mailbox, or one that only matches a shared (ownerless) mailbox - both are
  * "no person found," a normal, expected outcome, not a failure.
  */
-export function lookupMailboxOwnerByEmail(email: string): Promise<MailboxOwnerLookup | null> {
-    return apiFetch(`/mail/mailboxes/lookup-by-email?email=${encodeURIComponent(email)}`);
+export function lookupMailboxOwnerByEmail(email: string, client?: ApiClient): Promise<MailboxOwnerLookup | null> {
+    return withClient(client, `/mail/mailboxes/lookup-by-email?email=${encodeURIComponent(email)}`);
 }

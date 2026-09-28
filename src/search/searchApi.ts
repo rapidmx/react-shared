@@ -15,7 +15,7 @@
  * already-structured result, matching `BaseSearchRoute`'s own query-param names exactly
  * (`from`/`to`/`cc`/`subject`/`hasAttachment`/`before`/`after`/`in`/`is`/`label`).
  */
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 
 export type SearchEntityType = "message" | "contact" | "calendarEvent" | "note" | "task";
 
@@ -123,8 +123,8 @@ export function buildSearchParams(text: string, params: SearchParams): URLSearch
     return query;
 }
 
-export function search(text: string, params: SearchParams = {}): Promise<SearchResultPage> {
-    return apiFetch(`/mail/search?${buildSearchParams(text, params).toString()}`);
+export function search(text: string, params: SearchParams = {}, client?: ApiClient): Promise<SearchResultPage> {
+    return withClient(client, `/mail/search?${buildSearchParams(text, params).toString()}`);
 }
 
 /**
@@ -194,6 +194,6 @@ function buildCandidateParams(params: CandidateParams): URLSearchParams {
     return query;
 }
 
-export function candidates(params: CandidateParams = {}): Promise<CandidateResultPage> {
-    return apiFetch(`/mail/search/candidates?${buildCandidateParams(params).toString()}`);
+export function candidates(params: CandidateParams = {}, client?: ApiClient): Promise<CandidateResultPage> {
+    return withClient(client, `/mail/search/candidates?${buildCandidateParams(params).toString()}`);
 }

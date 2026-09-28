@@ -15,7 +15,7 @@ import {
     uploadBrandingLogo,
     uploadBrandingStylesheet,
 } from "../../src/branding/brandingApi.js";
-import { configureApiBaseUrl } from "../../src/util/api.js";
+import { configureApiBaseUrl, createApiClient } from "../../src/util/api.js";
 
 const branding: Branding = { companyName: "Acme", title: "Acme Mail" };
 
@@ -176,5 +176,33 @@ describe("deleteBrandingStylesheet", () => {
         const fetchMock = mockFetch(() => emptyResponse(204));
         await deleteBrandingStylesheet();
         expect(fetchMock).toHaveBeenCalledWith("/api/system/branding/stylesheet", expect.objectContaining({ method: "DELETE" }));
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, branding));
+
+        await getBranding(client);
+        await updateBranding({ title: "New Title" }, client);
+        await deleteBrandingLogo(client);
+        await deleteBrandingIcon(client);
+        await deleteBrandingStylesheet(client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(5);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, branding));
+        await getBranding();
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/branding", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

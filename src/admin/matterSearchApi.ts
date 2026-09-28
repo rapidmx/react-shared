@@ -15,13 +15,21 @@
  * There is no merged cross-mailbox ranking or cursor-based pagination — the response is keyed by
  * `mailboxUid`, one page per custodian, matching how a holder-facing review UI groups results anyway.
  */
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { SearchParams, SearchResultPage, buildSearchParams } from "../search/searchApi.js";
 
 export type { SearchParams, SearchResultPage };
 
-export function searchMatter(matterId: string, text: string, params: SearchParams = {}): Promise<Record<string, SearchResultPage>> {
+/** `client`, given below, is an explicit `ApiClient` from `createApiClient()` (e.g. one account of a multi-account
+ * app) to call instead of the default global `apiFetch()` - see `withClient()`'s own doc comment in `util/api.ts`.
+ * Omitted (the default), this behaves exactly as before. */
+export function searchMatter(
+    matterId: string,
+    text: string,
+    params: SearchParams = {},
+    client?: ApiClient,
+): Promise<Record<string, SearchResultPage>> {
     const query = buildSearchParams(text, params);
     query.set("matterId", matterId);
-    return apiFetch(`/escrow/matter-search?${query.toString()}`);
+    return withClient(client, `/escrow/matter-search?${query.toString()}`);
 }

@@ -158,7 +158,7 @@ export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}
     const credentials = apiBaseUrl ? "include" : init.credentials;
 
     const res = await fetch(apiUrl(path), { ...init, headers, credentials });
-    return decodeApiResponse<T>(res, true);
+    return decodeApiResponse<T>(res, (error) => unauthorizedObserver?.(error));
 }
 
 /**
@@ -199,16 +199,22 @@ export function setApiUnauthorizedObserver(observer: ((error: ApiRequestError) =
     unauthorizedObserver = observer;
 }
 
-async function decodeApiResponse<T>(res: Response, observeUnauthorized = false): Promise<T> {
+/**
+ * `onUnauthorized`, when given, is invoked (never awaited) for a `401` response only - `apiFetch()` passes one
+ * that forwards to whatever `setApiUnauthorizedObserver()` last registered; `authApiFetch()` and a plain
+ * `createApiClient()`-made client's `fetch()` (which forwards to that instance's own
+ * `setUnauthorizedObserver()`) pass their own. A throwing `onUnauthorized` never changes what the caller sees.
+ */
+async function decodeApiResponse<T>(res: Response, onUnauthorized?: (error: ApiRequestError) => void): Promise<T> {
     const contentType = res.headers.get("content-type") ?? "";
     const body = contentType.includes("application/json") ? await res.json().catch(() => undefined) : undefined;
 
     if (!res.ok) {
         const message = (body && (body.message || body.error)) || res.statusText || "Request failed.";
         const error = new ApiRequestError(message, res.status, body?.code, body);
-        if (observeUnauthorized && res.status === 401) {
+        if (res.status === 401 && onUnauthorized) {
             try {
-                unauthorizedObserver?.(error);
+                onUnauthorized(error);
             } catch {
                 // An observer's failure must not change what the caller sees.
             }
@@ -217,4 +223,96 @@ async function decodeApiResponse<T>(res: Response, observeUnauthorized = false):
     }
 
     return body as T;
+}
+
+/**
+ * The low-level shape both the default global client (`apiFetch()`, driven by `configureApiBaseUrl()` and the
+ * `jwt` cookie) and an explicit `createApiClient()` instance expose - so a `mailApi.ts`-style module can be
+ * written once against this interface and used from either. There is deliberately no `authFetch`/cross-origin
+ * counterpart here: `authApiFetch()`'s `authServerUrl` is already explicit per call, so it doesn't need this
+ * abstraction the way the single implicit `apiBaseUrl` global does.
+ */
+export interface ApiClient {
+    /** Same contract as `apiFetch()`: prefixes `path` with `/api`, parses a JSON response, and rejects with
+     * `ApiRequestError` on a non-ok response. */
+    fetch<T = unknown>(path: string, init?: RequestInit): Promise<T>;
+    /**
+     * This client instance's own `setApiUnauthorizedObserver()` equivalent - see `createApiClient()`'s doc
+     * comment for why it is per-instance rather than shared with the module-level `setApiUnauthorizedObserver()`
+     * (or across other `ApiClient` instances).
+     */
+    setUnauthorizedObserver(observer: ((error: ApiRequestError) => void) | undefined): void;
+}
+
+/** `createApiClient()`'s options. */
+export interface CreateApiClientOptions {
+    /** This client's origin, e.g. `"https://mail.example.com"` - always used, never the global
+     * `configureApiBaseUrl()` value. A trailing slash is stripped, matching `configureApiBaseUrl()`. */
+    baseUrl: string;
+    /**
+     * Called fresh before every single request this client makes - never cached or reused across calls, so a
+     * caller can transparently rotate/refresh the underlying session token between requests (e.g. a
+     * background refresh keyed on this one account) without this client needing to know anything about
+     * refresh logic itself. Its resolved value is sent as `Authorization: jwt <token>` - the same header
+     * format `JWTStrategy` already accepts server-side alongside the `jwt` cookie - never `credentials:
+     * "include"`, since a native multi-account app has no relevant cookie jar for a given account's origin.
+     * A rejection here rejects the request itself (the underlying `fetch()` is never called).
+     */
+    getAccessToken: () => Promise<string>;
+}
+
+/**
+ * Builds an explicit-context `ApiClient`: everything `apiFetch()` does, but always against `baseUrl` (never
+ * the `configureApiBaseUrl()` global) and always authenticated with a bearer token from `getAccessToken()`
+ * (never the `jwt` cookie / `credentials: "include"`). ADDITIVE to the existing global-config mode -
+ * `apiFetch()`/`authApiFetch()`/`configureApiBaseUrl()` are untouched and keep working exactly as before for
+ * every existing caller; this is for a consumer (the Tauri multi-account client) that needs several fully
+ * independent origin/session contexts open at once, which the single module-level `apiBaseUrl` global can't
+ * represent.
+ *
+ * Distinct instances never share state: each closes over its own `baseUrl`, `getAccessToken` and unauthorized
+ * observer, so two accounts' clients never cross-talk even when both are live in the same process.
+ *
+ * **401 handling is per-instance, not global.** The existing `setApiUnauthorizedObserver()` is one process-wide
+ * "you're signed out" signal, correct for a single-session app (one browser tab, one Electron window - there is
+ * only ever one session to lose). A multi-account app has no single account whose 401 means "the app" is
+ * unauthorized, so an `ApiClient` from `createApiClient()` does NOT invoke the global observer at all; instead
+ * each instance has its own `setUnauthorizedObserver()` a caller can register per account (e.g. to mark that
+ * one account's tab as needing re-authentication without touching the others).
+ */
+export function createApiClient(options: CreateApiClientOptions): ApiClient {
+    const baseUrl = options.baseUrl.replace(/\/$/, "");
+    const { getAccessToken } = options;
+    let unauthorizedObserver: ((error: ApiRequestError) => void) | undefined;
+
+    async function clientFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+        const headers = new Headers(init.headers);
+        headers.set("Content-Type", "application/json");
+        const token = await getAccessToken();
+        headers.set("Authorization", `jwt ${token}`);
+
+        const res = await fetch(`${baseUrl}/api${path}`, { ...init, headers });
+        return decodeApiResponse<T>(res, (error) => unauthorizedObserver?.(error));
+    }
+
+    return {
+        fetch: clientFetch,
+        setUnauthorizedObserver(observer) {
+            unauthorizedObserver = observer;
+        },
+    };
+}
+
+/**
+ * Routes a request to `client.fetch()` when `client` is given, else to the default global `apiFetch()` - the
+ * one call every REST client module (`mailApi.ts` etc.) uses to add optional explicit-`ApiClient` support to
+ * each of its exported functions with minimal churn: give the function a trailing `client?: ApiClient`
+ * parameter (so every existing call site, which never passes one, is unaffected - `undefined` here means
+ * exactly what calling `apiFetch()` directly always meant), and swap its `apiFetch(...)` call for
+ * `withClient(client, ...)`. A function that calls another exported function of the same module internally
+ * (e.g. `mailApi.ts`'s `grantMailboxAccess()` calling `getMailboxAcl()`) threads its own `client` through
+ * that call too, so a whole call chain stays pinned to one account.
+ */
+export function withClient<T = unknown>(client: ApiClient | undefined, path: string, init?: RequestInit): Promise<T> {
+    return client ? client.fetch<T>(path, init) : apiFetch<T>(path, init);
 }

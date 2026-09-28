@@ -15,7 +15,7 @@
  * CA issued, or reject a request with a reason its owner sees. This is the manual-issuance workflow, and an
  * escape hatch to inspect an automatic (`rfc8823`) request that has stalled.
  */
-import { apiFetch, apiUrl } from "../util/api.js";
+import { ApiClient, apiUrl, withClient } from "../util/api.js";
 
 /** Mirrors `@rapidmx/restapi`'s `SigningProviderKind`. */
 export type SigningProviderKind = "manual" | "rfc8823";
@@ -86,14 +86,16 @@ export interface RejectEnrollmentResult {
 
 const ADMIN_BASE = "/admin/signing-enrollments";
 
-/** Which backend issues signing certificates in this deployment, and how it is doing - any signed-in user may read this. */
-export function getSigningEnrollmentInfo(): Promise<SigningEnrollmentInfo> {
-    return apiFetch(`/system/signing-enrollment`);
+/** `client`, given by every function below that calls the network, is an explicit `ApiClient` from `createApiClient()`
+ * (e.g. one account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+export function getSigningEnrollmentInfo(client?: ApiClient): Promise<SigningEnrollmentInfo> {
+    return withClient(client, `/system/signing-enrollment`);
 }
 
 /** The pending (and issued-but-not-yet-installed) signing-certificate requests, metadata only. Trusted role + elevated token required server-side. */
-export function listSigningEnrollments(): Promise<AdminSigningEnrollment[]> {
-    return apiFetch(ADMIN_BASE);
+export function listSigningEnrollments(client?: ApiClient): Promise<AdminSigningEnrollment[]> {
+    return withClient(client, ADMIN_BASE);
 }
 
 /** A plain URL, not a fetch wrapper — the server streams the CSR back as a PEM file with its own `content-disposition:
@@ -106,16 +108,20 @@ export function signingEnrollmentCsrUrl(enrollmentId: string): string {
 /** Uploads the certificate (or PEM chain, leaf first) a certificate authority issued for a request. Refused (400) with a message to act
  * on when it doesn't fit the request (wrong key, not for e-mail, wrong address, expired); (409) when the request can no longer be
  * completed (already issued/failed, or made before its mailbox's key was kept with it). */
-export function uploadSigningEnrollmentCertificate(enrollmentId: string, certificate: string): Promise<CertificateUploadResult> {
-    return apiFetch(`${ADMIN_BASE}/${encodeURIComponent(enrollmentId)}/certificate`, {
+export function uploadSigningEnrollmentCertificate(
+    enrollmentId: string,
+    certificate: string,
+    client?: ApiClient,
+): Promise<CertificateUploadResult> {
+    return withClient(client, `${ADMIN_BASE}/${encodeURIComponent(enrollmentId)}/certificate`, {
         method: "POST",
         body: JSON.stringify({ certificate }),
     });
 }
 
 /** Refuses a pending request; `reason` is shown to the mailbox's owner. */
-export function rejectSigningEnrollment(enrollmentId: string, reason: string): Promise<RejectEnrollmentResult> {
-    return apiFetch(`${ADMIN_BASE}/${encodeURIComponent(enrollmentId)}/reject`, {
+export function rejectSigningEnrollment(enrollmentId: string, reason: string, client?: ApiClient): Promise<RejectEnrollmentResult> {
+    return withClient(client, `${ADMIN_BASE}/${encodeURIComponent(enrollmentId)}/reject`, {
         method: "POST",
         body: JSON.stringify({ reason }),
     });

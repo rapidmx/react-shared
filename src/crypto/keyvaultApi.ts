@@ -10,7 +10,7 @@
  * certificates — the server never sees an unwrapped private key or master key; see `crypto/masterKey.ts`
  * and `crypto/keys.ts` for the client-side cryptography that produces the values passed here.
  */
-import { ApiRequestError, apiFetch } from "../util/api.js";
+import { ApiClient, ApiRequestError, withClient } from "../util/api.js";
 
 /** A cryptographic public key used to sign or encrypt messages — safe to expose publicly. Mirrors
  * `@rapidmx/restapi`'s `PublicKey` type exactly. */
@@ -124,9 +124,11 @@ export interface ExpectedMasterKeyGeneration {
     expectedMasterKeyGeneration?: number;
 }
 
-/** Fetches the caller's key vault (wrapped private keys + wrapped master-key copies) for `mailboxUid`. */
-export function getKeyVault(mailboxUid: string): Promise<KeyVault> {
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault`);
+/** `client`, given by every function below that calls the network, is an explicit `ApiClient` from `createApiClient()`
+ * (e.g. one account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+export function getKeyVault(mailboxUid: string, client?: ApiClient): Promise<KeyVault> {
+    return withClient(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault`);
 }
 
 /** The most recently issued, currently-valid (non-revoked, non-expired) published key of the given use
@@ -205,15 +207,15 @@ export class VaultAlreadyInitializedError extends ApiRequestError {
 /** Enrolls a new signing or encryption key. See `EnrollKeyInput`'s own doc comments for which fields
  * matter for which `useType`. Rejects with `VaultAlreadyInitializedError` when `masterKeyWraps` were supplied
  * but the vault is already set up (see that class). */
-export async function enrollKey(mailboxUid: string, input: EnrollKeyInput): Promise<KeyVault> {
+export async function enrollKey(mailboxUid: string, input: EnrollKeyInput, client?: ApiClient): Promise<KeyVault> {
     try {
-        return await apiFetch<KeyVault>(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys`, {
+        return await withClient<KeyVault>(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys`, {
             method: "POST",
             body: JSON.stringify(input),
         });
     } catch (err) {
         if (err instanceof ApiRequestError && err.status === 409 && input.masterKeyWraps?.length) {
-            const vault = await getKeyVault(mailboxUid).catch(() => undefined);
+            const vault = await getKeyVault(mailboxUid, client).catch(() => undefined);
             if (vault && vault.masterKeyWraps.length > 0) {
                 throw new VaultAlreadyInitializedError(err.message, err.code);
             }
@@ -373,8 +375,12 @@ export function normalizeEnrollmentResult(raw: unknown): EnrollmentResult {
  * synchronous the way `enrollKey()`'s encryption-key path is — poll `checkSignEnrollmentStatus()`
  * rather than expecting an immediate result. `wrappedKey` is submitted upfront (this server never sees
  * an unwrapped private key) so the eventual install needs no further client action at all. */
-export function startSignEnrollment(mailboxUid: string, input: SignEnrollmentRequest): Promise<{ enrollmentId: string }> {
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment`, {
+export function startSignEnrollment(
+    mailboxUid: string,
+    input: SignEnrollmentRequest,
+    client?: ApiClient,
+): Promise<{ enrollmentId: string }> {
+    return withClient(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment`, {
         method: "POST",
         body: JSON.stringify(input),
     });
@@ -382,9 +388,10 @@ export function startSignEnrollment(mailboxUid: string, input: SignEnrollmentReq
 
 /** Reports the current status of a previously started automated enrollment — see
  * `startSignEnrollment()`. Answers from what the server already knows; `checkSignEnrollmentNow()` asks the CA. */
-export async function checkSignEnrollmentStatus(mailboxUid: string, enrollmentId: string): Promise<EnrollmentResult> {
+export async function checkSignEnrollmentStatus(mailboxUid: string, enrollmentId: string, client?: ApiClient): Promise<EnrollmentResult> {
     return normalizeEnrollmentResult(
-        await apiFetch<unknown>(
+        await withClient<unknown>(
+            client,
             `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment/${encodeURIComponent(enrollmentId)}`,
         ),
     );
@@ -392,10 +399,10 @@ export async function checkSignEnrollmentStatus(mailboxUid: string, enrollmentId
 
 /** The mailbox's current (most recent) signing-certificate enrollment, or `null` when it has never had one - so a second device or
  * a fresh page learns of one started elsewhere. Needs no stored enrollment id. */
-export async function getCurrentSignEnrollment(mailboxUid: string): Promise<CurrentSignEnrollment | null> {
+export async function getCurrentSignEnrollment(mailboxUid: string, client?: ApiClient): Promise<CurrentSignEnrollment | null> {
     let raw: unknown;
     try {
-        raw = await apiFetch<unknown>(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment`);
+        raw = await withClient<unknown>(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment`);
     } catch (err) {
         if (err instanceof ApiRequestError && err.status === 404) {
             return null;
@@ -423,9 +430,10 @@ export function checkNowRetryAfterSeconds(err: unknown): number | undefined {
 
 /** Forces an immediate re-check of an enrollment with the CA (instead of waiting for the server's own schedule) and returns its
  * status. The server refuses with `429` when asked again within about ten seconds - see `checkNowRetryAfterSeconds()`. */
-export async function checkSignEnrollmentNow(mailboxUid: string, enrollmentId: string): Promise<EnrollmentResult> {
+export async function checkSignEnrollmentNow(mailboxUid: string, enrollmentId: string, client?: ApiClient): Promise<EnrollmentResult> {
     return normalizeEnrollmentResult(
-        await apiFetch<unknown>(
+        await withClient<unknown>(
+            client,
             `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment/${encodeURIComponent(enrollmentId)}/check`,
             { method: "POST" },
         ),
@@ -435,8 +443,9 @@ export async function checkSignEnrollmentNow(mailboxUid: string, enrollmentId: s
 /** Cancels a pending automated enrollment of this mailbox, so no key is installed from it afterwards, and returns its
  * resulting status. Owner-only. `rekey()` is refused (409) while an enrollment holding a wrapped key is in flight, so
  * this is how an owner with an enrollment stuck at the CA gets to rotate their keys. */
-export function cancelSignEnrollment(mailboxUid: string, enrollmentId: string): Promise<EnrollmentResult> {
-    return apiFetch(
+export function cancelSignEnrollment(mailboxUid: string, enrollmentId: string, client?: ApiClient): Promise<EnrollmentResult> {
+    return withClient(
+        client,
         `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/keys/sign-enrollment/${encodeURIComponent(enrollmentId)}`,
         { method: "DELETE" },
     );
@@ -469,16 +478,21 @@ export interface EscrowInfo {
  * mailbox has no escrow scope assigned, the scope no longer exists, or the caller can't access this
  * mailbox. Used by `crypto/masterKeyWraps.ts`'s `buildEscrowWrap()` to get the certificate MK is wrapped
  * against. */
-export function getEscrowInfo(mailboxUid: string): Promise<EscrowInfo> {
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/escrow-info`);
+export function getEscrowInfo(mailboxUid: string, client?: ApiClient): Promise<EscrowInfo> {
+    return withClient(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/escrow-info`);
 }
 
 /** Adds a wrapped copy of the master key for a new unlock method (e.g. registering a new passkey),
  * independent of key enrollment. Requires an already-initialized vault. `expectedMasterKeyGeneration`, when given, is
  * sent alongside the wrap (see `ExpectedMasterKeyGeneration`): a `409` then means the master key was rotated since. */
-export function addMasterKeyWrap(mailboxUid: string, wrap: MasterKeyWrap, expectedMasterKeyGeneration?: number): Promise<KeyVault> {
+export function addMasterKeyWrap(
+    mailboxUid: string,
+    wrap: MasterKeyWrap,
+    expectedMasterKeyGeneration?: number,
+    client?: ApiClient,
+): Promise<KeyVault> {
     const body = expectedMasterKeyGeneration === undefined ? wrap : { ...wrap, expectedMasterKeyGeneration };
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/wraps`, {
+    return withClient(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/wraps`, {
         method: "POST",
         body: JSON.stringify(body),
     });
@@ -487,9 +501,9 @@ export function addMasterKeyWrap(mailboxUid: string, wrap: MasterKeyWrap, expect
 /** Removes a wrapped copy of the master key for one unlock method. `methodId` is required whenever more
  * than one wrap could share the same `method` (e.g. multiple passkeys). This alone does NOT revoke
  * access for anyone who already captured the wrapped blob — see `rekey()`. */
-export function removeMasterKeyWrap(mailboxUid: string, method: string, methodId?: string): Promise<KeyVault> {
+export function removeMasterKeyWrap(mailboxUid: string, method: string, methodId?: string, client?: ApiClient): Promise<KeyVault> {
     const query = methodId ? `?methodId=${encodeURIComponent(methodId)}` : "";
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/wraps/${encodeURIComponent(method)}${query}`, {
+    return withClient(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/wraps/${encodeURIComponent(method)}${query}`, {
         method: "DELETE",
     });
 }
@@ -507,8 +521,8 @@ export interface RekeyInput extends ExpectedMasterKeyGeneration {
  * for a captured wrap. Restricted server-side to the mailbox's actual owner. Refused (409) while a signing enrollment
  * holding a wrapped key is in flight (see `cancelSignEnrollment()`), or when an escrowed mailbox's request carries no
  * replacement escrow wrap. */
-export function rekey(mailboxUid: string, input: RekeyInput): Promise<KeyVault> {
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/rekey`, {
+export function rekey(mailboxUid: string, input: RekeyInput, client?: ApiClient): Promise<KeyVault> {
+    return withClient(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/rekey`, {
         method: "PUT",
         body: JSON.stringify(input),
     });
@@ -529,9 +543,9 @@ export interface KeyLookupResult {
  * fetch (browsers can't do DNS TXT lookups, and a direct cross-origin fetch would hit CORS), persisting
  * the result onto a `Contact` in the caller's own address book. MUST be called lazily at compose time,
  * never on message receipt (see `specs/end-to-end_encryption.md`'s "Discovery is Server-Side"). */
-export function lookupKeys(mailboxUid: string, addr: string): Promise<KeyLookupResult> {
+export function lookupKeys(mailboxUid: string, addr: string, client?: ApiClient): Promise<KeyLookupResult> {
     const query = new URLSearchParams({ addr });
-    return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/lookup?${query.toString()}`);
+    return withClient(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/lookup?${query.toString()}`);
 }
 
 /** What `trustSigner()` pins: the sender's address and the certificate that signed their message. */
@@ -560,9 +574,9 @@ export class SignerKeyConflictError extends ApiRequestError {
  * `lookupKeys()`. Rejects with `SignerKeyConflictError` on `409` (a different signing key is already pinned), and a
  * plain `ApiRequestError` for `400` (an invalid certificate, or one that doesn't name `address`) and `403`/`404`.
  */
-export async function trustSigner(mailboxUid: string, input: TrustSignerInput): Promise<KeyLookupResult> {
+export async function trustSigner(mailboxUid: string, input: TrustSignerInput, client?: ApiClient): Promise<KeyLookupResult> {
     try {
-        return await apiFetch<KeyLookupResult>(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/trust`, {
+        return await withClient<KeyLookupResult>(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/trust`, {
             method: "POST",
             body: JSON.stringify({ address: input.address, certificate: input.certificate }),
         });
@@ -612,7 +626,11 @@ export class PinnedKeyChangedError extends ApiRequestError {
  * a plain `ApiRequestError` for `400` (an invalid body or certificate), `403` (no rights) and `404` (no such contact, no
  * pinned key, or no recorded conflict when one is needed).
  */
-export async function resolveKeyConflict(mailboxUid: string, input: ResolveKeyConflictInput): Promise<ResolveKeyConflictResult> {
+export async function resolveKeyConflict(
+    mailboxUid: string,
+    input: ResolveKeyConflictInput,
+    client?: ApiClient,
+): Promise<ResolveKeyConflictResult> {
     const body = {
         address: input.address,
         useType: input.useType,
@@ -621,7 +639,7 @@ export async function resolveKeyConflict(mailboxUid: string, input: ResolveKeyCo
         ...(input.certificate !== undefined ? { certificate: input.certificate } : {}),
     };
     try {
-        return await apiFetch<ResolveKeyConflictResult>(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/resolve`, {
+        return await withClient<ResolveKeyConflictResult>(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/resolve`, {
             method: "POST",
             body: JSON.stringify(body),
         });
@@ -643,13 +661,13 @@ export interface EncryptionPolicy {
 
 /** The system-wide encryption policy (readable by any authenticated user, used to decide what encryption
  * controls a compose UI should offer). */
-export function getEncryptionPolicy(): Promise<EncryptionPolicy> {
-    return apiFetch(`/system/encryption-policy`);
+export function getEncryptionPolicy(client?: ApiClient): Promise<EncryptionPolicy> {
+    return withClient(client, `/system/encryption-policy`);
 }
 
 /** Admin-only (`RequiresTrustedRole`) — updates the system-wide encryption policy. */
-export function updateEncryptionPolicy(patch: Partial<EncryptionPolicy>): Promise<EncryptionPolicy> {
-    return apiFetch(`/system/encryption-policy`, {
+export function updateEncryptionPolicy(patch: Partial<EncryptionPolicy>, client?: ApiClient): Promise<EncryptionPolicy> {
+    return withClient(client, `/system/encryption-policy`, {
         method: "PUT",
         body: JSON.stringify(patch),
     });

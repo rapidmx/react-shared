@@ -7,6 +7,14 @@
  * for the signed-in user's own display name/avatar in the top-right user menu (see `UserMenu.tsx`) — this
  * service has no local user directory of its own (see `.claude/NOTES.md`), so name/avatar can only ever come
  * from auth-server.
+ *
+ * Deliberately NOT given the explicit-`ApiClient` `client?` parameter every other converted module in this
+ * package has — see `withClient()`'s doc comment in `util/api.ts`. Both `getMyProfile()` and `getMyUsername()`
+ * already take an explicit `authServerUrl` targeting a *different* origin than this app's own API (auth-server,
+ * not the RapidMX server `ApiClient`/`apiFetch()` talk to) — the same shape as `mailApi.ts`'s `impersonateUser()`/
+ * `stopImpersonating()`, which is why those were left unconverted too. A per-account auth-server session (the
+ * multi-account app's own credentials for *that* origin, not this app's) is a separate future change, out of
+ * scope here.
  */
 import { authApiFetch } from "../util/api.js";
 

@@ -11,7 +11,7 @@
  * feature, not a data-model-only stub.
  */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 import { MessageImportance } from "./mailApi.js";
 
@@ -58,12 +58,15 @@ export interface MailFilterRule {
     actions: MailFilterAction[];
 }
 
-export function listMailFilterRules(mailboxUid: string, params: ListParams = {}): Promise<MailFilterRule[]> {
-    return apiFetch(`/mail/mail-filter-rules?${buildQuery(params, { mailboxUid })}`);
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+export function listMailFilterRules(mailboxUid: string, params: ListParams = {}, client?: ApiClient): Promise<MailFilterRule[]> {
+    return withClient(client, `/mail/mail-filter-rules?${buildQuery(params, { mailboxUid })}`);
 }
 
-export function getMailFilterRule(uid: string): Promise<MailFilterRule> {
-    return apiFetch(`/mail/mail-filter-rules/${encodeURIComponent(uid)}`);
+export function getMailFilterRule(uid: string, client?: ApiClient): Promise<MailFilterRule> {
+    return withClient(client, `/mail/mail-filter-rules/${encodeURIComponent(uid)}`);
 }
 
 export interface CreateMailFilterRuleInput {
@@ -76,8 +79,8 @@ export interface CreateMailFilterRuleInput {
     actions?: MailFilterAction[];
 }
 
-export function createMailFilterRule(input: CreateMailFilterRuleInput): Promise<MailFilterRule> {
-    return apiFetch("/mail/mail-filter-rules", {
+export function createMailFilterRule(input: CreateMailFilterRuleInput, client?: ApiClient): Promise<MailFilterRule> {
+    return withClient(client, "/mail/mail-filter-rules", {
         method: "POST",
         body: JSON.stringify({
             enabled: true,
@@ -101,13 +104,13 @@ export interface UpdateMailFilterRuleInput {
     actions?: MailFilterAction[];
 }
 
-export function updateMailFilterRule(input: UpdateMailFilterRuleInput): Promise<MailFilterRule> {
-    return apiFetch(`/mail/mail-filter-rules/${encodeURIComponent(input.uid)}`, {
+export function updateMailFilterRule(input: UpdateMailFilterRuleInput, client?: ApiClient): Promise<MailFilterRule> {
+    return withClient(client, `/mail/mail-filter-rules/${encodeURIComponent(input.uid)}`, {
         method: "PUT",
         body: JSON.stringify(input),
     });
 }
 
-export function deleteMailFilterRule(uid: string, version: number): Promise<void> {
-    return apiFetch(`/mail/mail-filter-rules/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+export function deleteMailFilterRule(uid: string, version: number, client?: ApiClient): Promise<void> {
+    return withClient(client, `/mail/mail-filter-rules/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 }

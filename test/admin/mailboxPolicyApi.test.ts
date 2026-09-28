@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
+import { createApiClient } from "../../src/util/api.js";
 import { getMailboxPolicy, updateMailboxPolicy } from "../../src/admin/mailboxPolicyApi.js";
 
 const policy = {
@@ -66,5 +67,30 @@ describe("updateMailboxPolicy", () => {
             status: 403,
             code: "api-103",
         });
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, policy));
+
+        await getMailboxPolicy(client);
+        await updateMailboxPolicy({ autoProvisionEnabled: false }, client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, policy));
+        await getMailboxPolicy();
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/mailbox-policy", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

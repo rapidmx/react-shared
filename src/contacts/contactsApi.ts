@@ -5,7 +5,7 @@
 /** Typed wrappers over `@rapidmx/restapi`'s `/mail/contacts` REST surface — see `mailApi.ts`'s own header
  * comment for the shared ACL/authorization model every wrapper file here follows. */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 import {
     type EncryptionPreference,
@@ -85,8 +85,8 @@ export interface Contact {
 
 /** Lists a folder's contacts, alphabetically by display name. Never includes soft-deleted contacts — see
  * `listDeletedContacts()` for those. */
-export function listContacts(folderUid: string, params: ListParams = {}): Promise<Contact[]> {
-    return apiFetch(`/mail/contacts?${buildQuery(params, { folderUid, sort: JSON.stringify({ displayName: "ASC" }) })}`);
+export function listContacts(folderUid: string, params: ListParams = {}, client?: ApiClient): Promise<Contact[]> {
+    return withClient(client, `/mail/contacts?${buildQuery(params, { folderUid, sort: JSON.stringify({ displayName: "ASC" }) })}`);
 }
 
 function contactsMatching(contacts: Contact[], address: string): Contact[] {
@@ -109,11 +109,11 @@ export const PINNED_FINGERPRINT_MAX_PAGES = 20;
 
 /** Every contact in `folderUids`, paged (`PINNED_FINGERPRINT_PAGE_SIZE`, at most `PINNED_FINGERPRINT_MAX_PAGES` pages
  * per folder). A plain contacts read - never a Discovery lookup. */
-async function listContactsInFolders(folderUids: string[]): Promise<Contact[]> {
+async function listContactsInFolders(folderUids: string[], client?: ApiClient): Promise<Contact[]> {
     const contacts: Contact[] = [];
     for (const folderUid of folderUids) {
         for (let page = 0; page < PINNED_FINGERPRINT_MAX_PAGES; page++) {
-            const batch = await listContacts(folderUid, { limit: PINNED_FINGERPRINT_PAGE_SIZE, page });
+            const batch = await listContacts(folderUid, { limit: PINNED_FINGERPRINT_PAGE_SIZE, page }, client);
             contacts.push(...batch);
             if (batch.length < PINNED_FINGERPRINT_PAGE_SIZE) {
                 break;
@@ -132,8 +132,8 @@ async function listContactsInFolders(folderUids: string[]): Promise<Contact[]> {
  * `PINNED_FINGERPRINT_MAX_PAGES` pages per folder). A caller rendering many messages should cache the contact list and
  * use `pinnedSigningFingerprintsFor()` instead.
  */
-export async function fetchPinnedSigningFingerprints(folderUids: string[], address: string): Promise<string[]> {
-    return pinnedSigningFingerprintsFor(await listContactsInFolders(folderUids), address);
+export async function fetchPinnedSigningFingerprints(folderUids: string[], address: string, client?: ApiClient): Promise<string[]> {
+    return pinnedSigningFingerprintsFor(await listContactsInFolders(folderUids, client), address);
 }
 
 /** A sender's stored signing-key state, for a key-changed comparison - see `signerKeyStateFor()`. */
@@ -175,8 +175,8 @@ export function signerKeyStateFor(contacts: Contact[], address: string): SignerK
 
 /** Fetches `signerKeyStateFor()` for `address` from the contacts in `folderUids`, paging exactly like
  * `fetchPinnedSigningFingerprints()`. Reads only stored contacts - never triggers a Discovery lookup. */
-export async function fetchSignerKeyState(folderUids: string[], address: string): Promise<SignerKeyState> {
-    return signerKeyStateFor(await listContactsInFolders(folderUids), address);
+export async function fetchSignerKeyState(folderUids: string[], address: string, client?: ApiClient): Promise<SignerKeyState> {
+    return signerKeyStateFor(await listContactsInFolders(folderUids, client), address);
 }
 
 /**
@@ -192,14 +192,15 @@ export async function fetchSignerKeyState(folderUids: string[], address: string)
  * (passing `includeDeleted: true` into that lookup) — out of scope for this pass; the "Deleted" view here
  * is browse-only until that lands.
  */
-export function listDeletedContacts(folderUid: string, params: ListParams = {}): Promise<Contact[]> {
-    return apiFetch(
+export function listDeletedContacts(folderUid: string, params: ListParams = {}, client?: ApiClient): Promise<Contact[]> {
+    return withClient(
+        client,
         `/mail/contacts?${buildQuery(params, { folderUid, deleted: "true", sort: JSON.stringify({ displayName: "ASC" }) })}`,
     );
 }
 
-export function getContact(uid: string): Promise<Contact> {
-    return apiFetch(`/mail/contacts/${encodeURIComponent(uid)}`);
+export function getContact(uid: string, client?: ApiClient): Promise<Contact> {
+    return withClient(client, `/mail/contacts/${encodeURIComponent(uid)}`);
 }
 
 export interface ContactInput {
@@ -219,8 +220,8 @@ export interface ContactInput {
     categories?: string[];
 }
 
-export function createContact(input: ContactInput): Promise<Contact> {
-    return apiFetch("/mail/contacts", {
+export function createContact(input: ContactInput, client?: ApiClient): Promise<Contact> {
+    return withClient(client, "/mail/contacts", {
         method: "POST",
         body: JSON.stringify({ emails: [], phones: [], addresses: [], ...input }),
     });
@@ -237,8 +238,8 @@ export interface UpdateContactInput extends ContactInput {
  * fetched `Contact`. An `UpdateContactInput` is also a valid `ContactPatch`. */
 export type ContactPatch = Partial<Contact> & Pick<Contact, "uid" | "version">;
 
-export function updateContact(patch: ContactPatch): Promise<Contact> {
-    return apiFetch(`/mail/contacts/${encodeURIComponent(patch.uid)}`, {
+export function updateContact(patch: ContactPatch, client?: ApiClient): Promise<Contact> {
+    return withClient(client, `/mail/contacts/${encodeURIComponent(patch.uid)}`, {
         method: "PUT",
         body: JSON.stringify(patch),
     });
@@ -247,12 +248,12 @@ export function updateContact(patch: ContactPatch): Promise<Contact> {
 /** Thin `updateContact()` wrapper for toggling favorite/star status — same pattern as `mailApi.ts`'s
  * `setMessageRead()`/`tasksApi.ts`'s `setTaskCompleted()`. Sends only `uid`/`version`/`favorite`, never
  * the rest of `contact` (the server rejects its managed fields). */
-export function setContactFavorite(contact: Contact, favorite: boolean): Promise<Contact> {
-    return updateContact({ uid: contact.uid, version: contact.version, favorite });
+export function setContactFavorite(contact: Contact, favorite: boolean, client?: ApiClient): Promise<Contact> {
+    return updateContact({ uid: contact.uid, version: contact.version, favorite }, client);
 }
 
-export function deleteContact(uid: string, version: number): Promise<void> {
-    return apiFetch(`/mail/contacts/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+export function deleteContact(uid: string, version: number, client?: ApiClient): Promise<void> {
+    return withClient(client, `/mail/contacts/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 }
 
 export interface ContactList {
@@ -265,21 +266,24 @@ export interface ContactList {
 }
 
 /** Lists a mailbox's contact lists (Outlook-style "Your contact lists"), alphabetically by name. */
-export function listContactLists(mailboxUid: string, params: ListParams = {}): Promise<ContactList[]> {
-    return apiFetch(`/mail/contact-lists?${buildQuery(params, { mailboxUid, sort: JSON.stringify({ name: "ASC" }) })}`);
+export function listContactLists(mailboxUid: string, params: ListParams = {}, client?: ApiClient): Promise<ContactList[]> {
+    return withClient(client, `/mail/contact-lists?${buildQuery(params, { mailboxUid, sort: JSON.stringify({ name: "ASC" }) })}`);
 }
 
-export function createContactList(input: { mailboxUid: string; name: string }): Promise<ContactList> {
-    return apiFetch("/mail/contact-lists", { method: "POST", body: JSON.stringify(input) });
+export function createContactList(input: { mailboxUid: string; name: string }, client?: ApiClient): Promise<ContactList> {
+    return withClient(client, "/mail/contact-lists", { method: "POST", body: JSON.stringify(input) });
 }
 
-export function updateContactList(input: { uid: string; version: number; name: string }): Promise<ContactList> {
-    return apiFetch(`/mail/contact-lists/${encodeURIComponent(input.uid)}`, {
+export function updateContactList(
+    input: { uid: string; version: number; name: string },
+    client?: ApiClient,
+): Promise<ContactList> {
+    return withClient(client, `/mail/contact-lists/${encodeURIComponent(input.uid)}`, {
         method: "PUT",
         body: JSON.stringify(input),
     });
 }
 
-export function deleteContactList(uid: string, version: number): Promise<void> {
-    return apiFetch(`/mail/contact-lists/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
+export function deleteContactList(uid: string, version: number, client?: ApiClient): Promise<void> {
+    return withClient(client, `/mail/contact-lists/${encodeURIComponent(uid)}?version=${version}`, { method: "DELETE" });
 }

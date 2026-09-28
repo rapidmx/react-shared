@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
+import { createApiClient } from "../../src/util/api.js";
 import { completeSetup, getSetupStatus, reopenSetup, saveSetupStep } from "../../src/admin/setupApi.js";
 import { getMailboxPolicy, updateMailboxPolicy } from "../../src/admin/mailboxPolicyApi.js";
 
@@ -36,5 +37,32 @@ describe("mailboxPolicyApi", () => {
             "/api/system/mailbox-policy",
             expect.objectContaining({ method: "PUT", body: JSON.stringify({ autoProvisionEnabled: true }) }),
         );
+    });
+});
+
+describe("with an explicit ApiClient", () => {
+    it("every setupApi function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
+        const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, { required: true }));
+
+        await getSetupStatus(client);
+        await saveSetupStep("domain", client);
+        await completeSetup(client);
+        await reopenSetup(client);
+
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+        for (const call of fetchMock.mock.calls) {
+            expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
+            expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");
+            expect(call[1].credentials).toBeUndefined();
+        }
+    });
+
+    it("omitting the client still calls the default global apiFetch(), unaffected by any client existing elsewhere", async () => {
+        createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
+        const fetchMock = mockFetch(() => jsonResponse(200, { required: true }));
+        await getSetupStatus();
+        expect(fetchMock).toHaveBeenCalledWith("/api/system/setup", expect.anything());
+        expect((fetchMock.mock.calls[0][1].headers as Headers).has("Authorization")).toBe(false);
     });
 });

@@ -10,7 +10,7 @@
  * request that the server's `ErasureExecutionJob` then runs - poll it with `getErasureRequest()` (`erasureRequestApi.ts`).
  * The erasure is irreversible; a legal hold on the address makes the server refuse it (409, its message names the matter).
  */
-import { ApiRequestError, apiFetch } from "../util/api.js";
+import { ApiClient, ApiRequestError, withClient } from "../util/api.js";
 import type { DataSubjectErasureRequest, DataSubjectErasureStatus } from "../mail/erasureRequestApi.js";
 
 /** The newest erasure request filed for a leftover address. */
@@ -46,8 +46,12 @@ export interface LeftoverMailboxListParams {
     after?: string;
 }
 
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
+
 /** Lists the deleted mailboxes that still have data, sorted by address. Administrators only (403 otherwise). */
-export function listLeftoverMailboxes(params: LeftoverMailboxListParams = {}): Promise<LeftoverMailboxPage> {
+export function listLeftoverMailboxes(params: LeftoverMailboxListParams = {}, client?: ApiClient): Promise<LeftoverMailboxPage> {
     const query = new URLSearchParams();
     if (params.limit !== undefined) {
         query.set("limit", String(params.limit));
@@ -56,7 +60,7 @@ export function listLeftoverMailboxes(params: LeftoverMailboxListParams = {}): P
         query.set("after", params.after);
     }
     const suffix = query.toString();
-    return apiFetch(`/mail/mailboxes/leftover${suffix ? `?${suffix}` : ""}`);
+    return withClient(client, `/mail/mailboxes/leftover${suffix ? `?${suffix}` : ""}`);
 }
 
 /**
@@ -65,8 +69,8 @@ export function listLeftoverMailboxes(params: LeftoverMailboxListParams = {}): P
  * the call returns the request already filed. Rejects with 409 while a legal hold covers the address (the message names the
  * matter) or when a mailbox exists at the address (a live mailbox is never erased this way), and with 404 when nothing is left.
  */
-export function eraseLeftoverMailbox(mailboxUid: string): Promise<DataSubjectErasureRequest> {
-    return apiFetch(`/mail/erasure-requests/leftover`, {
+export function eraseLeftoverMailbox(mailboxUid: string, client?: ApiClient): Promise<DataSubjectErasureRequest> {
+    return withClient(client, `/mail/erasure-requests/leftover`, {
         method: "POST",
         body: JSON.stringify({ mailboxUid }),
     });

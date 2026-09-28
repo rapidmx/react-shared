@@ -11,7 +11,7 @@
  * only stages a `pending` request; poll `getExportRequest()`/`listExportRequests()` for `status` to
  * become `"ready"` (or `"failed"`) before offering the download.
  */
-import { apiFetch, apiUrl } from "../util/api.js";
+import { ApiClient, apiUrl, withClient } from "../util/api.js";
 import { RequestListParams, buildRequestListQuery } from "../util/apiQuery.js";
 
 export type { RequestListParams };
@@ -43,8 +43,12 @@ export interface CreateDataExportRequestInput {
     mailboxUid?: string;
 }
 
-export function createExportRequest(input: CreateDataExportRequestInput): Promise<DataExportRequest> {
-    return apiFetch(`/mail/data-export-requests`, {
+/** `client`, given by every function below that isn't a plain URL builder, is an explicit `ApiClient` from
+ * `createApiClient()` (e.g. one account of a multi-account app) to call instead of the default global
+ * `apiFetch()` - see `withClient()`'s own doc comment in `util/api.ts`. Omitted (the default), every
+ * function here behaves exactly as before. */
+export function createExportRequest(input: CreateDataExportRequestInput, client?: ApiClient): Promise<DataExportRequest> {
+    return withClient(client, `/mail/data-export-requests`, {
         method: "POST",
         body: JSON.stringify(input),
     });
@@ -52,12 +56,12 @@ export function createExportRequest(input: CreateDataExportRequestInput): Promis
 
 /** A trusted caller sees every request; anyone else sees only their own (`requestedByUserUid`). Newest
  * first; `params` pages through them (`limit` capped at 500 server-side). */
-export function listExportRequests(params: RequestListParams = {}): Promise<DataExportRequest[]> {
-    return apiFetch(`/mail/data-export-requests${buildRequestListQuery(params)}`);
+export function listExportRequests(params: RequestListParams = {}, client?: ApiClient): Promise<DataExportRequest[]> {
+    return withClient(client, `/mail/data-export-requests${buildRequestListQuery(params)}`);
 }
 
-export function getExportRequest(uid: string): Promise<DataExportRequest> {
-    return apiFetch(`/mail/data-export-requests/${encodeURIComponent(uid)}`);
+export function getExportRequest(uid: string, client?: ApiClient): Promise<DataExportRequest> {
+    return withClient(client, `/mail/data-export-requests/${encodeURIComponent(uid)}`);
 }
 
 /** A plain URL, not a fetch wrapper — the server streams the export's raw bytes back with its own

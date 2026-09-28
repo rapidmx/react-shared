@@ -10,7 +10,7 @@
  * to read) and `"restricted"` is one who chose not to share their free/busy with the caller (`Mailbox.freeBusyVisibility`). Every helper here treats both
  * as *not known to be free* - they are never counted as available, and never make a time "free for everyone". */
 
-import { apiFetch } from "../util/api.js";
+import { ApiClient, withClient } from "../util/api.js";
 
 /** The most addresses one request may ask about. */
 export const FREE_BUSY_MAX_ADDRESSES = 50;
@@ -42,13 +42,16 @@ export interface FreeBusyResponse {
     results: FreeBusyResult[];
 }
 
+/** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
+ * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
+ * own doc comment in `util/api.ts`. Omitted (the default), every function here behaves exactly as before. */
 /**
  * When the people at `addresses` (1 to `FREE_BUSY_MAX_ADDRESSES`) are busy between `start` and `end` (at most `FREE_BUSY_MAX_DAYS` days). The caller's own
  * mailboxes are always answered as available with their real busy time. Rejects with an `ApiRequestError`: 400 for a bad request, 401 when signed out,
  * 429 when asked too often (60 a minute).
  */
-export function getFreeBusy(addresses: string[], start: Date | string, end: Date | string): Promise<FreeBusyResponse> {
-    return apiFetch("/mail/calendar-events/free-busy", {
+export function getFreeBusy(addresses: string[], start: Date | string, end: Date | string, client?: ApiClient): Promise<FreeBusyResponse> {
+    return withClient(client, "/mail/calendar-events/free-busy", {
         method: "POST",
         body: JSON.stringify({
             addresses,
