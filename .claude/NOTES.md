@@ -1517,3 +1517,17 @@ all pre-existing (confirmed via `git diff` that the specific uncovered line rang
 logic - fall outside every line this pass actually touched), same "98%-floor" baseline the file's own
 `vitest.config.ts` comment already documents, not a new gap. `package.json` version untouched, nothing
 committed by this session's own agents.
+
+### 2026-09-27 - Merged into `@rapidmx/web-client`; this repo's `src/`/`test/` retired
+
+Not committed, no version bump. JP asked to merge this package into `@rapidmx/web-client` since every real
+consumer of it already depended on web-client too - see `web-client`'s own `.claude/NOTES.md` entry of the
+same date for the full story (new `lib/` layout, export path change, dependency reconciliation, build/lint/
+test wiring, and two real bugs an over-broad `Edit` and an environment-default mismatch introduced during
+that session's own verification pass, both found and fixed there). This repo's `src/` and `test/` (97 + 109
+files) were copied there verbatim first, web-client's own full `tsc`/`lint`/`build`/`vitest` suite was
+confirmed green against the copy, and only then were `src/` and `test/` deleted here. `README.md` and
+`package.json`'s `description`/`scripts` now say plainly that this package merged into web-client and point
+there; `package.json`'s `version`, `dependencies`, `exports` and the rest were left as they were - JP or a
+later session can decide whether to archive this repository on GitHub itself, which is not this session's
+call. Do not `yarn build`/`yarn test` here - there is deliberately nothing left to build or test.

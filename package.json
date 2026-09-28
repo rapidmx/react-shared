@@ -1,7 +1,7 @@
 {
   "name": "@rapidmx/react-shared",
   "version": "0.22.0",
-  "description": "A library containing platform-agnostic components/data/business-logic for RapidMX's React frontends.",
+  "description": "Merged into @rapidmx/web-client (as of 2026-09-27) as its lib/ directory - see that package's README.md. This package's own src/ and test/ have been removed; nothing here builds or tests anymore.",
   "type": "module",
   "repository": "https://github.com/rapidmx/react-shared",
   "author": "Jean-Philippe Steinmetz <rapidrests@gmail.com>",
@@ -16,12 +16,10 @@
     }
   },
   "scripts": {
-    "build": "yarn lint && rimraf dist && tsc -p tsconfig.json",
-    "lint": "eslint ./src ./test",
-    "test": "vitest run --coverage",
-    "test:watch": "vitest --watch --coverage",
-    "release": "npx @rapidrest/cli release",
-    "prepublish": "yarn build"
+    "build": "echo \"@rapidmx/react-shared has been merged into @rapidmx/web-client (2026-09-27) - see README.md. There is nothing left to build.\"",
+    "lint": "echo \"@rapidmx/react-shared has been merged into @rapidmx/web-client (2026-09-27) - see README.md. There is nothing left to lint.\"",
+    "test": "echo \"@rapidmx/react-shared has been merged into @rapidmx/web-client (2026-09-27) - see README.md. There is nothing left to test.\"",
+    "release": "npx @rapidrest/cli release"
   },
   "prettier": {
     "printWidth": 120,
