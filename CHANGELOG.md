@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-09-28
+
+### Added
+- Added createApiClient(), an explicit baseUrl/bearer-token calling mode for the REST client modules, alongside the existing global cookie-based apiFetch(), for a native multi-account app that cannot rely on one shared origin or session
+- Added ApiClientContext and useApiClient() so a component tree can reach the active account's client without prop-drilling it through every layer
+
+### Changed
+- Make useSessionRefresh() and useRedirectIfUnauthenticated() no-op under an ApiClientContext.Provider, since there is no cookie to refresh and no sign-in page to redirect to in that context
+- Give every REST client module an optional trailing client parameter, threaded through internal same-module call chains, leaving every existing call site unaffected
+- Document the design decisions and the full converted and deliberately-skipped module lists in NOTES
+- Retire this package - its entire source has moved into @rapidmx/web-client's new lib/ directory, since every real consumer already depended on both packages together
+- Point the README and package.json description at web-client, and turn build, lint and test into no-op messages explaining the move
+- Document the move in NOTES
+- Document the multi-account API client addition and the retirement/merge into @rapidmx/web-client in RELEASE_NOTES
+
 ## [0.22.0] - 2026-09-27
 
 ### Added
@@ -603,7 +618,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the subpath exports map to not double-append .js onto specifiers that already include it
 - Fixed BottomTabBar's test to use a local fixture instead of importing web-client's own AppShell
 
-[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/rapidmx/react-shared/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/rapidmx/react-shared/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/rapidmx/react-shared/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/rapidmx/react-shared/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/rapidmx/react-shared/compare/v0.19.0...v0.20.0

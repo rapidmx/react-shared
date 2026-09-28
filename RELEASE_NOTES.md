@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.23.0
+
 ### Added
 
 - **`createApiClient()`, an explicit `baseUrl`/bearer-token calling mode for every REST client module, alongside the existing global cookie-based `apiFetch()`.** Built for the new native Tauri client, which manages multiple accounts against multiple servers and cannot rely on one shared browser origin/cookie session the way the web client can. `ApiClientContext`/`useApiClient()` let a component tree reach the active account's client without prop-drilling it through every layer; every REST client module gained an optional trailing `client` parameter (threaded through internal same-module call chains) with every existing call site unaffected. `useSessionRefresh()`/`useRedirectIfUnauthenticated()` are now no-ops under an `ApiClientContext.Provider`, since there's no cookie to refresh and no sign-in page to redirect to in that context.
