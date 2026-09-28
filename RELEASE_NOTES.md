@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- **`createApiClient()`, an explicit `baseUrl`/bearer-token calling mode for every REST client module, alongside the existing global cookie-based `apiFetch()`.** Built for the new native Tauri client, which manages multiple accounts against multiple servers and cannot rely on one shared browser origin/cookie session the way the web client can. `ApiClientContext`/`useApiClient()` let a component tree reach the active account's client without prop-drilling it through every layer; every REST client module gained an optional trailing `client` parameter (threaded through internal same-module call chains) with every existing call site unaffected. `useSessionRefresh()`/`useRedirectIfUnauthenticated()` are now no-ops under an `ApiClientContext.Provider`, since there's no cookie to refresh and no sign-in page to redirect to in that context.
+
+### Changed
+
+- **This package is retired: its entire source has moved into `@rapidmx/web-client`'s new `lib/` directory.** Every real consumer (`booking-plugin`, `meet-plugin`, `rapidmx/server`, `tauri-client`, and `@rapidmx/web-client` itself) already depended on `@rapidmx/web-client` too, so maintaining this as a separate package no longer served a purpose. `src/`/`test/` are removed from this repository; what used to live here is published at `@rapidmx/web-client/lib/<path>.js` instead of `@rapidmx/react-shared/<path>.js` (see that package's own release notes going forward, starting with this same `createApiClient()` addition). `build`/`lint`/`test` are now no-op messages pointing at the README. This repository is not otherwise archived or deleted - that remains a separate, later decision.
+
 ## v0.22.0
 
 ### Added
