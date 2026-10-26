@@ -72,12 +72,6 @@ jobs:
           name: junit
           path: junit.xml
 
-      - name: Report coverage to Coveralls
-        uses: coverallsapp/github-action@v2
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          file: ./coverage/lcov.info
-
   validate:
     runs-on: ubuntu-latest
     container:
